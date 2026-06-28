@@ -1,0 +1,309 @@
+# DMC Travel OS
+
+# Data Dictionary
+
+## Purpose
+
+This document describes every database entity, field, data type and business meaning.
+
+---
+
+# Global Rules
+
+Every business table contains:
+
+* id (UUID)
+* tenant_id (UUID)
+* created_at
+* updated_at
+* created_by
+* updated_by
+
+Primary Key = UUID
+
+---
+
+# Tenants
+
+Stores White Label partners.
+
+Main fields:
+
+* id
+* name
+* domain
+* logo
+* settings
+* status
+
+---
+
+# Users
+
+Stores system users.
+
+Main fields:
+
+* full_name
+* email
+* password_hash
+* role
+* status
+
+---
+
+# Agents
+
+Stores travel agencies.
+
+Main fields:
+
+* company_name
+* contact_person
+* balance
+* credit_limit
+* commission
+* markup
+* currency
+* status
+
+---
+
+# Hotels
+
+Stores hotel information.
+
+Main fields:
+
+* hotel_name
+* destination
+* country
+* rating
+* description
+* images
+
+---
+
+# Room Types
+
+Stores hotel room categories.
+
+Main fields:
+
+* hotel
+* room_name
+* occupancy
+* max_adults
+* max_children
+
+---
+
+# Meal Plans
+
+Stores meal plans.
+
+Examples:
+
+* RO
+* BB
+* HB
+* FB
+* AI
+* Premium AI
+
+---
+
+# Contracts
+
+Stores hotel contracts.
+
+Main fields:
+
+* hotel
+* season
+* currency
+* cancellation
+* payment_terms
+
+---
+
+# Rates
+
+Stores hotel prices.
+
+Main fields:
+
+* room_type
+* meal_plan
+* occupancy
+* net_cost
+* sale_price
+* markup
+* commission
+
+---
+
+# Offers
+
+Stores hotel offers.
+
+Examples:
+
+* Early Bird
+* Long Stay
+* Tactical Offer
+* Flash Sale
+
+---
+
+# Bookings
+
+Stores reservations.
+
+Main fields:
+
+* booking_number
+* agent
+* hotel
+* check_in
+* check_out
+* status
+* total_price
+
+---
+
+# Flights
+
+Stores flights.
+
+Types:
+
+* Scheduled
+* Charter
+
+---
+
+# Charters
+
+Stores charter blocks.
+
+Main fields:
+
+* hard_block
+* guaranteed_block
+* sold_seats
+* release_date
+* load_factor
+
+---
+
+# Transfers
+
+Stores transfers.
+
+Types:
+
+* Car
+* Speedboat
+* Seaplane
+* Domestic Flight
+
+---
+
+# Guides
+
+Stores guides.
+
+---
+
+# Drivers
+
+Stores drivers.
+
+---
+
+# Vehicles
+
+Stores transport.
+
+---
+
+# Invoices
+
+Stores invoices.
+
+---
+
+# Payments
+
+Stores payments.
+
+---
+
+# Vouchers
+
+Stores vouchers.
+
+---
+
+# Notifications
+
+Stores notifications.
+
+---
+
+# Issues
+
+Stores guest complaints and operational issues.
+
+---
+
+# Audit Log
+
+Stores every system change.
+
+No record may ever be deleted.
+
+---
+
+# Currency
+
+Stores exchange rates.
+
+Supported currencies:
+
+* USD
+* EUR
+* AED
+* RUB
+* KZT
+
+---
+
+# File Storage
+
+Stores:
+
+* vouchers
+* invoices
+* hotel images
+* contracts
+* passports
+* tickets
+
+---
+
+# Future Tables
+
+Reserved for:
+
+* AI
+* Marketplace
+* CRM
+* Loyalty Program
+* Dynamic Pricing
+* API Integrations
+
+---
+
+End of Data Dictionary
