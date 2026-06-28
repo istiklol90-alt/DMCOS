@@ -3,10 +3,13 @@ from fastapi import APIRouter
 router = APIRouter()
 
 
-@router.get("/health")
-def health():
+@router.get("/users")
+def get_users():
+    return []
+
+
+@router.post("/users")
+def create_user():
     return {
-        "status": "OK",
-        "system": "DMC OS",
-        "version": "0.1"
+        "message": "User created"
     }
