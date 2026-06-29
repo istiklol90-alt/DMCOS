@@ -3,9 +3,9 @@ from sqlalchemy.orm import Session
 
 from database.db import SessionLocal
 from models.user import User
-from models.agent import Agent
+from models.agent import AgentRegistration
 from schemas.user import UserCreate, UserResponse
-from schemas.agent import AgentCreate, AgentResponse
+from schemas.agent import AgentRegistrationCreate, AgentRegistrationResponse
 
 router = APIRouter()
 
@@ -32,21 +32,35 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     return new_user
 
 
-@router.get("/agents", response_model=list[AgentResponse])
-def get_agents(db: Session = Depends(get_db)):
-    return db.query(Agent).all()
-
-
-@router.post("/agents", response_model=AgentResponse)
-def create_agent(agent: AgentCreate, db: Session = Depends(get_db)):
-    new_agent = Agent(
+@router.post("/agent-registration", response_model=AgentRegistrationResponse)
+def create_agent_registration(
+    agent: AgentRegistrationCreate,
+    db: Session = Depends(get_db)
+):
+    new_registration = AgentRegistration(
         company_name=agent.company_name,
-        contact_name=agent.contact_name,
+        legal_company_name=agent.legal_company_name,
+        country=agent.country,
+        city=agent.city,
+        contact_person=agent.contact_person,
         email=agent.email,
         phone=agent.phone,
-        country=agent.country
+        whatsapp=agent.whatsapp,
+        website=agent.website,
+        preferred_currency=agent.preferred_currency,
+        preferred_language=agent.preferred_language,
+        market=agent.market,
+        notes=agent.notes,
+        status="pending",
     )
-    db.add(new_agent)
+
+    db.add(new_registration)
     db.commit()
-    db.refresh(new_agent)
-    return new_agent
+    db.refresh(new_registration)
+
+    return new_registration
+
+
+@router.get("/agent-registrations", response_model=list[AgentRegistrationResponse])
+def get_agent_registrations(db: Session = Depends(get_db)):
+    return db.query(AgentRegistration).all()

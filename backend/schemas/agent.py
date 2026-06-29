@@ -1,16 +1,25 @@
 from pydantic import BaseModel
 
 
-class AgentCreate(BaseModel):
+class AgentRegistrationCreate(BaseModel):
     company_name: str
-    contact_name: str
+    legal_company_name: str
+    country: str
+    city: str
+    contact_person: str
     email: str
-    phone: str | None = None
-    country: str | None = None
+    phone: str
+    whatsapp: str
+    website: str | None = None
+    preferred_currency: str
+    preferred_language: str
+    market: str
+    notes: str | None = None
 
 
-class AgentResponse(AgentCreate):
+class AgentRegistrationResponse(AgentRegistrationCreate):
     id: int
+    status: str
 
     class Config:
         from_attributes = True
