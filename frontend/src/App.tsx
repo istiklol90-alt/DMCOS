@@ -3,6 +3,20 @@ import "./App.css";
 
 type Page = "home" | "register";
 
+const countries = [
+  { name: "Tajikistan", code: "+992" },
+  { name: "Uzbekistan", code: "+998" },
+  { name: "Kazakhstan", code: "+7" },
+  { name: "Russia", code: "+7" },
+  { name: "Kyrgyzstan", code: "+996" },
+  { name: "Azerbaijan", code: "+994" },
+  { name: "UAE", code: "+971" },
+  { name: "Maldives", code: "+960" },
+  { name: "Turkey", code: "+90" },
+  { name: "India", code: "+91" },
+  { name: "Other", code: "" },
+];
+
 function App() {
   const [page, setPage] = useState<Page>("home");
 
@@ -15,9 +29,7 @@ function App() {
 
         <nav>
           <button onClick={() => setPage("home")}>Home</button>
-          <button onClick={() => setPage("register")}>
-            Partner Registration
-          </button>
+          <button onClick={() => setPage("register")}>Partner Registration</button>
           <button>Agent Login</button>
           <button>Admin Login</button>
         </nav>
@@ -30,54 +42,143 @@ function App() {
 
 function Home({ setPage }: { setPage: (page: Page) => void }) {
   return (
-    <main className="hero">
-      <div className="heroText">
-        <p className="tag">DMC Operating System</p>
-        <h1>One platform for agents, hotels, contracts, rates and bookings.</h1>
+    <main className="homePage">
+      <section className="heroSection">
+        <div className="heroLeft">
+          <p className="tag">DMC OPERATING SYSTEM</p>
 
-        <p className="subtitle">
-          DMC OS helps manage partner registration, hotel contracts, prices,
-          booking requests, payments and future AI automation.
-        </p>
+          <h1>
+            One platform to manage agents, hotels, contracts, rates and bookings.
+          </h1>
 
-        <div className="buttons">
-          <button className="primary" onClick={() => setPage("register")}>
-            Register as Partner
-          </button>
-          <button className="secondary">Agent Login</button>
-          <button className="secondary">Admin Login</button>
+          <p className="subtitle">
+            DMC OS helps tour operators manage partner registration, hotel
+            contracts, rates, booking requests, payments and future AI automation.
+          </p>
+
+          <div className="buttons">
+            <button className="primary" onClick={() => setPage("register")}>
+              Register as Partner
+            </button>
+            <button className="secondary">Agent Login</button>
+            <button className="secondary">Admin Login</button>
+          </div>
         </div>
-      </div>
+
+        <div className="heroCard">
+          <h3>System Status</h3>
+
+          <div className="statusRow">
+            <span>Backend API</span>
+            <b>Ready</b>
+          </div>
+
+          <div className="statusRow">
+            <span>Agent Registration</span>
+            <b>Working</b>
+          </div>
+
+          <div className="statusRow">
+            <span>AI Automation</span>
+            <b>Future Module</b>
+          </div>
+        </div>
+      </section>
+
+      <section className="features">
+        <div className="featureCard">
+          <h3>Agent Registration</h3>
+          <p>Collect partner details and save applications with pending status.</p>
+        </div>
+
+        <div className="featureCard">
+          <h3>Hotel Contracts</h3>
+          <p>Future module for rates, offers, contracts and hotel conditions.</p>
+        </div>
+
+        <div className="featureCard">
+          <h3>Booking Requests</h3>
+          <p>Manage agent requests, confirmations, payments and operations.</p>
+        </div>
+
+        <div className="featureCard">
+          <h3>AI Assistant</h3>
+          <p>Future AI will read contracts, emails and help automate decisions.</p>
+        </div>
+      </section>
     </main>
   );
 }
 
 function Register() {
   const [message, setMessage] = useState("");
+  const [country, setCountry] = useState("Tajikistan");
+
+  const selectedCountry = countries.find((item) => item.name === country);
+  const phoneCode = selectedCountry?.code || "";
+
+  function hasLetter(value: FormDataEntryValue | null) {
+    return /[a-zA-Zа-яА-Я]/.test(String(value || ""));
+  }
+
+  function onlyDigits(value: FormDataEntryValue | null) {
+    return String(value || "").replace(/\D/g, "");
+  }
 
   async function submitApplication(event: React.FormEvent<HTMLFormElement>) {
-    alert("Submit clicked");
     event.preventDefault();
 
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+
+    const phoneDigits = onlyDigits(form.get("phone"));
+    const whatsappDigits = onlyDigits(form.get("whatsapp"));
+
+    if (!hasLetter(form.get("company_name"))) {
+      setMessage("Company name is not valid.");
+      return;
+    }
+
+    if (!hasLetter(form.get("legal_company_name"))) {
+      setMessage("Legal company name is not valid.");
+      return;
+    }
+
+    if (!hasLetter(form.get("city"))) {
+      setMessage("City is not valid.");
+      return;
+    }
+
+    if (!hasLetter(form.get("contact_person"))) {
+      setMessage("Contact person is not valid.");
+      return;
+    }
+
+    if (phoneDigits.length < 6) {
+      setMessage("Phone number is not valid. Use numbers only.");
+      return;
+    }
+
+    if (whatsappDigits.length < 6) {
+      setMessage("WhatsApp number is not valid. Use numbers only.");
+      return;
+    }
 
     const data = {
       company_name: form.get("company_name"),
       legal_company_name: form.get("legal_company_name"),
-      country: form.get("country"),
+      country: country,
       city: form.get("city"),
       contact_person: form.get("contact_person"),
       email: form.get("email"),
-      phone: form.get("phone"),
-      whatsapp: form.get("whatsapp"),
+      phone: `${phoneCode}${phoneDigits}`,
+      whatsapp: `${phoneCode}${whatsappDigits}`,
       website: form.get("website"),
       preferred_currency: form.get("preferred_currency"),
       preferred_language: form.get("preferred_language"),
       market: form.get("market"),
       notes: form.get("notes"),
     };
-
-    alert("Before fetch");
 
     try {
       const response = await fetch("http://127.0.0.1:8000/agent-registration", {
@@ -88,17 +189,17 @@ function Register() {
         body: JSON.stringify(data),
       });
 
-      alert("After fetch: " + response.status);
-
       if (response.ok) {
         setMessage("Application submitted successfully. Status: Pending.");
-        event.currentTarget.reset();
+        formElement.reset();
+        setCountry("Tajikistan");
+      } else if (response.status === 500) {
+        setMessage("This email may already be registered. Try another email.");
       } else {
         setMessage("Error status: " + response.status);
       }
-    } catch (error) {
-      alert("Fetch error: " + error);
-      setMessage("Fetch error. Backend connection failed.");
+    } catch {
+      setMessage("Backend connection failed. Please make sure backend is running.");
     }
   }
 
@@ -109,33 +210,95 @@ function Register() {
         <h1>Register your agency</h1>
 
         <form className="form" onSubmit={submitApplication}>
-          <input name="company_name" placeholder="Company Name" required />
-          <input
-            name="legal_company_name"
-            placeholder="Legal Company Name"
-            required
-          />
-          <input name="country" placeholder="Country" required />
-          <input name="city" placeholder="City" required />
-          <input name="contact_person" placeholder="Contact Person" required />
-          <input name="email" placeholder="Email" required />
-          <input name="phone" placeholder="Phone" required />
-          <input name="whatsapp" placeholder="WhatsApp" required />
-          <input name="website" placeholder="Website" />
-          <input
-            name="preferred_currency"
-            placeholder="Preferred Currency"
-            required
-          />
-          <input
-            name="preferred_language"
-            placeholder="Preferred Language"
-            required
-          />
-          <input name="market" placeholder="Market" required />
-          <textarea name="notes" placeholder="Notes" />
+          <div className="field">
+            <label>Company Name</label>
+            <input name="company_name" placeholder="Example: Rustar Travel" required />
+          </div>
 
-          <button className="primary" type="submit">
+          <div className="field">
+            <label>Legal Company Name</label>
+            <input name="legal_company_name" placeholder="Example: Rustar Travel LLC" required />
+          </div>
+
+          <div className="field">
+            <label>Country</label>
+            <select value={country} onChange={(e) => setCountry(e.target.value)}>
+              {countries.map((item) => (
+                <option key={item.name} value={item.name}>
+                  {item.name} {item.code}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field">
+            <label>City</label>
+            <input name="city" placeholder="Example: Dushanbe" required />
+          </div>
+
+          <div className="field">
+            <label>Contact Person</label>
+            <input name="contact_person" placeholder="Example: Daler Rajabov" required />
+          </div>
+
+          <div className="field">
+            <label>Email</label>
+            <input name="email" type="email" placeholder="example@company.com" required />
+          </div>
+
+          <div className="field">
+            <label>Phone Number</label>
+            <div className="phoneRow">
+              <input className="phoneCode" value={phoneCode} readOnly />
+              <input name="phone" placeholder="Only numbers" required />
+            </div>
+          </div>
+
+          <div className="field">
+            <label>WhatsApp Number</label>
+            <div className="phoneRow">
+              <input className="phoneCode" value={phoneCode} readOnly />
+              <input name="whatsapp" placeholder="Only numbers" required />
+            </div>
+          </div>
+
+          <div className="field">
+            <label>Website</label>
+            <input name="website" placeholder="https://company.com" />
+          </div>
+
+          <div className="field">
+            <label>Preferred Currency</label>
+            <select name="preferred_currency" required>
+              <option value="">Select currency</option>
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+              <option value="TJS">TJS</option>
+              <option value="UZS">UZS</option>
+              <option value="KZT">KZT</option>
+            </select>
+          </div>
+
+          <div className="field">
+            <label>Preferred Language</label>
+            <select name="preferred_language" required>
+              <option value="">Select language</option>
+              <option value="English">English</option>
+              <option value="Russian">Russian</option>
+            </select>
+          </div>
+
+          <div className="field">
+            <label>Market</label>
+            <input name="market" placeholder="Example: CIS / Tajikistan / Uzbekistan" required />
+          </div>
+
+          <div className="field fullWidth">
+            <label>Notes</label>
+            <textarea name="notes" placeholder="Additional information" />
+          </div>
+
+          <button className="primary fullWidth" type="submit">
             Submit Application
           </button>
         </form>
