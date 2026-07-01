@@ -3,7 +3,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from jose import JWTError, jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import secrets
 from pydantic import BaseModel
@@ -61,27 +61,22 @@ def change_password(
     token: str = Depends(oauth2_scheme)
 ):
     try:
-        # Декодируем токен
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email = payload.get("sub")
         
         if not email:
             raise HTTPException(status_code=401, detail="Invalid token")
         
-        # Находим пользователя
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        # Проверяем старый пароль
         if not verify_password(data.old_password, user.password):
             raise HTTPException(status_code=400, detail="Invalid old password")
         
-        # Проверяем новый пароль
         if len(data.new_password) < 8:
             raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
         
-        # Обновляем пароль
         user.password = get_password_hash(data.new_password)
         user.is_first_login = False
         db.commit()
@@ -100,14 +95,13 @@ def change_password(
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================
-# ЛОГИН
+# ЛОГИН (UAE TIME - UTC+4)
 # ============================================================
 
 @router.post("/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
     print(f"🔐 Попытка входа: {data.email}")
     
-    # Поиск пользователя по email
     user = db.query(User).filter(User.email == data.email).first()
     
     if not user:
@@ -118,11 +112,11 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         print(f"❌ Неверный пароль для: {data.email}")
         return {"success": False, "message": "Invalid email or password"}
     
-    # ✅ ОБНОВЛЯЕМ last_login
-    user.last_login = datetime.utcnow()
+    # ✅ UAE TIME (UTC+4)
+    uae_tz = timezone(timedelta(hours=4))
+    user.last_login = datetime.now(uae_tz)
     db.commit()
     
-    # Создание токена
     access_token = create_access_token(data={"sub": user.email, "role": user.role})
     
     print(f"✅ Вход успешен: {data.email}")
@@ -132,12 +126,12 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         "role": user.role,
         "access_token": access_token,
         "is_first_login": user.is_first_login,
-        "last_login": user.last_login,  # ← ДОБАВЛЕНО!
+        "last_login": user.last_login,
         "user": {
             "id": user.id,
             "name": user.name,
             "email": user.email,
             "role": user.role,
-            "last_login": user.last_login  # ← ДОБАВЛЕНО!
+            "last_login": user.last_login
         }
     }
