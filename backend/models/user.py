@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text
 from models.base import Base
 from datetime import datetime
 
@@ -12,5 +12,11 @@ class User(Base):
     role = Column(String, nullable=False, default="agent")
     is_active = Column(Boolean, default=True)
     is_first_login = Column(Boolean, default=True)
-    last_login = Column(DateTime, nullable=True)  # ← ДОБАВЛЕНО!
+    last_login = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # ⬇️ НОВЫЕ ПОЛЯ ДЛЯ УПРАВЛЕНИЯ СТАТУСОМ
+    status = Column(String, default="active")  # active, suspended, blocked
+    status_reason = Column(Text, nullable=True)  # Причина блокировки
+    status_updated_at = Column(DateTime, nullable=True)
+    updated_by = Column(Integer, nullable=True)  # Кто изменил статус
