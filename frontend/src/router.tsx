@@ -5,6 +5,7 @@ import Register from "./pages/Register";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import AdminPanel from "./pages/AdminPanel";
+import AgentDashboard_v2 from "./pages/AgentDashboard_v2";
 
 const router = createBrowserRouter([
   {
@@ -30,6 +31,10 @@ const router = createBrowserRouter([
       {
         path: "admin-panel",
         element: <AdminPanel />,
+      },
+      {
+        path: "agent-dashboard",
+        element: <AgentDashboard_v2 />,
       },
     ],
   },

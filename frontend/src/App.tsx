@@ -10,7 +10,7 @@ import Login from "./pages/Login";
 import ChangePassword from "./pages/ChangePassword";
 import Dashboard from "./pages/Dashboard";
 import AdminPanel from "./pages/AdminPanel";
-import AgentDashboard from "./pages/AgentDashboard";
+import AgentDashboard_v2 from "./pages/AgentDashboard_v2";
 import ManagerDashboard from "./pages/ManagerDashboard";
 
 export type Page =
@@ -128,7 +128,7 @@ function App() {
       
       {page === "admin-panel" && <AdminPanel />}
       
-      {page === "agent-dashboard" && <AgentDashboard />}
+      {page === "agent-dashboard" && <AgentDashboard_v2 />}
       
       {page === "manager-dashboard" && <ManagerDashboard />}
       
