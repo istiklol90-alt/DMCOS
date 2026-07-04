@@ -1,154 +1,166 @@
+import { useEffect, useState } from "react";
+
 type HomeProps = {
   onRegister: () => void;
   onAgentLogin: () => void;
   onAdminLogin: () => void;
 };
 
-function Home({ onRegister, onAgentLogin, onAdminLogin }: HomeProps) {
-  console.log('🏠 Home рендерится');
-  console.log('📌 onAgentLogin:', onAgentLogin);
-  console.log('📌 onAdminLogin:', onAdminLogin);
-  
-  return (
-    <div style={styles.container}>
-      <div style={styles.hero}>
-        <h1 style={styles.title}>🏨 DMC OS</h1>
-        <p style={styles.subtitle}>B2B платформа для туристических агентств</p>
-        <p style={styles.description}>
-          Отели, контракты, бронирования, цены и AI автоматизация в одной платформе
-        </p>
+type PromoSlide = {
+  id: string;
+  hotel: string;
+  location: string;
+  gradient: string;
+  headline: string;
+};
 
-        <div style={styles.buttons}>
-          <button 
-            onClick={() => {
-              console.log('🔘 Нажата кнопка Регистрация');
-              onRegister();
-            }} 
-            style={styles.primaryButton}
+const promoSlides: PromoSlide[] = [
+  {
+    id: "soneva-fushi",
+    hotel: "Soneva Fushi",
+    location: "Baa Atoll, Мальдивы",
+    gradient: "from-teal to-ink",
+    headline: "Скидка 20% на виллы этим летом",
+  },
+  {
+    id: "rixos-belek",
+    hotel: "Rixos Premium Belek",
+    location: "Анталия, Турция",
+    gradient: "from-coral to-ink",
+    headline: "Всё включено + перелёт в подарок",
+  },
+  {
+    id: "velaa-private-island",
+    hotel: "Velaa Private Island",
+    location: "Noonu Atoll, Мальдивы",
+    gradient: "from-ink to-teal",
+    headline: "Раннее бронирование: −15% до конца месяца",
+  },
+];
+
+function PromoCarousel() {
+  const [active, setActive] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setActive((i) => (i + 1) % promoSlides.length);
+    }, 4500);
+    return () => clearInterval(timer);
+  }, []);
+
+  const slide = promoSlides[active];
+
+  return (
+    <div className="mt-10 overflow-hidden rounded-2xl border border-ink/10 bg-white">
+      <div className="flex flex-col sm:flex-row">
+        <div className={`h-40 w-full shrink-0 bg-gradient-to-br sm:h-auto sm:w-64 ${slide.gradient}`} />
+        <div className="flex flex-1 flex-col justify-center gap-2 px-6 py-6">
+          <p className="text-xs font-semibold uppercase tracking-widest text-coral">{slide.location}</p>
+          <h3 className="font-display text-2xl font-semibold text-ink">{slide.hotel}</h3>
+          <p className="text-sm text-slate/70">{slide.headline}</p>
+          <button
+            type="button"
+            className="mt-2 w-fit appearance-none rounded-lg border-0 bg-coral px-4 py-2 text-xs font-semibold text-white transition-transform hover:-translate-y-0.5"
           >
-            📝 Регистрация
-          </button>
-          <button 
-            onClick={() => {
-              console.log('🔘 Нажата кнопка Вход для агентов');
-              onAgentLogin();
-            }} 
-            style={styles.secondaryButton}
-          >
-            👤 Вход для агентов
-          </button>
-          <button 
-            onClick={() => {
-              console.log('🔘 Нажата кнопка Админ');
-              onAdminLogin();
-            }} 
-            style={styles.adminButton}
-          >
-            🔐 Админ
+            Подробнее
           </button>
         </div>
       </div>
 
-      <section style={styles.features}>
-        <div style={styles.featureCard}>
-          <h3>🏨 Отели</h3>
-          <p>Контракты, цены, наличие и спецпредложения</p>
+      <div className="flex items-center justify-center gap-2 pb-4">
+        {promoSlides.map((s, i) => (
+          <button
+            key={s.id}
+            type="button"
+            onClick={() => setActive(i)}
+            aria-label={`Слайд ${i + 1}: ${s.hotel}`}
+            className={`h-2 appearance-none rounded-full border-0 transition-all ${
+              i === active ? "w-5 bg-coral" : "w-2 bg-ink/15 hover:bg-ink/30"
+            }`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Home({ onRegister, onAgentLogin, onAdminLogin }: HomeProps) {
+  console.log('🏠 Home рендерится');
+  console.log('📌 onAgentLogin:', onAgentLogin);
+  console.log('📌 onAdminLogin:', onAdminLogin);
+
+  return (
+    <div className="mx-auto max-w-6xl bg-sand px-5 py-10 font-sans text-slate">
+      <div className="rounded-2xl bg-ink px-5 py-16 text-center">
+        <p className="text-xs font-semibold uppercase tracking-widest text-coral">
+          B2B платформа для туристических агентств
+        </p>
+        <h1 className="mt-3 font-display text-5xl font-semibold text-white">DMC OS</h1>
+        <p className="mx-auto mt-5 max-w-xl text-base leading-relaxed text-white/70">
+          Отели, контракты, бронирования, цены и AI автоматизация в одной платформе
+        </p>
+
+        <div className="mt-8 flex flex-wrap justify-center gap-4">
+          <button
+            onClick={() => {
+              console.log('🔘 Нажата кнопка Регистрация');
+              onRegister();
+            }}
+            className="appearance-none rounded-xl border-0 bg-coral px-8 py-3.5 text-sm font-semibold text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
+          >
+            Регистрация
+          </button>
+          <button
+            onClick={() => {
+              console.log('🔘 Нажата кнопка Вход для агентов');
+              onAgentLogin();
+            }}
+            className="appearance-none rounded-xl border-0 bg-teal px-8 py-3.5 text-sm font-semibold text-white shadow-sm shadow-teal/30 transition-transform hover:-translate-y-0.5"
+          >
+            Вход для агентов
+          </button>
+          <button
+            onClick={() => {
+              console.log('🔘 Нажата кнопка Админ');
+              onAdminLogin();
+            }}
+            className="appearance-none rounded-xl border border-white/25 bg-transparent px-8 py-3.5 text-sm font-semibold text-white transition-colors hover:bg-white/10"
+          >
+            Админ
+          </button>
         </div>
-        <div style={styles.featureCard}>
-          <h3>📋 Бронирования</h3>
-          <p>Быстрое создание, подтверждение и управление</p>
+      </div>
+
+      <PromoCarousel />
+
+      <section className="mt-10 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-2xl border border-ink/10 bg-white p-6 text-center">
+          <h3 className="font-display text-xl font-semibold text-ink">Отели</h3>
+          <p className="mt-2 text-sm leading-relaxed text-slate/70">
+            Контракты, цены, наличие и спецпредложения
+          </p>
         </div>
-        <div style={styles.featureCard}>
-          <h3>💰 Цены</h3>
-          <p>Актуальные цены и скидки от партнеров</p>
+        <div className="rounded-2xl border border-ink/10 bg-white p-6 text-center">
+          <h3 className="font-display text-xl font-semibold text-ink">Бронирования</h3>
+          <p className="mt-2 text-sm leading-relaxed text-slate/70">
+            Быстрое создание, подтверждение и управление
+          </p>
         </div>
-        <div style={styles.featureCard}>
-          <h3>🤖 AI Ассистент</h3>
-          <p>Умные рекомендации и автоматизация</p>
+        <div className="rounded-2xl border border-ink/10 bg-white p-6 text-center">
+          <h3 className="font-display text-xl font-semibold text-ink">Цены</h3>
+          <p className="mt-2 text-sm leading-relaxed text-slate/70">
+            Актуальные цены и скидки от партнеров
+          </p>
+        </div>
+        <div className="rounded-2xl border border-ink/10 bg-white p-6 text-center">
+          <h3 className="font-display text-xl font-semibold text-ink">AI Ассистент</h3>
+          <p className="mt-2 text-sm leading-relaxed text-slate/70">
+            Умные рекомендации и автоматизация
+          </p>
         </div>
       </section>
     </div>
   );
 }
-
-const styles: { [key: string]: React.CSSProperties } = {
-  container: {
-    maxWidth: "1200px",
-    margin: "0 auto",
-    padding: "40px 20px",
-    fontFamily: "Arial, sans-serif",
-  },
-  hero: {
-    textAlign: "center",
-    padding: "60px 20px",
-    background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)",
-    borderRadius: "20px",
-    color: "white",
-    marginBottom: "40px",
-  },
-  title: {
-    fontSize: "48px",
-    marginBottom: "10px",
-  },
-  subtitle: {
-    fontSize: "24px",
-    color: "#4fc3f7",
-  },
-  description: {
-    fontSize: "16px",
-    color: "#ccc",
-    maxWidth: "600px",
-    margin: "20px auto",
-  },
-  buttons: {
-    display: "flex",
-    gap: "15px",
-    justifyContent: "center",
-    flexWrap: "wrap",
-    marginTop: "30px",
-  },
-  primaryButton: {
-    padding: "14px 35px",
-    fontSize: "16px",
-    background: "#007bff",
-    color: "white",
-    border: "none",
-    borderRadius: "10px",
-    cursor: "pointer",
-    fontWeight: "bold",
-  },
-  secondaryButton: {
-    padding: "14px 35px",
-    fontSize: "16px",
-    background: "#28a745",
-    color: "white",
-    border: "none",
-    borderRadius: "10px",
-    cursor: "pointer",
-    fontWeight: "bold",
-  },
-  adminButton: {
-    padding: "14px 35px",
-    fontSize: "16px",
-    background: "#6c757d",
-    color: "white",
-    border: "none",
-    borderRadius: "10px",
-    cursor: "pointer",
-    fontWeight: "bold",
-  },
-  features: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: "20px",
-  },
-  featureCard: {
-    background: "#f8f9fa",
-    padding: "24px",
-    borderRadius: "12px",
-    textAlign: "center",
-    border: "1px solid #e0e0e0",
-  },
-};
 
 export default Home;

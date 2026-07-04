@@ -14,6 +14,20 @@ const COUNTRIES = [
   { name: "USA", code: "+1", flag: "🇺🇸" },
 ];
 
+const baseInputClass =
+  "w-full appearance-none rounded-lg border bg-sand/40 px-4 py-3 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30";
+
+const inputClass = (hasError?: string) =>
+  `${baseInputClass} ${hasError ? "border-coral" : "border-ink/15"}`;
+
+function CheckIcon({ className = "w-6 h-6" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M4 12l5 5L20 6" />
+    </svg>
+  );
+}
+
 const Register = () => {
   const [formData, setFormData] = useState({
     full_name: '',
@@ -46,7 +60,7 @@ const Register = () => {
     if (selected) {
       const currentPhone = formData.phone.replace(/^\+?\d*\s*/, '');
       const currentWhatsapp = formData.whatsapp.replace(/^\+?\d*\s*/, '');
-      
+
       setFormData({
         ...formData,
         country: country,
@@ -63,59 +77,59 @@ const Register = () => {
     // Email
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(formData.email)) {
-      errors.email = '❌ Введите корректный email (например: agent@company.com)';
+      errors.email = 'Введите корректный email (например: agent@company.com)';
     }
 
     // Телефон - понятная проверка
     const cleanPhone = formData.phone.replace(/\s/g, '');
     const phoneRegex = /^\+?\d{10,15}$/;
-    
+
     if (formData.phone.length === 0) {
-      errors.phone = '❌ Поле "Телефон" обязательно для заполнения';
+      errors.phone = 'Поле "Телефон" обязательно для заполнения';
     } else if (cleanPhone.length < 10) {
-      errors.phone = `❌ Номер телефона должен содержать минимум 10 цифр (сейчас ${cleanPhone.length})`;
+      errors.phone = `Номер телефона должен содержать минимум 10 цифр (сейчас ${cleanPhone.length})`;
     } else if (!phoneRegex.test(cleanPhone)) {
-      errors.phone = '❌ Номер телефона должен содержать только цифры и знак "+" (например: +992901234567)';
+      errors.phone = 'Номер телефона должен содержать только цифры и знак "+" (например: +992901234567)';
     }
 
     // Полное имя
     if (!/^[a-zA-Zа-яА-Я\s]{2,50}$/.test(formData.full_name)) {
-      errors.full_name = '❌ Введите полное имя (только буквы, от 2 до 50 символов)';
+      errors.full_name = 'Введите полное имя (только буквы, от 2 до 50 символов)';
     }
 
     // Название компании
     if (formData.company_name.length < 2) {
-      errors.company_name = '❌ Введите название компании (минимум 2 символа)';
+      errors.company_name = 'Введите название компании (минимум 2 символа)';
     }
 
     // Юридическое название
     if (formData.legal_company_name.length < 2) {
-      errors.legal_company_name = '❌ Введите юридическое название (минимум 2 символа)';
+      errors.legal_company_name = 'Введите юридическое название (минимум 2 символа)';
     }
 
     // Контактное лицо
     if (formData.contact_person.length < 2) {
-      errors.contact_person = '❌ Введите контактное лицо (минимум 2 символа)';
+      errors.contact_person = 'Введите контактное лицо (минимум 2 символа)';
     }
 
     // Страна
     if (!formData.country) {
-      errors.country = '❌ Выберите страну';
+      errors.country = 'Выберите страну';
     }
 
     // Город
     if (formData.city.length < 2) {
-      errors.city = '❌ Введите город (минимум 2 символа)';
+      errors.city = 'Введите город (минимум 2 символа)';
     }
 
     // Адрес
     if (formData.address.length < 5) {
-      errors.address = '❌ Введите адрес (минимум 5 символов)';
+      errors.address = 'Введите адрес (минимум 5 символов)';
     }
 
     // Условия
     if (!formData.terms_accepted) {
-      errors.terms_accepted = '❌ Необходимо принять условия';
+      errors.terms_accepted = 'Необходимо принять условия';
     }
 
     setFieldErrors(errors);
@@ -166,19 +180,24 @@ const Register = () => {
 
   if (status === 'success') {
     return (
-      <div style={styles.successContainer}>
-        <div style={styles.successCard}>
-          <div style={styles.successIcon}>✅</div>
-          <h1>Регистрация успешна!</h1>
-          <p>Ваша заявка принята в обработку.</p>
-          <p style={styles.appId}>
-            <strong>Application ID:</strong> {applicationId}
+      <div className="flex min-h-[calc(100vh-78px)] items-center justify-center bg-sand px-5 py-12 font-sans text-slate">
+        <div className="w-full max-w-lg rounded-2xl border border-ink/10 bg-white p-10 text-center">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-teal/15 text-teal">
+            <CheckIcon />
+          </div>
+          <h1 className="mt-4 font-display text-2xl font-semibold text-ink">Регистрация успешна!</h1>
+          <p className="mt-2 text-sm text-slate/70">Ваша заявка принята в обработку.</p>
+          <p className="mt-4 inline-block rounded-lg bg-sand px-4 py-2 font-mono text-sm text-ink">
+            <span className="font-sans font-semibold">Application ID:</span> {applicationId}
           </p>
-          <p style={styles.info}>
+          <p className="mt-4 text-sm leading-relaxed text-slate/60">
             Мы отправили подтверждение на вашу почту.<br />
             Наша команда рассмотрит заявку в течение 24-48 часов.
           </p>
-          <button onClick={() => window.location.href = '/'} style={styles.button}>
+          <button
+            onClick={() => window.location.href = '/'}
+            className="mt-6 appearance-none rounded-xl border-0 bg-coral px-6 py-3 text-sm font-semibold text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
+          >
             На главную
           </button>
         </div>
@@ -187,149 +206,149 @@ const Register = () => {
   }
 
   return (
-    <div style={styles.container}>
-      <h1>📝 Регистрация агента</h1>
-      <p style={styles.subtitle}>Заполните все поля для регистрации в DMC OS</p>
+    <div className="mx-auto max-w-4xl bg-sand px-5 py-10 font-sans text-slate">
+      <h1 className="font-display text-3xl font-semibold text-ink">Регистрация агента</h1>
+      <p className="mt-2 text-sm text-slate/70">Заполните все поля для регистрации в DMC OS</p>
 
-      <form onSubmit={handleSubmit} style={styles.form}>
+      <form onSubmit={handleSubmit} className="mt-6 rounded-2xl border border-ink/10 bg-white p-6 sm:p-8">
         {/* Личные данные */}
-        <div style={styles.section}>
-          <h3>Личные данные</h3>
-          <div style={styles.row}>
-            <div style={styles.field}>
-              <label>Полное имя *</label>
+        <div className="mb-6 border-b border-ink/10 pb-6">
+          <h3 className="mb-4 font-display text-lg font-semibold text-ink">Личные данные</h3>
+          <div className="mb-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">Полное имя *</label>
               <input
                 type="text"
                 name="full_name"
                 value={formData.full_name}
                 onChange={handleChange}
                 placeholder="Иван Иванов"
-                style={{ ...styles.input, borderColor: fieldErrors.full_name ? '#dc3545' : '#ddd' }}
+                className={inputClass(fieldErrors.full_name)}
                 required
               />
-              {fieldErrors.full_name && <span style={styles.errorText}>{fieldErrors.full_name}</span>}
+              {fieldErrors.full_name && <span className="text-xs text-coral">{fieldErrors.full_name}</span>}
             </div>
-            <div style={styles.field}>
-              <label>Email *</label>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">Email *</label>
               <input
                 type="email"
                 name="email"
                 value={formData.email}
                 onChange={handleChange}
                 placeholder="agent@company.com"
-                style={{ ...styles.input, borderColor: fieldErrors.email ? '#dc3545' : '#ddd' }}
+                className={inputClass(fieldErrors.email)}
                 required
               />
-              {fieldErrors.email && <span style={styles.errorText}>{fieldErrors.email}</span>}
+              {fieldErrors.email && <span className="text-xs text-coral">{fieldErrors.email}</span>}
             </div>
           </div>
         </div>
 
         {/* Адрес */}
-        <div style={styles.section}>
-          <h3>Адрес</h3>
-          <div style={styles.row}>
-            <div style={styles.field}>
-              <label>Страна *</label>
+        <div className="mb-6 border-b border-ink/10 pb-6">
+          <h3 className="mb-4 font-display text-lg font-semibold text-ink">Адрес</h3>
+          <div className="mb-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">Страна *</label>
               <select
                 name="country"
                 value={formData.country}
                 onChange={handleChange}
-                style={{ ...styles.input, borderColor: fieldErrors.country ? '#dc3545' : '#ddd' }}
+                className={inputClass(fieldErrors.country)}
                 required
               >
                 {COUNTRIES.map((c) => (
                   <option key={c.name} value={c.name}>
-                    {c.flag} {c.name} ({c.code})
+                    {c.name} ({c.code})
                   </option>
                 ))}
               </select>
-              {fieldErrors.country && <span style={styles.errorText}>{fieldErrors.country}</span>}
+              {fieldErrors.country && <span className="text-xs text-coral">{fieldErrors.country}</span>}
             </div>
-            <div style={styles.field}>
-              <label>Город *</label>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">Город *</label>
               <input
                 type="text"
                 name="city"
                 value={formData.city}
                 onChange={handleChange}
                 placeholder="Душанбе"
-                style={{ ...styles.input, borderColor: fieldErrors.city ? '#dc3545' : '#ddd' }}
+                className={inputClass(fieldErrors.city)}
                 required
               />
-              {fieldErrors.city && <span style={styles.errorText}>{fieldErrors.city}</span>}
+              {fieldErrors.city && <span className="text-xs text-coral">{fieldErrors.city}</span>}
             </div>
           </div>
-          <div style={styles.field}>
-            <label>Адрес *</label>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium text-ink">Адрес *</label>
             <input
               type="text"
               name="address"
               value={formData.address}
               onChange={handleChange}
               placeholder="ул. Ленина 123"
-              style={{ ...styles.input, borderColor: fieldErrors.address ? '#dc3545' : '#ddd' }}
+              className={inputClass(fieldErrors.address)}
               required
             />
-            {fieldErrors.address && <span style={styles.errorText}>{fieldErrors.address}</span>}
+            {fieldErrors.address && <span className="text-xs text-coral">{fieldErrors.address}</span>}
           </div>
         </div>
 
         {/* Контактные данные */}
-        <div style={styles.section}>
-          <h3>Контактные данные</h3>
-          <div style={styles.row}>
-            <div style={styles.field}>
-              <label>Телефон *</label>
+        <div className="mb-6 border-b border-ink/10 pb-6">
+          <h3 className="mb-4 font-display text-lg font-semibold text-ink">Контактные данные</h3>
+          <div className="mb-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">Телефон *</label>
               <input
                 type="tel"
                 name="phone"
                 value={formData.phone}
                 onChange={handleChange}
                 placeholder="+992901234567"
-                style={{ ...styles.input, borderColor: fieldErrors.phone ? '#dc3545' : '#ddd' }}
+                className={inputClass(fieldErrors.phone)}
                 required
               />
-              {fieldErrors.phone && <span style={styles.errorText}>{fieldErrors.phone}</span>}
+              {fieldErrors.phone && <span className="text-xs text-coral">{fieldErrors.phone}</span>}
               {!fieldErrors.phone && formData.phone && (
-                <span style={styles.hint}>✅ Номер принят</span>
+                <span className="text-xs text-teal">Номер принят</span>
               )}
-              <span style={styles.hint}>📌 Пример: +992901234567 (минимум 10 цифр)</span>
+              <span className="text-xs text-slate/50">Пример: +992901234567 (минимум 10 цифр)</span>
             </div>
-            <div style={styles.field}>
-              <label>WhatsApp</label>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">WhatsApp</label>
               <input
                 type="tel"
                 name="whatsapp"
                 value={formData.whatsapp}
                 onChange={handleChange}
                 placeholder="+992901234567"
-                style={{ ...styles.input, borderColor: fieldErrors.whatsapp ? '#dc3545' : '#ddd' }}
+                className={inputClass(fieldErrors.whatsapp)}
               />
-              {fieldErrors.whatsapp && <span style={styles.errorText}>{fieldErrors.whatsapp}</span>}
+              {fieldErrors.whatsapp && <span className="text-xs text-coral">{fieldErrors.whatsapp}</span>}
             </div>
           </div>
-          <div style={styles.row}>
-            <div style={styles.field}>
-              <label>Контактное лицо *</label>
+          <div className="mb-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">Контактное лицо *</label>
               <input
                 type="text"
                 name="contact_person"
                 value={formData.contact_person}
                 onChange={handleChange}
                 placeholder="Иван Иванов"
-                style={{ ...styles.input, borderColor: fieldErrors.contact_person ? '#dc3545' : '#ddd' }}
+                className={inputClass(fieldErrors.contact_person)}
                 required
               />
-              {fieldErrors.contact_person && <span style={styles.errorText}>{fieldErrors.contact_person}</span>}
+              {fieldErrors.contact_person && <span className="text-xs text-coral">{fieldErrors.contact_person}</span>}
             </div>
-            <div style={styles.field}>
-              <label>Предпочитаемая валюта</label>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">Предпочитаемая валюта</label>
               <select
                 name="preferred_currency"
                 value={formData.preferred_currency}
                 onChange={handleChange}
-                style={styles.input}
+                className={inputClass()}
               >
                 <option value="USD">USD</option>
                 <option value="EUR">EUR</option>
@@ -338,14 +357,14 @@ const Register = () => {
               </select>
             </div>
           </div>
-          <div style={styles.row}>
-            <div style={styles.field}>
-              <label>Предпочитаемый язык</label>
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">Предпочитаемый язык</label>
               <select
                 name="preferred_language"
                 value={formData.preferred_language}
                 onChange={handleChange}
-                style={styles.input}
+                className={inputClass()}
               >
                 <option value="English">English</option>
                 <option value="Russian">Russian</option>
@@ -353,13 +372,13 @@ const Register = () => {
                 <option value="Uzbek">Uzbek</option>
               </select>
             </div>
-            <div style={styles.field}>
-              <label>Рынок</label>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">Рынок</label>
               <select
                 name="market"
                 value={formData.market}
                 onChange={handleChange}
-                style={styles.input}
+                className={inputClass()}
               >
                 <option value="Tourism">Tourism</option>
                 <option value="Business">Business</option>
@@ -370,226 +389,107 @@ const Register = () => {
         </div>
 
         {/* Данные компании */}
-        <div style={styles.section}>
-          <h3>Данные компании</h3>
-          <div style={styles.row}>
-            <div style={styles.field}>
-              <label>Название компании *</label>
+        <div className="mb-6 border-b border-ink/10 pb-6">
+          <h3 className="mb-4 font-display text-lg font-semibold text-ink">Данные компании</h3>
+          <div className="mb-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">Название компании *</label>
               <input
                 type="text"
                 name="company_name"
                 value={formData.company_name}
                 onChange={handleChange}
                 placeholder="Travel Agency LTD"
-                style={{ ...styles.input, borderColor: fieldErrors.company_name ? '#dc3545' : '#ddd' }}
+                className={inputClass(fieldErrors.company_name)}
                 required
               />
-              {fieldErrors.company_name && <span style={styles.errorText}>{fieldErrors.company_name}</span>}
+              {fieldErrors.company_name && <span className="text-xs text-coral">{fieldErrors.company_name}</span>}
             </div>
-            <div style={styles.field}>
-              <label>Юридическое название *</label>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">Юридическое название *</label>
               <input
                 type="text"
                 name="legal_company_name"
                 value={formData.legal_company_name}
                 onChange={handleChange}
                 placeholder="ООО Travel Agency"
-                style={{ ...styles.input, borderColor: fieldErrors.legal_company_name ? '#dc3545' : '#ddd' }}
+                className={inputClass(fieldErrors.legal_company_name)}
                 required
               />
-              {fieldErrors.legal_company_name && <span style={styles.errorText}>{fieldErrors.legal_company_name}</span>}
+              {fieldErrors.legal_company_name && <span className="text-xs text-coral">{fieldErrors.legal_company_name}</span>}
             </div>
           </div>
-          <div style={styles.row}>
-            <div style={styles.field}>
-              <label>Количество сотрудников</label>
+          <div className="mb-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">Количество сотрудников</label>
               <input
                 type="number"
                 name="number_of_employees"
                 value={formData.number_of_employees}
                 onChange={handleChange}
-                style={styles.input}
+                className={inputClass()}
                 min="1"
                 placeholder="10"
               />
             </div>
-            <div style={styles.field}>
-              <label>Годовой доход (USD)</label>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium text-ink">Годовой доход (USD)</label>
               <input
                 type="number"
                 name="annual_revenue"
                 value={formData.annual_revenue}
                 onChange={handleChange}
-                style={styles.input}
+                className={inputClass()}
                 min="0"
                 placeholder="150000"
               />
             </div>
           </div>
-          <div style={styles.field}>
-            <label>Основные рынки</label>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium text-ink">Основные рынки</label>
             <input
               type="text"
               name="main_markets"
               value={formData.main_markets}
               onChange={handleChange}
               placeholder="Tajikistan, Uzbekistan, Russia"
-              style={styles.input}
+              className={inputClass()}
             />
           </div>
         </div>
 
         {/* Условия */}
-        <div style={styles.field}>
-          <label style={styles.checkboxLabel}>
+        <div className="flex flex-col gap-1.5">
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-slate/80">
             <input
               type="checkbox"
               name="terms_accepted"
               checked={formData.terms_accepted}
               onChange={handleChange}
-              style={styles.checkbox}
+              className="accent-coral"
               required
             />
             Я принимаю условия использования *
           </label>
-          {fieldErrors.terms_accepted && <span style={styles.errorText}>{fieldErrors.terms_accepted}</span>}
+          {fieldErrors.terms_accepted && <span className="text-xs text-coral">{fieldErrors.terms_accepted}</span>}
         </div>
 
         {error && (
-          <div style={styles.errorBox}>
-            ❌ {error}
+          <div className="my-4 rounded-lg bg-coral/10 px-4 py-3 text-sm font-medium text-coral">
+            {error}
           </div>
         )}
 
         <button
           type="submit"
           disabled={status === 'loading'}
-          style={{ ...styles.submitButton, opacity: status === 'loading' ? 0.6 : 1 }}
+          className="mt-6 w-full appearance-none rounded-xl border-0 bg-coral py-4 text-base font-semibold text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
         >
           {status === 'loading' ? 'Отправка...' : 'Зарегистрироваться'}
         </button>
       </form>
     </div>
   );
-};
-
-const styles: { [key: string]: React.CSSProperties } = {
-  container: {
-    maxWidth: '900px',
-    margin: '40px auto',
-    padding: '20px',
-    fontFamily: 'Arial, sans-serif',
-  },
-  subtitle: {
-    color: '#666',
-    marginBottom: '30px',
-  },
-  form: {
-    background: '#f8f9fa',
-    padding: '30px',
-    borderRadius: '12px',
-    border: '1px solid #e0e0e0',
-  },
-  section: {
-    marginBottom: '30px',
-    paddingBottom: '20px',
-    borderBottom: '1px solid #e0e0e0',
-  },
-  row: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    gap: '20px',
-    marginBottom: '15px',
-  },
-  field: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '5px',
-  },
-  input: {
-    padding: '12px',
-    border: '1px solid #ddd',
-    borderRadius: '8px',
-    fontSize: '16px',
-    transition: 'border 0.3s',
-    width: '100%',
-    boxSizing: 'border-box',
-  },
-  checkbox: {
-    marginRight: '10px',
-  },
-  checkboxLabel: {
-    display: 'flex',
-    alignItems: 'center',
-    fontSize: '14px',
-    cursor: 'pointer',
-  },
-  submitButton: {
-    width: '100%',
-    padding: '16px',
-    background: '#007bff',
-    color: 'white',
-    border: 'none',
-    borderRadius: '8px',
-    fontSize: '18px',
-    cursor: 'pointer',
-    marginTop: '10px',
-    transition: 'opacity 0.3s',
-  },
-  successContainer: {
-    maxWidth: '600px',
-    margin: '80px auto',
-    padding: '20px',
-    textAlign: 'center',
-  },
-  successCard: {
-    background: '#d4edda',
-    padding: '40px',
-    borderRadius: '12px',
-    border: '1px solid #c3e6cb',
-  },
-  successIcon: {
-    fontSize: '48px',
-  },
-  appId: {
-    fontSize: '20px',
-    color: '#155724',
-    background: 'white',
-    padding: '10px',
-    borderRadius: '8px',
-    display: 'inline-block',
-  },
-  info: {
-    color: '#155724',
-    marginTop: '15px',
-  },
-  button: {
-    padding: '12px 30px',
-    background: '#28a745',
-    color: 'white',
-    border: 'none',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    marginTop: '20px',
-    fontSize: '16px',
-  },
-  errorBox: {
-    background: '#f8d7da',
-    color: '#721c24',
-    padding: '15px',
-    borderRadius: '8px',
-    margin: '15px 0',
-  },
-  errorText: {
-    color: '#dc3545',
-    fontSize: '12px',
-    marginTop: '4px',
-  },
-  hint: {
-    fontSize: '12px',
-    color: '#666',
-    marginTop: '4px',
-  },
 };
 
 export default Register;

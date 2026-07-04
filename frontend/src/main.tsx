@@ -2,9 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router-dom";
 
-import "./styles/global.css";
-import "./styles/components.css";
-import "./styles/pages.css";
+import "./styles/tailwind.css";
 
 import router from "./router";
 

@@ -1,0 +1,28 @@
+/* Tailwind utilities only — preflight (global element reset) is intentionally
+   excluded so existing hand-written pages/components are not affected.
+
+   The pre-existing stylesheets are unlayered CSS, and per the cascade-layers
+   spec, unlayered rules always beat layered rules regardless of specificity
+   (e.g. global.css's `* { margin: 0 }` would otherwise silently override any
+   Tailwind margin utility). Assigning them to an explicit low-priority
+   "legacy" layer fixes that, without changing their own rules or affecting
+   any existing page (none of which use Tailwind utility classes). */
+@layer legacy, theme, utilities;
+
+@import "./global.css" layer(legacy);
+@import "./components.css" layer(legacy);
+@import "./pages.css" layer(legacy);
+
+@import "tailwindcss/theme" layer(theme);
+@import "tailwindcss/utilities" layer(utilities);
+
+@theme {
+  --font-display: "Fraunces", ui-serif, serif;
+  --font-sans: "Inter", ui-sans-serif, sans-serif;
+
+  --color-ink: #1b2340;
+  --color-sand: #f3eee4;
+  --color-teal: #3c6e71;
+  --color-coral: #e8734a;
+  --color-slate: #2c2c2c;
+}
