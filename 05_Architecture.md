@@ -88,6 +88,37 @@ Modules communicate only through APIs.
 
 ---
 
+# 22 Core Engines
+
+Every Core Engine lives under `backend/app/engines/` using the folder slug in parentheses.
+
+1. Authentication (`authentication`)
+2. User & Role (`user_role`)
+3. AI Core (`ai_core`)
+4. Agent (`agent`)
+5. Hotel (`hotel`)
+6. Contract (`contract`)
+7. Pricing (`pricing`)
+8. Booking (`booking`)
+9. Finance (`finance`)
+10. Balance (`balance`)
+11. Invoice (`invoice`)
+12. Payment (`payment`)
+13. Transfer (`transfer`)
+14. Flight (`flight`)
+15. Document (`document`)
+16. Notification (`notification`)
+17. CRM (`crm`)
+18. Reporting (`reporting`)
+19. Integration (`integration`)
+20. Workflow (`workflow`)
+21. Audit Log (`audit_log`)
+22. Search (`search`)
+
+Every engine must include full AI support via its own `ai/` subfolder — this is not optional for any engine, including Authentication.
+
+---
+
 # White Label
 
 Every tenant has:
