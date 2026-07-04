@@ -43,15 +43,17 @@ No test suite exists in either backend or frontend.
 
 ## Backend architecture
 
-- `main.py` — FastAPI app, CORS for local Vite origins, mounts `api.routes.router` and `auth.auth.router`.
+- `main.py` — FastAPI app, CORS for local Vite origins, mounts `api.routes.router` and the authentication engine's router (`app.engines.authentication.api.router`).
 - `database/db.py` — SQLAlchemy engine/session; SQLite file `backend/dmc.db` (path resolved relative to `backend/`, hardcoded, not tenant-aware).
 - `models/` — SQLAlchemy models (`User`, `AgentRegistration`) on `models.base.Base` (`DeclarativeBase`).
 - `schemas/` — Pydantic request/response schemas, separate from SQLAlchemy models per `08_Coding_Standards.md` ("validation inside Schemas").
-- `api/routes.py` — all non-auth endpoints currently live in one router: user CRUD and the full agent-registration lifecycle (create → list/get → approve/reject → stats). Approving a registration creates a `User` row with role `agent` and a generated temp password, then emails it.
-- `auth/auth.py` — login, JWT issuance (`python-jose`), change-password; JWT secret falls back to a random `secrets.token_urlsafe(32)` if `SECRET_KEY` is not set in the environment (i.e. tokens invalidate on every restart unless `.env` sets `SECRET_KEY`). `auth/security.py` has separate bcrypt-based hash/verify helpers used by `api/routes.py`, while `auth/auth.py` uses its own `passlib.CryptContext` — two independent password-hashing code paths that happen to both produce bcrypt hashes.
-- `auth/dependencies.py` and `services/__init__.py` are currently empty.
+- `api/routes.py` — all non-auth endpoints currently live in one router: user CRUD and the full agent-registration lifecycle (create → list/get → approve/reject → stats). Approving a registration creates a `User` row with role `agent` and a generated temp password, then emails it. Route ordering bug: `/agent-registrations/stats` is defined after `/agent-registrations/{registration_id}`, so FastAPI matches the `{id}` route first and `/stats` 404s with an int-parsing error — not yet fixed.
+- **Authentication engine — `app/engines/authentication/`** (migrated from `backend/auth/` across TASK-003; see that task's commits for the full history): `api.py` holds the router + `login`/`change-password` endpoints (this is what `main.py` mounts); `service.py` holds `create_access_token`, and the single consolidated password-hashing implementation (`verify_password`/`get_password_hash`, passlib `CryptContext(schemes=["bcrypt"])`) — there is only one hashing implementation now, not two; `repository.py` holds `get_db`/`get_user_by_email`/`update_last_login`/`update_password`; `schemas.py` holds `LoginRequest`/`ChangePasswordRequest`; `config.py`/`constants.py` hold `SECRET_KEY`/`ALGORITHM`/`ACCESS_TOKEN_EXPIRE_MINUTES`.
+  - **Known limitation for production deployment:** `config.py` falls back to a random `secrets.token_urlsafe(32)` if the `SECRET_KEY` env var isn't set. As of this writing, `backend/.env` does not exist in this project at all, so `SECRET_KEY` is never set and this random fallback fires on **every single backend restart** — meaning every restart invalidates every previously-issued JWT and all logged-in users get silently signed out. Before any production deployment, a real, stable `SECRET_KEY` must be set in the environment (or `.env`).
+  - `backend/auth/` is **fully retired** — `auth.py`, `security.py`, `schemas.py`, `dependencies.py` were moved (`git mv`, history preserved) into `backend/auth/_retired/`, each marked with a `RETIRED — DO NOT USE, kept only for history` comment. Nothing in the active codebase imports from `backend/auth/` anymore (confirmed by grep). Do not add new code there or import from it.
+- `services/__init__.py` is currently empty.
 - `services/email_service.py` — SMTP sending via env vars (`EMAIL_HOST`/`EMAIL_USER`/`EMAIL_PASSWORD`/`EMAIL_FROM`, Gmail defaults); if credentials aren't configured it logs the email to console instead of sending. `services/ai_service.py` is a rule-based stand-in (no real AI/LLM call yet) for registration risk scoring.
-- Secrets: `backend/.env` is gitignored and holds `SECRET_KEY`/SMTP credentials — never commit it.
+- Secrets: `backend/.env` is gitignored and would hold `SECRET_KEY`/SMTP credentials — never commit it. (It doesn't currently exist in this project — see the `SECRET_KEY` limitation above.)
 
 ## Frontend architecture
 
