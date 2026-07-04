@@ -100,16 +100,16 @@ def change_password(
 
 @router.post("/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
-    print(f"🔐 Попытка входа: {data.email}")
-    
+    print(f"Login attempt: {data.email}")
+
     user = db.query(User).filter(User.email == data.email).first()
-    
+
     if not user:
-        print(f"❌ Пользователь не найден: {data.email}")
+        print(f"User not found: {data.email}")
         return {"success": False, "message": "Invalid email or password"}
-    
+
     if not verify_password(data.password, user.password):
-        print(f"❌ Неверный пароль для: {data.email}")
+        print(f"Wrong password for: {data.email}")
         return {"success": False, "message": "Invalid email or password"}
     
     # ✅ UAE TIME (UTC+4)
@@ -119,7 +119,7 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     
     access_token = create_access_token(data={"sub": user.email, "role": user.role})
     
-    print(f"✅ Вход успешен: {data.email}")
+    print(f"Login successful: {data.email}")
     return {
         "success": True,
         "message": "Login successful",
