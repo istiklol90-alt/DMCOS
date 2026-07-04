@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -20,6 +22,7 @@ from app.engines.authentication.service import (
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+logger = logging.getLogger(__name__)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -71,16 +74,16 @@ def change_password(
 
 @router.post("/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
-    print(f"Login attempt: {data.email}")
+    logger.debug(f"Login attempt: {data.email}")
 
     user = get_user_by_email(db, data.email)
 
     if not user:
-        print(f"User not found: {data.email}")
+        logger.debug(f"User not found: {data.email}")
         return {"success": False, "message": "Invalid email or password"}
 
     if not verify_password(data.password, user.password):
-        print(f"Wrong password for: {data.email}")
+        logger.debug(f"Wrong password for: {data.email}")
         return {"success": False, "message": "Invalid email or password"}
 
     # ✅ UAE TIME (UTC+4)
@@ -89,7 +92,7 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
 
     access_token = create_access_token(data={"sub": user.email, "role": user.role})
 
-    print(f"Login successful: {data.email}")
+    logger.debug(f"Login successful: {data.email}")
     return {
         "success": True,
         "message": "Login successful",
