@@ -3,11 +3,23 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import logging
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+def safe_print(text: str):
+    """Print that never crashes on consoles whose encoding (e.g. Windows
+    cp1252) can't represent emoji/Cyrillic — falls back to replacing any
+    unencodable characters instead of raising UnicodeEncodeError."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or "utf-8"
+        print(text.encode(encoding, errors="replace").decode(encoding))
 
 # Настройки SMTP из .env (теперь Gmail по умолчанию)
 SMTP_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
@@ -21,10 +33,10 @@ def send_real_email(to: str, subject: str, body: str):
     """Отправка реального email через SMTP"""
     try:
         if not SMTP_USER or not SMTP_PASSWORD:
-            print("⚠️ SMTP не настроен! Письмо печатается в консоль.")
-            print(f"📧 Кому: {to}")
-            print(f"📝 Тема: {subject}")
-            print(f"📄 Текст: {body}")
+            safe_print("SMTP не настроен! Письмо печатается в консоль.")
+            safe_print(f"Кому: {to}")
+            safe_print(f"Тема: {subject}")
+            safe_print(f"Текст: {body}")
             return False
 
         msg = MIMEMultipart()
@@ -45,11 +57,11 @@ def send_real_email(to: str, subject: str, body: str):
                 server.login(SMTP_USER, SMTP_PASSWORD)
                 server.send_message(msg)
 
-        print(f"✅ Email отправлен на: {to}")
+        safe_print(f"Email отправлен на: {to}")
         return True
 
     except Exception as e:
-        print(f"❌ Ошибка отправки email: {e}")
+        safe_print(f"Ошибка отправки email: {e}")
         return False
 
 
