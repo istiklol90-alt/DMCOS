@@ -2,7 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import router
-from auth.auth import router as auth_router
+# TASK-003: authentication engine fully migrated; backend/auth/ retired.
+from app.engines.authentication.api import router as auth_router
 
 app = FastAPI(title="DMC OS API")
 

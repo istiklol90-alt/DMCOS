@@ -1,3 +1,7 @@
+# RETIRED (TASK-003) — DO NOT USE, kept only for history.
+# Fully migrated to app/engines/authentication/api.py (router + endpoints),
+# which is what main.py mounts now. Nothing imports this module anymore.
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
