@@ -15,7 +15,9 @@ from schemas.agent import (
     AgentRegistrationResponse
 )
 
-from auth.security import hash_password
+# TASK-003: consolidated on the authentication engine's passlib-based hashing
+# (auth/security.py's raw-bcrypt hash_password is now deprecated, unused).
+from app.engines.authentication.service import get_password_hash as hash_password
 from services.email_service import send_registration_email, send_approval_email, send_rejection_email
 
 router = APIRouter()

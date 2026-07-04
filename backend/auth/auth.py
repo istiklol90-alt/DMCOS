@@ -1,12 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
 
-# TASK-003 migration: constants/config/schemas/repository now live in the
-# authentication engine. backend/auth/ stays the mounted implementation
+# TASK-003 migration: constants/config/schemas/repository/service now live in
+# the authentication engine. backend/auth/ stays the mounted implementation
 # (LEGACY status) until every piece has been migrated and main.py/
 # api/routes.py import from the new location directly.
 from app.engines.authentication.config import SECRET_KEY
@@ -18,18 +17,15 @@ from app.engines.authentication.repository import (
     update_last_login,
     update_password,
 )
-from app.engines.authentication.service import create_access_token
+from app.engines.authentication.service import (
+    create_access_token,
+    verify_password,
+    get_password_hash,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
-
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password):
-    return pwd_context.hash(password)
 
 # ============================================================
 # СМЕНА ПАРОЛЯ
