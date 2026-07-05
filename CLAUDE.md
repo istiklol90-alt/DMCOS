@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Engine Development Rule (non-negotiable)
+
+Each of the 22 Core Engines must go through its FULL lifecycle (TASK-000 through TASK-006 LOCK) before work begins on the next Engine. No parallel Engine work. No starting a new Engine's TASK-001 while a previous Engine is still in progress. This was proven with Authentication Engine (fully migrated, tested, documented, and LOCKED before any other Engine was touched) and must be repeated for every subsequent Engine, in this exact order, unless explicitly told otherwise by the project owner.
+
+Before starting any Engine that depends on another Engine's data (e.g. Booking Engine depends on Contract Engine for pricing), an **Interface Contract** document must exist first, defining exactly what functions/data one Engine provides to the other. Interface Contracts live in `docs/interface-contracts/`, named `<engine-a>-<engine-b>.md` (e.g. `contract-hotel-booking.md` for the Contract → Hotel → Booking data flow). This directory doesn't exist yet — create it when the first cross-Engine dependency actually needs one, rather than speculatively.
+
 ## Project
 
 DMC Travel OS — a Destination Management System (DMC/tour-operator ERP: agents, hotels, contracts, rates, bookings, payments, finance, AI automation). Currently in early MVP stage: only authentication and agent-registration/approval are implemented end-to-end; most business modules listed in the design docs (hotels, contracts, rates, bookings, finance, transfers, charter, AI) do not exist in code yet.
