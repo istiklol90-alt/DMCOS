@@ -12,6 +12,22 @@ from app.engines.hotel.models import (
     RoomOccupancyOption,
     RoomAvailability,
 )
+from app.engines.contract.models import (
+    Contract,
+    ContractMarket,
+    ContractSeason,
+    ContractAgeCategory,
+    ContractMealPlan,
+    Rate,
+    RateSupplement,
+    Promotion,
+    BlackoutDate,
+    Allotment,
+    StopSale,
+    CancellationPolicy,
+    ReleaseRule,
+    MinimumStayRule,
+)
 
 
 def init_db():

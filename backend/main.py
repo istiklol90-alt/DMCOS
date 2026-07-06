@@ -6,6 +6,8 @@ from api.routes import router
 from app.engines.authentication.api import router as auth_router
 # TASK-002: Hotel Engine domain model, schemas, repository, service, and API.
 from app.engines.hotel.api import router as hotel_router
+# TASK-002: Contract Engine domain model, schemas, repository, service, and API.
+from app.engines.contract.api import router as contract_router
 
 app = FastAPI(title="DMC OS API")
 
@@ -32,6 +34,9 @@ app.include_router(auth_router)
 
 # Hotel Engine API
 app.include_router(hotel_router)
+
+# Contract Engine API
+app.include_router(contract_router)
 
 
 @app.get("/")
