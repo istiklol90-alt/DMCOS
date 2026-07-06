@@ -12,18 +12,18 @@ All functions live in `app.engines.hotel.service` and take a SQLAlchemy `Session
 
 All of the above raise plain `ValueError` on failure (not-found and invalid-input alike — a known simplification, see `11_Decisions.md` and `CLAUDE.md`'s Hotel Engine section), not a dedicated exception type.
 
-## Contract Engine will provide (in progress — TASK-002)
+## Contract Engine provides (already built, LOCKED)
 
-All functions live in `app.engines.contract.service` and take `db: Session` as their first argument, matching Hotel Engine's own convention:
+All functions live in `app.engines.contract.service` and take `db: Session` as their first argument, matching Hotel Engine's own convention, verified against the real code as of Contract Engine LOCK:
 
-- `get_active_contract(db, hotel_id)`
-- `get_room_price(db, contract_id, room_type_id, check_in, check_out, meal_plan, adults, children, infants=0)` — `adults`/`children`/`infants` match Hotel Engine's occupancy shape exactly (infants excluded from any capacity check, per the same reasoning as Hotel Engine's `RoomOccupancyOption`). Needed to price age-category-specific `RateSupplement` rows, which the original signature (without occupancy) had no way to resolve — corrected once this gap was found while wiring `get_room_price`'s real implementation, rather than left as a known limitation.
-- `check_allotment(db, contract_id, room_type_id, check_in, check_out)`
-- `get_cancellation_policy(db, contract_id, check_in)`
-- `get_meal_plans(db, contract_id, room_type_id)`
-- `get_child_policy(db, contract_id, room_type_id)`
+- `get_active_contract(db, hotel_id)` → `Optional[Contract]`. Returns the contract usable right now for this hotel: `contract_status == "Active"` AND `start_date <= today <= end_date`, both required. If more than one contract qualifies, returns the first by id — real multi-contract priority (market/travel-date matching) isn't resolvable with this signature; revisit if that scenario comes up.
+- `get_room_price(db, contract_id, room_type_id, check_in, check_out, meal_plan, adults, children, infants=0)` → `dict` with keys: `contract_id`, `room_type_id`, `rate_id`, `season_id`, `meal_plan_id`, `used_meal_plan_supplement`, `currency`, `nights`, `occupancy` (`{adults, children, infants}`), `base_total`, `supplements_total`, `price_before_promotions`, `applied_promotions` (list of promotion ids), `final_total`. `adults`/`children`/`infants` match Hotel Engine's occupancy shape exactly (infants excluded from any capacity check). Known simplifications: only the season covering `check_in` is used for the whole stay (no multi-season proration), and `adults`/`children`/`infants` are mapped onto the contract's `ContractAgeCategory` rows by name-keyword matching (`"adult"`/`"infant"`, first remaining category treated as "children") — a contract with more than one child-like category (e.g. both "Teen" and "Child") can't be fully disambiguated by this 3-bucket signature.
+- `check_allotment(db, contract_id, room_type_id, check_in, check_out)` → `bool`. True only if every night in range has an allotment row with `available_rooms > 0` AND no active Stop Sale blocks that night. **Known limitation: checks "at least one room available," not a specific requested quantity — there is no room-count parameter in this signature.** Most bookings are single-room; multi-room group bookings already carry separate negotiated contract terms in practice. Revisit only if Booking Engine actually needs a multi-room check.
+- `get_cancellation_policy(db, contract_id, check_in)` → `list[CancellationPolicy]`. Returns every applicable tier (contract-wide tiers plus any whose date range contains `check_in`) — **does not resolve to a single answer.** Multiple tiers are expected (e.g. 30 days=10%, 14 days=50%, 7 days=100%); Booking Engine must pick the correct tier itself based on the actual number of days before arrival at the moment of cancellation, which this function has no way to know in advance.
+- `get_meal_plans(db, contract_id, room_type_id)` → `list[ContractMealPlan]`. Only meal plans with an actual priced `Rate` for this room type, not every meal plan defined anywhere on the contract.
+- `get_child_policy(db, contract_id, room_type_id)` → `list[dict]`, each shaped `{category_name, min_age, max_age, prices: [{rate_id, amount, calculation_basis}, ...]}`. **Not a stored entity or a Pydantic schema** — an ad-hoc computed view derived from `ContractAgeCategory` + `RateSupplement` rows at call time.
 
-(Signatures above are being verified against the real `service.py` as each function is written, the same way Hotel Engine's side of this document was verified rather than assumed.)
+All of the above raise plain `ValueError` on failure (not-found and invalid-input alike, same known simplification as Hotel Engine — see `11_Decisions.md` and `CLAUDE.md`'s Contract Engine section).
 
 ## Rules
 
