@@ -2,6 +2,16 @@ from database.db import engine
 from models.base import Base
 from models.user import User
 from models.agent import AgentRegistration
+from app.engines.hotel.models import (
+    HotelCategory,
+    Hotel,
+    HotelImage,
+    HotelFacility,
+    RoomType,
+    RoomImage,
+    RoomOccupancyOption,
+    RoomAvailability,
+)
 
 def init_db():
     print("🔄 Создание таблиц...")
