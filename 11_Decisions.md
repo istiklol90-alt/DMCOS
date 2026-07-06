@@ -80,6 +80,20 @@ Status: Logged as a standing convention for all future Engine events.py work.
 
 ---
 
+# Decision 006
+
+Date: 2026-07-06
+
+Decision: Hotel Engine's api.py duplicates JWT-decode logic locally (get_current_user) rather than importing a shared dependency, because Authentication Engine's api.py never exposed one and Authentication Engine is LOCKED. This duplication will repeat in every future Engine's api.py until Authentication Engine is revisited via a deliberate follow-up task to extract a shared, importable auth dependency.
+
+Reason: 06_API_Rules.md requires every API to be authenticated except Login, but no reusable get_current_user dependency exists anywhere in the codebase to import. Authentication Engine's own api.py only inlines JWT-decode logic inside its change-password endpoint, and per CLAUDE.md the engine is LOCKED and should not be modified without a deliberate new task.
+
+Approved By: Daler
+
+Status: Logged as known technical debt — accepted for now, to be resolved by a dedicated future task extracting a shared auth dependency.
+
+---
+
 # Decision Template
 
 Decision Number:
