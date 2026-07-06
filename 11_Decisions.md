@@ -94,6 +94,20 @@ Status: Logged as known technical debt — accepted for now, to be resolved by a
 
 ---
 
+# Decision 007
+
+Date: 2026-07-06
+
+Decision: Hotel Engine is backend-only for now. No frontend UI (add-hotel form, availability calendar, etc.) will be built before Hotel Engine is LOCKED. Frontend work is deferred to a later task, likely alongside Booking Engine, once it's clearer how an agent actually needs to interact with this data end-to-end.
+
+Reason: Building UI now, before Booking Engine exists and before real usage patterns are known, risks designing screens around guesses rather than actual agent workflows. This is a deliberate scoping choice, not an oversight.
+
+Approved By: Daler
+
+Status: Logged so the absence of a Hotel Engine frontend isn't later mistaken for incomplete work.
+
+---
+
 # Decision Template
 
 Decision Number:
