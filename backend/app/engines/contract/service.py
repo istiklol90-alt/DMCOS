@@ -8,12 +8,17 @@ place that talks to Hotel Engine directly — via app.engines.hotel.service
 — per docs/interface-contracts/contract-hotel-booking.md. repository.py
 and models.py never import anything from Hotel Engine.
 
-The six functions Contract Engine owes Booking Engine per that Interface
+The eight functions Contract Engine owes Booking Engine per that Interface
 Contract are implemented at the bottom of this file: get_active_contract,
 get_room_price, check_allotment, get_cancellation_policy, get_meal_plans,
-get_child_policy. Several are deliberately simplified given today's
-signatures and data — each says so in its own docstring rather than
-silently guessing.
+get_child_policy, reserve_allotment, release_allotment. Several are
+deliberately simplified given today's signatures and data — each says so
+in its own docstring rather than silently guessing.
+
+reserve_allotment/release_allotment were added post-LOCK (Decision 011)
+as a purely additive extension — no existing function signature changed —
+once Booking Engine's TASK-002 identified that inventory decrement/
+increment (02_Logic_Rules.md #51) had no way to happen otherwise.
 """
 
 from datetime import date as date_type, timedelta
@@ -874,6 +879,98 @@ def check_allotment(
             return False
 
     return True
+
+
+def reserve_allotment(
+    db: Session, contract_id: int, room_type_id: int, check_in: date_type, check_out: date_type
+) -> None:
+    """
+    Increment sold_rooms by 1 for every night in [check_in, check_out) for
+    this contract + room type, decreasing available_rooms accordingly.
+    This is what Booking Engine calls when a booking is confirmed, to
+    actually consume inventory (02_Logic_Rules.md #51: "inventory
+    decreases automatically").
+
+    Validates every night has capacity (an active allotment row with
+    available_rooms > 0, not blocked by an active Stop Sale) BEFORE
+    writing any changes, so a failure partway through a multi-night stay
+    never leaves some nights incremented and others not.
+
+    Raises ValueError if any night lacks an allotment row, is stop-sold,
+    or has no available_rooms — same failure conditions check_allotment
+    checks for, but as a write instead of a read. Callers should normally
+    call check_allotment first and only reserve if it returns True, but
+    this function re-validates independently rather than trusting a
+    caller's earlier check.
+    """
+    night_count = (check_out - check_in).days
+    if night_count <= 0:
+        raise ValueError(f"check_out ({check_out}) must be after check_in ({check_in})")
+    nights = [check_in + timedelta(days=i) for i in range(night_count)]
+
+    stop_sales = repository.list_stop_sales(db, contract_id, room_type_id)
+    blocked_dates = set()
+    for stop_sale in stop_sales:
+        if stop_sale.status != "Active":
+            continue
+        d = stop_sale.start_date
+        while d <= stop_sale.end_date:
+            blocked_dates.add(d)
+            d += timedelta(days=1)
+
+    allotments_to_update = []
+    for night in nights:
+        if night in blocked_dates:
+            raise ValueError(f"Room type {room_type_id} is stop-sold on {night}")
+        allotment = repository.get_allotment_by_date(db, contract_id, room_type_id, night)
+        if allotment is None or allotment.status != "Active":
+            raise ValueError(f"No active allotment for room type {room_type_id} on {night}")
+        if allotment.available_rooms is None or allotment.available_rooms <= 0:
+            raise ValueError(f"No rooms available for room type {room_type_id} on {night}")
+        allotments_to_update.append(allotment)
+
+    for allotment in allotments_to_update:
+        new_sold = allotment.sold_rooms + 1
+        validate_allotment_capacity(allotment.allocated_rooms, new_sold)
+        repository.update_allotment(
+            db,
+            allotment,
+            sold_rooms=new_sold,
+            available_rooms=allotment.allocated_rooms - new_sold,
+        )
+
+
+def release_allotment(
+    db: Session, contract_id: int, room_type_id: int, check_in: date_type, check_out: date_type
+) -> None:
+    """
+    Decrement sold_rooms by 1 for every night in [check_in, check_out) for
+    this contract + room type, returning inventory (02_Logic_Rules.md #51:
+    "when cancelled, inventory returns automatically"). This is what
+    Booking Engine calls when a booking is cancelled.
+
+    Unlike reserve_allotment, this never raises on a missing or stop-sold
+    night — releasing inventory shouldn't be blocked by a Stop Sale, and a
+    missing allotment row for a given night is simply skipped (nothing to
+    release). sold_rooms is floored at 0 to guard against double-release.
+    """
+    night_count = (check_out - check_in).days
+    if night_count <= 0:
+        raise ValueError(f"check_out ({check_out}) must be after check_in ({check_in})")
+    nights = [check_in + timedelta(days=i) for i in range(night_count)]
+
+    for night in nights:
+        allotment = repository.get_allotment_by_date(db, contract_id, room_type_id, night)
+        if allotment is None:
+            continue
+        new_sold = max(allotment.sold_rooms - 1, 0)
+        validate_allotment_capacity(allotment.allocated_rooms, new_sold)
+        repository.update_allotment(
+            db,
+            allotment,
+            sold_rooms=new_sold,
+            available_rooms=allotment.allocated_rooms - new_sold,
+        )
 
 
 def get_cancellation_policy(

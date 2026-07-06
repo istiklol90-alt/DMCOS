@@ -442,6 +442,34 @@ def check_allotment(
     return {"available": available}
 
 
+@router.post("/contracts/{contract_id}/room-types/{room_type_id}/reserve-allotment")
+def reserve_allotment(
+    contract_id: int,
+    room_type_id: int,
+    check_in: date_type,
+    check_out: date_type,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Added post-LOCK per Decision 011 — purely additive, no existing endpoint changed. Interface Contract function for Booking Engine: increments sold_rooms for every night in range. Raises 400 if any night lacks capacity or is stop-sold (validated all-or-nothing before any write)."""
+    _run(lambda: service.reserve_allotment(db, contract_id, room_type_id, check_in, check_out))
+    return {"reserved": True}
+
+
+@router.post("/contracts/{contract_id}/room-types/{room_type_id}/release-allotment")
+def release_allotment(
+    contract_id: int,
+    room_type_id: int,
+    check_in: date_type,
+    check_out: date_type,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Added post-LOCK per Decision 011 — purely additive, no existing endpoint changed. Interface Contract function for Booking Engine: decrements sold_rooms for every night in range (cancellation). Never fails on a missing/stop-sold night."""
+    _run(lambda: service.release_allotment(db, contract_id, room_type_id, check_in, check_out))
+    return {"released": True}
+
+
 # ---------------------------------------------------------------------------
 # Stop Sale
 # ---------------------------------------------------------------------------
