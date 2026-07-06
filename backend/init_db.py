@@ -28,6 +28,7 @@ from app.engines.contract.models import (
     ReleaseRule,
     MinimumStayRule,
 )
+from app.engines.booking.models import Booking, Guest
 
 def init_db():
     print("🔄 Создание таблиц...")
