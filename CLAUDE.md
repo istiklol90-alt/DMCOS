@@ -33,7 +33,7 @@ The numbered root-level docs are the project's spec and are treated as the sourc
 Backend (FastAPI, from `backend/`, using the committed `.venv`):
 ```
 ./.venv/Scripts/python.exe -m uvicorn main:app --reload   # dev server on :8000
-./.venv/Scripts/python.exe database/init_db.py            # create tables from models (also backend/init_db.py, duplicate)
+./.venv/Scripts/python.exe -m database.init_db            # create tables from models (also backend/init_db.py, duplicate); must be run as a module — `python database/init_db.py` fails with ModuleNotFoundError since backend/ never lands on sys.path that way
 ./.venv/Scripts/python.exe create_admin.py                 # create admin@dmcos.com / Admin@2026
 ./.venv/Scripts/python.exe check_db.py                     # inspect dmc.db tables/columns via sqlite3
 ```
