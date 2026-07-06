@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routes import router
 # TASK-003: authentication engine fully migrated; backend/auth/ retired.
 from app.engines.authentication.api import router as auth_router
+# TASK-002: Hotel Engine domain model, schemas, repository, service, and API.
+from app.engines.hotel.api import router as hotel_router
 
 app = FastAPI(title="DMC OS API")
 
@@ -27,6 +29,9 @@ app.include_router(router)
 
 # Authentication API
 app.include_router(auth_router)
+
+# Hotel Engine API
+app.include_router(hotel_router)
 
 
 @app.get("/")
