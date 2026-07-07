@@ -820,26 +820,38 @@ def update_minimum_stay_rule(db: Session, rule_id: int, **fields) -> MinimumStay
 # ---------------------------------------------------------------------------
 
 
-def get_active_contract(db: Session, hotel_id: int) -> Optional[Contract]:
+def get_active_contract(
+    db: Session, hotel_id: int, check_in_date: Optional[date_type] = None
+) -> Optional[Contract]:
     """
-    Return the contract that is usable right now for this hotel: status
-    must be "Active" AND today must fall within [start_date, end_date] —
-    both conditions required, per the explicit decision that administrative
-    status alone isn't enough (a contract can be Active but for a past or
-    future period).
+    Return the contract that is usable for a given check-in date at this
+    hotel: status must be "Active" AND check_in_date must fall within
+    [start_date, end_date] — both conditions required, per the explicit
+    decision that administrative status alone isn't enough (a contract can
+    be Active but for a past or future period).
+
+    Decision 018: check_in_date replaces the previous hardcoded "today"
+    comparison — an agent searching for a future stay should see pricing
+    from any contract whose date range covers that future check-in date,
+    regardless of whether the contract has technically "started" as of
+    today's real-world date. check_in_date defaults to today only for
+    backward compatibility with any caller that doesn't pass it explicitly;
+    every real call site (HotelSearch.tsx, create_booking) passes the
+    actual check-in date being searched/booked.
 
     Known simplification: if more than one contract satisfies both
     conditions for the same hotel, this returns the first by id. Real
     multi-contract selection (02_Logic_Rules.md #24 "Contract Priority")
     also considers market and travel-date matching, which this function's
-    signature (hotel_id only, no market/travel dates) doesn't have enough
-    context to resolve — revisit if that scenario actually comes up.
+    signature (hotel_id + check_in_date only, no market) doesn't have
+    enough context to resolve — revisit if that scenario actually comes up.
     """
-    today = date_type.today()
+    if check_in_date is None:
+        check_in_date = date_type.today()
     candidates = [
         c
         for c in repository.list_contracts_by_hotel(db, hotel_id)
-        if c.contract_status == "Active" and c.start_date <= today <= c.end_date
+        if c.contract_status == "Active" and c.start_date <= check_in_date <= c.end_date
     ]
     return candidates[0] if candidates else None
 

@@ -333,6 +333,57 @@ paths.
 
 ---
 
+# Decision 018
+
+Date: 2026-07-07
+
+Decision: Changed get_active_contract's date-matching rule from "today's
+real-world date" to "the requested check-in date." Signature is now
+get_active_contract(db, hotel_id, check_in_date=None), checking
+contract_status == "Active" AND start_date <= check_in_date <= end_date.
+check_in_date defaults to today only for backward compatibility with any
+caller that omits it; every real call site now passes the actual check-in
+date being searched or booked, not the default. This is a behavior change to
+an existing LOCKED function's comparison basis, not a purely additive
+extension like Decisions 011/015/017 — full blast radius (3 call sites) was
+reviewed and the exact diff approved before implementation:
+- Contract Engine's api.py: GET /hotels/{hotel_id}/active-contract now takes
+  a required check_in query parameter.
+- Booking Engine's create_booking: passes data.arrival_date (already
+  validated in scope one line earlier) instead of relying on the default.
+- HotelSearch.tsx: passes its checkIn form state (already used identically
+  for the /price call later in the same function) as a check_in query
+  param.
+docs/interface-contracts/contract-hotel-booking.md's get_active_contract
+entry updated to match.
+
+Reason: An agent searching for a future stay should see pricing from any
+contract whose date range covers that future check-in date, regardless of
+whether the contract has technically "started" as of today's real-world
+date. Discovered as a real gap via the Kandima Maldives contract (starts
+2027-01-11): get_active_contract(hotel_id=2) returned None as of today
+(2026-07-07) even though the contract, season, and rate are all fully
+configured and correct for a stay in that future window — the only
+verification workaround available was bypassing get_active_contract
+entirely and calling get_room_price directly by contract_id, which isn't
+how a real agent search would reach it.
+
+Approved By: Daler
+
+Status: Implemented and verified. Regression: get_active_contract(hotel_id=1,
+check_in=2026-07-10) still resolves to Test Contract 2026 (id=1), unchanged
+from before -- Test Contract 2026's 2026-01-01..2026-12-31 window contains
+both today and every check-in date used in prior tests, so the old and new
+comparison bases coincide for this contract. New behavior:
+get_active_contract(hotel_id=2, check_in=2027-02-01), a date inside
+Kandima's real Peak season, now resolves directly to Kandima Maldives
+Contract 2027 (id=2) with no bypass needed. Sanity check:
+get_active_contract(hotel_id=2, check_in=2026-07-07 i.e. today) still
+correctly returns null, confirming the fix is scoped to the requested
+check-in date, not "always active" once a contract exists.
+
+---
+
 # Decision Template
 
 Decision Number:

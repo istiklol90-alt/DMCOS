@@ -137,10 +137,13 @@ def list_contracts_by_hotel(
 
 @router.get("/hotels/{hotel_id}/active-contract", response_model=ContractResponse | None)
 def get_active_contract(
-    hotel_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+    hotel_id: int,
+    check_in: date_type,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
-    """Interface Contract function — returns null if no contract is currently usable for this hotel (see service.get_active_contract for the exact status+date-range rule)."""
-    return _run(lambda: service.get_active_contract(db, hotel_id))
+    """Interface Contract function — returns null if no contract covers check_in for this hotel (see service.get_active_contract for the exact status+date-range rule; Decision 018)."""
+    return _run(lambda: service.get_active_contract(db, hotel_id, check_in))
 
 
 # ---------------------------------------------------------------------------

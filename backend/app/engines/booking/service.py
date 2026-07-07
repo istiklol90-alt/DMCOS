@@ -151,7 +151,7 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
     validate_stay_dates(data.arrival_date, data.departure_date)
     validate_occupancy(data.adults, data.children, data.infants)
 
-    contract = contract_service.get_active_contract(db, data.hotel_id)
+    contract = contract_service.get_active_contract(db, data.hotel_id, data.arrival_date)
     if contract is None:
         raise ValueError(f"Hotel {data.hotel_id} has no currently-active contract")
 

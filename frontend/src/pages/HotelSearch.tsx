@@ -346,7 +346,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
           let contractId: number | undefined;
           try {
             const contract = await fetchJson<Contract | null>(
-              `/contract-engine/hotels/${hotel.id}/active-contract`,
+              `/contract-engine/hotels/${hotel.id}/active-contract?check_in=${checkIn}`,
               token
             );
             contractId = contract?.id;
