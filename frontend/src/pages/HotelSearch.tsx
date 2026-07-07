@@ -92,9 +92,15 @@ type RoomPrice = {
   final_total: number;
 };
 
-type RoomTypeResult = RoomType & {
-  mealCode?: string;
+type MealPlanOption = {
+  mealCode: string;
+  mealName: string | null;
   price?: RoomPrice;
+  priceError?: string;
+};
+
+type RoomTypeResult = RoomType & {
+  options: MealPlanOption[];
   priceError?: string;
 };
 
@@ -110,6 +116,26 @@ const CARD_GRADIENTS = [
   "from-teal to-coral",
   "from-coral to-teal",
 ];
+
+function cheapestOptionPrice(rt: RoomTypeResult): number | null {
+  const priced = rt.options.filter((o) => o.price).map((o) => o.price!.final_total);
+  return priced.length > 0 ? Math.min(...priced) : null;
+}
+
+function sortRoomTypesByPrice(roomTypes: RoomTypeResult[]): RoomTypeResult[] {
+  // Cheapest first, using each room type's cheapest available meal-plan
+  // option; room types with no priced option at all (no active contract,
+  // no meal plans, every price call failed) sort after every priced room
+  // type instead of disrupting the cheap-to-expensive reading.
+  return [...roomTypes].sort((a, b) => {
+    const pa = cheapestOptionPrice(a);
+    const pb = cheapestOptionPrice(b);
+    if (pa !== null && pb !== null) return pa - pb;
+    if (pa !== null) return -1;
+    if (pb !== null) return 1;
+    return 0;
+  });
+}
 
 function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -217,39 +243,68 @@ function HotelCard({ hotel, gradient }: { hotel: HotelResult; gradient: string }
           {hotel.roomTypes.length === 0 ? (
             <p className="mt-4 text-sm text-slate/50">Нет доступных типов номеров.</p>
           ) : (
-            <ul className="mt-4 divide-y divide-ink/5">
-              {hotel.roomTypes.map((rt) => (
-                <li
+            <div className="mt-4 space-y-3">
+              {sortRoomTypesByPrice(hotel.roomTypes).map((rt) => (
+                <div
                   key={rt.id}
-                  className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0 last:pb-0"
+                  className="rounded-xl border border-ink/10 bg-white p-4 shadow-sm"
                 >
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-ink">{rt.room_name}</p>
-                    <p className="text-xs text-slate/50">
-                      До {rt.max_occupancy} гостей{rt.mealCode ? ` · ${rt.mealCode}` : ""}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    {rt.price ? (
-                      <span className="font-mono text-base font-semibold text-ink">
-                        {rt.price.currency} {rt.price.final_total.toLocaleString("ru-RU")}
-                      </span>
-                    ) : (
-                      <span className="text-xs font-medium text-slate/50">
-                        {rt.priceError ?? "Цена недоступна"}
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      disabled={!rt.price}
-                      className="rounded-lg bg-ink px-3.5 py-2 text-xs font-medium text-white transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
-                    >
-                      Выбрать
-                    </button>
-                  </div>
-                </li>
+                  <h4 className="font-display text-base font-semibold text-ink">
+                    {rt.room_name}
+                  </h4>
+                  <p className="mt-1 text-xs text-slate/50">До {rt.max_occupancy} гостей</p>
+
+                  {rt.priceError ? (
+                    <p className="mt-3 text-xs font-medium text-slate/50">{rt.priceError}</p>
+                  ) : (
+                    <div className="mt-3 divide-y divide-ink/5 border-t border-ink/5">
+                      {rt.options.map((opt) => {
+                        const perNight = opt.price ? opt.price.final_total / opt.price.nights : null;
+                        return (
+                          <div
+                            key={opt.mealCode}
+                            className="flex flex-wrap items-center justify-between gap-3 py-2.5"
+                          >
+                            <span className="text-sm font-medium text-ink">
+                              {opt.mealName ?? opt.mealCode}
+                            </span>
+
+                            <div className="flex shrink-0 items-center gap-3">
+                              {opt.price ? (
+                                <div className="text-right">
+                                  <p className="font-mono text-sm font-semibold text-ink">
+                                    {opt.price.currency}{" "}
+                                    {perNight!.toLocaleString("ru-RU", { maximumFractionDigits: 0 })}
+                                    <span className="ml-1 text-xs font-normal text-slate/50">
+                                      / ночь
+                                    </span>
+                                  </p>
+                                  <p className="text-[11px] text-slate/50">
+                                    Итого за {opt.price.nights} ноч.: {opt.price.currency}{" "}
+                                    {opt.price.final_total.toLocaleString("ru-RU")}
+                                  </p>
+                                </div>
+                              ) : (
+                                <span className="text-xs font-medium text-slate/50">
+                                  {opt.priceError ?? "Цена недоступна"}
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                disabled={!opt.price}
+                                className="rounded-lg bg-ink px-3.5 py-2 text-xs font-medium text-white transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
+                              >
+                                Выбрать
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               ))}
-            </ul>
+            </div>
           )}
         </div>
       </div>
@@ -357,7 +412,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
           const roomTypeResults = await Promise.all(
             roomTypes.map(async (rt): Promise<RoomTypeResult> => {
               if (!contractId) {
-                return { ...rt, priceError: "Нет активного контракта" };
+                return { ...rt, options: [], priceError: "Нет активного контракта" };
               }
               try {
                 const mealPlans = await fetchJson<ContractMealPlan[]>(
@@ -365,26 +420,41 @@ function HotelSearch({ onBack }: HotelSearchProps) {
                   token
                 );
                 if (mealPlans.length === 0) {
-                  return { ...rt, priceError: "Нет доступных тарифов для этого номера" };
+                  return { ...rt, options: [], priceError: "Нет доступных тарифов для этого номера" };
                 }
-                const mealCode = mealPlans[0].meal_code;
-                const priceQuery = new URLSearchParams({
-                  check_in: checkIn,
-                  check_out: checkOut,
-                  meal_plan: mealCode,
-                  adults: String(adults),
-                  children: String(children),
-                  infants: String(infants),
-                });
-                const price = await fetchJson<RoomPrice>(
-                  `/contract-engine/contracts/${contractId}/room-types/${rt.id}/price?${priceQuery.toString()}`,
-                  token
+
+                const options = await Promise.all(
+                  mealPlans.map(async (mp): Promise<MealPlanOption> => {
+                    try {
+                      const priceQuery = new URLSearchParams({
+                        check_in: checkIn,
+                        check_out: checkOut,
+                        meal_plan: mp.meal_code,
+                        adults: String(adults),
+                        children: String(children),
+                        infants: String(infants),
+                      });
+                      const price = await fetchJson<RoomPrice>(
+                        `/contract-engine/contracts/${contractId}/room-types/${rt.id}/price?${priceQuery.toString()}`,
+                        token
+                      );
+                      return { mealCode: mp.meal_code, mealName: mp.meal_name, price };
+                    } catch (err) {
+                      return {
+                        mealCode: mp.meal_code,
+                        mealName: mp.meal_name,
+                        priceError: err instanceof Error ? err.message : "Цена недоступна",
+                      };
+                    }
+                  })
                 );
-                return { ...rt, mealCode, price };
+
+                return { ...rt, options };
               } catch (err) {
                 return {
                   ...rt,
-                  priceError: err instanceof Error ? err.message : "Цена недоступна",
+                  options: [],
+                  priceError: err instanceof Error ? err.message : "Не удалось загрузить тарифы",
                 };
               }
             })
