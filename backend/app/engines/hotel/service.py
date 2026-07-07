@@ -242,9 +242,43 @@ def get_room_type(db: Session, room_type_id: int) -> RoomType:
 
 
 def validate_capacity(db: Session, room_type_id: int, adults: int, children: int) -> None:
-    """Raise ValueError if adults+children exceeds room_type_id's max_occupancy. Thin wrapper exposing validate_occupancy_within_capacity through Hotel Engine's service boundary, for Contract Engine's get_room_price to call (Decision 015)."""
+    """
+    Raise ValueError if adults+children exceeds room_type_id's max_occupancy
+    (Decision 015) — thin wrapper exposing validate_occupancy_within_capacity
+    through Hotel Engine's service boundary, for Contract Engine's
+    get_room_price to call.
+
+    Decision 024: additionally requires the requested (adults, children) to
+    be dominated by at least one Active RoomOccupancyOption row for this
+    room type — adults <= row.adults AND children <= row.children — not
+    merely under the coarse sum ceiling. A room type described as "2A2C or
+    3A" (its configured rows) doesn't mean every lesser occupancy needs its
+    own row: 2 adults alone, or 2 adults + 1 child, are legitimate subsets
+    of the "2A2C" row and remain valid without a dedicated row of their
+    own. What this closes is the gap the coarse sum check couldn't catch:
+    a combination like 4 adults that passes the sum ceiling (4 <=
+    max_occupancy) but isn't actually dominated by ANY configured row (not
+    <= "2A2C" on children, not <= "3A" on adults) — that's the real,
+    reported bug (Sky Studio's max_occupancy=4 previously let 4 adults +
+    0 children through even though the room's only real configurations are
+    "2A2C" or "3A").
+
+    Room types with zero configured RoomOccupancyOption rows fall back to
+    the coarse sum-only check above — a room type that hasn't had its
+    exact valid combinations entered yet shouldn't have every booking
+    rejected; Decision 015's original coarse check still applies for it.
+    """
     room_type = _require_room_type(db, room_type_id)
     validate_occupancy_within_capacity(room_type, adults, children)
+
+    options = repository.list_room_occupancy_options(db, room_type_id, active_only=True)
+    if options and not any(o.adults >= adults and o.children >= children for o in options):
+        combos = ", ".join(f"{o.adults} adults + {o.children} children" for o in options)
+        raise ValueError(
+            f"Occupancy combination ({adults} adults + {children} children) exceeds "
+            f"every configured combination for room type '{room_type.room_name}' — "
+            f"configured combinations (as ceilings): {combos}"
+        )
 
 
 def list_room_types(db: Session, hotel_id: int) -> list[RoomType]:

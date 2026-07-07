@@ -635,6 +635,148 @@ not addressed here).
 
 ---
 
+TODO (not a numbered decision -- quick note, log properly if/when
+scoped): HotelSearch.tsx's search form collects adults/children/infants
+as bucket COUNTS, not individual guest ages, even though real-world
+pricing depends on exact age (2-11.99 = child rate, 0-1.99 = infant,
+12+ = adult rate). This isn't a new gap introduced by the booking
+submission UI (2026-07-08) -- it's the same pre-existing "3-bucket
+signature" limitation already documented in
+docs/interface-contracts/contract-hotel-booking.md since Contract
+Engine's original LOCK: get_room_price/get_transfer_price and every
+RateSupplement mechanism (age_category_price, extra_person) all take
+adults/children/infants as counts, never per-guest ages, anywhere in
+the backend. Confirmed by project owner: keep the search form as-is
+(count only) for now rather than scope-creep into redesigning it as
+part of the booking flow; the agent is trusted to enter counts
+matching the correct age brackets. Revisit only if a dedicated task to
+collect exact per-guest ages (e.g. for full multi-guest Guest record
+collection, not just the lead guest) is scoped.
+
+---
+
+# Decision 023
+
+Date: 2026-07-08
+
+Decision: HotelSearch.tsx's frontend age-to-bucket mapping (12+ = adult,
+2-11.99 = child, 0-1.99 = infant, per Decision 023's own predecessor TODO)
+uses ONE hardcoded set of age boundaries, applied uniformly to room/meal
+pricing AND transfer pricing for a given search. This is a deliberate
+simplification, not an assumption that real contracts always work this
+way: real-world hotel contracts can price the same guest differently
+per service -- e.g. a hotel could treat a 14-year-old as a "child" for
+room/meal purposes but as an "adult" for transfer purposes, using
+different age cutoffs per service, not one universal cutoff per
+contract. Kandima's real data happens to use 12+ = adult for both, but
+that coincidence isn't a rule to bake in as if it always holds.
+
+A fully correct implementation would fetch each service's own age
+boundaries from contract data rather than hardcode them in the
+frontend. Checked what's actually possible today: Contract Engine's
+get_child_policy(contract_id, room_type_id) already exposes
+ContractAgeCategory's real min_age/max_age boundaries for room/meal
+pricing, so dynamic fetching is technically feasible there alone. But
+ContractTransferOption (Decision 022) has NO age-boundary columns at
+all -- only flat price_adult/price_child/price_infant, no min_age/
+max_age anywhere. This means a fully dynamic, per-service age-bucketing
+system is not achievable today without a Contract Engine schema change
+(new age-boundary columns on ContractTransferOption, re-entering that
+data for every contract), regardless of frontend complexity. The
+choice to keep one hardcoded boundary set isn't just "simpler for now"
+-- it's the only implementable option without that backend work.
+
+Reason: Project owner surfaced this nuance mid-implementation of the
+child-age-input search form redesign, specifically flagging that
+different services within the same hotel contract could use different
+age cutoffs. Rather than silently baking in a possibly-wrong universal
+assumption, checked the actual schema first and found the transfer
+side has no age-boundary data to fetch dynamically even if desired --
+confirming the simple approach isn't a shortcut being taken over a
+better available option, but the only option available today.
+
+Approved By: Daler
+
+Status: Logged as a known simplification, not implemented as
+per-service dynamic bucketing. Revisit only as a dedicated task that
+also adds age-boundary columns to ContractTransferOption (or an
+equivalent), scoped separately -- not a frontend-only fix.
+
+---
+
+# Decision 024
+
+Date: 2026-07-08
+
+Decision: Hotel Engine's validate_capacity (LOCKED, Decision 015) only
+checked the coarse sum ceiling (adults + children <= max_occupancy),
+which let combinations through that don't match any of a room type's
+actual configured RoomOccupancyOption rows -- concretely, Sky Studio's
+max_occupancy=4 let "4 adults + 0 children" price and book
+successfully, even though the room's only two real configurations are
+"2 adults + 2 children" or "3 adults" (not 4). Fixed by adding a second
+check: the requested (adults, children) must be dominated by at least
+one Active RoomOccupancyOption row for that room type -- adults <=
+row.adults AND children <= row.children -- not merely under the sum
+ceiling.
+
+Domination, not exact match, is the deliberate semantic: a room
+type's configured rows describe maximum configurations ("2A2C or 3A"),
+not an exhaustive enumeration of every bookable subset. 2 adults alone,
+or 2 adults + 1 child, are legitimate lesser occupancies within the
+"2A2C" ceiling and don't need their own row -- exact-match would have
+rejected nearly every regression test run all session (every "2 adults"
+baseline price check used throughout Decisions 017/021/022 is a subset
+of a configured row, never an exact equality to one), which would have
+made the fix strictly worse than doing nothing. Room types with zero
+configured RoomOccupancyOption rows skip this check entirely and fall
+back to the coarse sum-only check -- a room type that hasn't had exact
+combinations entered yet shouldn't have every booking rejected,
+matching Decision 015's original permissive intent.
+
+A related, separate data correction: Sky Studio's real configured
+combinations were mismodeled since Decision 020 -- entered as "2A2C or
+4A" (matching a mistranscription in the original room-list table) when
+the real Kandima PDF says "2A2C or 3A". This turned out to apply to
+all 9 "2A2C or 4A"-pattern room types, not just Sky Studio (Sunrise
+Beach Pool Villa with Swirlpool, Sky Studio, Beach Studio, Beach Villa
+with Swirlpool, Sunset Beach Pool Villa with Swirlpool, Aqua Villa,
+Aqua Villa with Swirlpool, Ocean Pool Villa, Sunset Aqua Pool Suite) --
+confirmed by the project owner as a uniform correction, not specific to
+Sky Studio. The 10th room type, 2-bedroom Family Sky Suite ("4A4C or
+8A"), was already correctly modeled and is unaffected. Each affected
+room type's (4 adults, 0 children) RoomOccupancyOption row was updated
+to (3 adults, 0 children); the (2 adults, 2 children) row is unchanged.
+
+Reason: Project owner identified the Sky Studio overbooking gap during
+manual review, connecting it to the same known limitation flagged
+earlier (Sirru Fen Fushi review): RoomOccupancyOption stores real valid
+combinations, but validate_capacity never actually checked them,
+relying solely on the coarse sum ceiling from Decision 015. Same
+category of gap as Decisions 011/015/018/021: a downstream real-data
+review revealing a hole in an already-LOCKED Engine's function that a
+purely code-level read wouldn't catch alone.
+
+Approved By: Daler
+
+Status: Implemented and verified end-to-end via real HTTP calls.
+Bug-fix confirmation: 4 adults + 0 children now correctly rejected for
+both Sky Studio and Sunrise Beach Pool Villa with Swirlpool ("exceeds
+every configured combination... configured combinations (as ceilings):
+2 adults + 2 children, 3 adults + 0 children"). Full regression suite
+re-run unchanged: Test Beach Resort 540.0; Kandima BB/HB+/FB+/PAI at
+2 adults (1002.0/1182.0/1282.0/1392.0) and BB at 2 adults + 1 child
+(1062.0); Sunset Aqua Pool Suite BB/HB+/FB+/PAI (1927.0/2107.0/2207.0/
+2317.0); Sunrise Beach Pool Villa at 3 adults still 1192.0 (correctly
+dominated by the corrected (3,0) row). Transfer/booking flow re-run
+unchanged: Kandima booking without transfer_type still rejected,
+with transfer_type=seaplane still succeeds (total_amount=1002.0,
+transfer_total=1450.0); Test Beach Resort booking without transfer_type
+still succeeds (2 adults + 0 children correctly recognized as a subset
+of its configured (2 adults, 1 child) row, not rejected).
+
+---
+
 # Decision Template
 
 Decision Number:
