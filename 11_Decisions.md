@@ -777,6 +777,67 @@ of its configured (2 adults, 1 child) row, not rejected).
 
 ---
 
+# Decision 025
+
+Date: 2026-07-08
+
+Decision: Extra-bed pricing (part of Decision 016's original
+unimplemented-adjustment-types gap) will be modeled as new
+RateSupplement rows with adjustment_type="extra_bed" -- NOT a new
+entity, and NOT an additive column on Hotel Engine's
+RoomOccupancyOption. RoomOccupancyOption is deliberately scoped to
+physical capacity data only (Decision 007's Hotel Engine/Contract
+Engine boundary, maintained through every subsequent Contract Engine
+addition); extra-bed pricing is a commercial/contract term and
+belongs in Contract Engine, same as every other RateSupplement
+adjustment_type. RateSupplement already anticipated this exact
+adjustment_type (documented but unimplemented since Decision 016) and
+its existing calculation_basis field ("per_stay" / "per_person_per_night"
+/ "percentage_of_rate") already covers both a flat one-time bed fee
+and a nightly one without any new column. Default: amount=0 (or the
+row simply absent) means free, matching the real-world Maldives norm
+that the bed itself is typically free while the guest occupying it
+still gets charged via the existing age_category_price mechanism;
+a contract that actually charges for the bed just gets a nonzero row.
+Zero schema changes required -- purely new data once implemented,
+matching the project's established "every per-hotel pricing variation
+is a row here, never a new column" philosophy.
+
+The standard hotel-industry accommodation-type label (SGL/DBL/TPL/
+DBL+CB/DBL+Infant) will be purely computed/derived at display time
+from adults/children/infants (and, for distinguishing CB from Infant,
+the frontend's already-available per-child ages before bucketing) --
+never stored anywhere, backend or frontend. Same precedent as
+get_child_policy's "not a stored entity, an ad-hoc computed view."
+get_room_price's pricing math doesn't need this label at all; it's a
+pure display convenience.
+
+Reason: Project owner requested a reusable extra-bed pricing formula,
+separate from the existing age_category_price mechanism (which already
+charges for WHO occupies a bed, not the bed itself). Considered and
+rejected creating a new entity (e.g. ContractBedOption or
+AccommodationTypeSupplement) after confirming RateSupplement's
+existing flexible-core design already covers this pricing shape with
+no gaps -- unlike Decision 022's ContractTransferOption, which
+genuinely needed a new table because transfer pricing (flat
+round-trip, untied to any rate) doesn't fit RateSupplement's
+rate_id-scoped shape at all.
+
+Approved By: Daler
+
+Status: Logged as a confirmed design plan, NOT implemented -- deferred
+until after the current Kandima full-contract-with-offer (KM26_03)
+task is finished, per project owner's explicit priority call. Still
+open before implementation: the exact trigger condition for when an
+extra_bed charge applies (same trigger as extra_person -- fires
+whenever adults + children > rate.base_occupancy -- or a narrower
+condition specific to a child needing a bed, as opposed to an extra
+adult) is unresolved and was deliberately not decided here, matching
+Decision 016's own original list of unresolved business-rule questions
+for this adjustment_type.
+
+---
+
 # Decision Template
 
 Decision Number:
