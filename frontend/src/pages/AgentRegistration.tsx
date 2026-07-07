@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import axios from 'axios';
+import { API_URL } from '../config';
 
 const AgentRegistration = () => {
   const [formData, setFormData] = useState({
@@ -36,7 +37,7 @@ const AgentRegistration = () => {
     setError('');
 
     try {
-      const response = await axios.post('http://localhost:8000/api/agents/register', formData);
+      const response = await axios.post(`${API_URL}/api/agents/register`, formData);
       
       if (response.status === 200) {
         setStatus('success');

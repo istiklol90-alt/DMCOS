@@ -211,11 +211,15 @@ const kpis = [
   { label: "Средний чек", value: "$1,440", delta: "−2.1% за месяц", positive: false },
 ];
 
-const navGroups = [
+const navGroups: {
+  label: string;
+  items: { name: string; active: boolean; action?: "hotel-search" }[];
+}[] = [
   {
     label: "РАБОТА",
     items: [
       { name: "Дашборд", active: true },
+      { name: "Поиск и бронирование", active: false, action: "hotel-search" },
       { name: "Бронирования", active: false },
       { name: "Отели", active: false },
       { name: "Клиенты", active: false },
@@ -301,7 +305,11 @@ function PaymentBadge({ payment }: { payment: PaymentKind }) {
 // Page
 // ---------------------------------------------------------------------------
 
-function AgentDashboard_v2() {
+type AgentDashboard_v2Props = {
+  onNavigateToHotelSearch?: () => void;
+};
+
+function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [user, setUser] = useState<SessionUser | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -384,6 +392,11 @@ function AgentDashboard_v2() {
                   <button
                     key={item.name}
                     type="button"
+                    onClick={() => {
+                      if (item.action === "hotel-search") {
+                        onNavigateToHotelSearch?.();
+                      }
+                    }}
                     className={`w-full appearance-none rounded-lg border-l-2 bg-white/5 px-3 py-2 text-left text-sm transition-colors ${
                       item.active
                         ? "border-coral bg-white/10 text-white font-medium"

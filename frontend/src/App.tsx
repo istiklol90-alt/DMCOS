@@ -12,6 +12,7 @@ import Dashboard from "./pages/Dashboard";
 import AdminPanel from "./pages/AdminPanel";
 import AgentDashboard_v2 from "./pages/AgentDashboard_v2";
 import ManagerDashboard from "./pages/ManagerDashboard";
+import HotelSearch from "./pages/HotelSearch";
 
 export type Page =
   | "home"
@@ -21,7 +22,8 @@ export type Page =
   | "dashboard"
   | "admin-panel"
   | "agent-dashboard"
-  | "manager-dashboard";
+  | "manager-dashboard"
+  | "hotel-search";
 
 function App() {
   const [page, setPage] = useState<Page>("home");
@@ -108,6 +110,11 @@ function App() {
     setPage("manager-dashboard");
   };
 
+  const goToHotelSearch = () => {
+    console.log('📌 Переход на Hotel Search');
+    setPage("hotel-search");
+  };
+
   return (
     <div className="page">
       <Header onHome={goToHome} />
@@ -128,11 +135,15 @@ function App() {
       
       {page === "admin-panel" && <AdminPanel />}
       
-      {page === "agent-dashboard" && <AgentDashboard_v2 />}
-      
+      {page === "agent-dashboard" && (
+        <AgentDashboard_v2 onNavigateToHotelSearch={goToHotelSearch} />
+      )}
+
       {page === "manager-dashboard" && <ManagerDashboard />}
-      
+
       {page === "dashboard" && <Dashboard />}
+
+      {page === "hotel-search" && <HotelSearch onBack={goToAgentDashboard} />}
     </div>
   );
 }
