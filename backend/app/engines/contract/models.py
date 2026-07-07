@@ -41,6 +41,15 @@ class Contract(Base):
     created_by = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Whether the agent must select one of this contract's
+    # ContractTransferOption rows before a booking can be confirmed (true for
+    # every Maldives hotel today; a future non-Maldives hotel may have no
+    # transfer options at all, or optional ones). Deliberately NOT on
+    # ContractTransferOption itself — a single contract-level flag means
+    # "pick exactly one of these options," not "every option is
+    # individually mandatory," which per-option placement would leave
+    # ambiguous.
+    transfer_required = Column(Boolean, nullable=False, default=False)
 
 
 class ContractMarket(Base):
@@ -89,6 +98,27 @@ class ContractMealPlan(Base):
     meal_code = Column(String(20), nullable=False)
     meal_name = Column(String(100), nullable=True)
     description = Column(Text, nullable=True)
+
+
+class ContractTransferOption(Base):
+    __tablename__ = "contract_transfer_options"
+
+    id = Column(Integer, primary_key=True, index=True)
+    contract_id = Column(Integer, ForeignKey("contracts.id"), nullable=False)
+    # Free-form, not an enum — "seaplane", "domestic_comfort",
+    # "domestic_sapphire", "speedboat", "yacht", etc. A hotel offering a new
+    # transfer kind is a new row here, never a schema change — same
+    # open-string precedent as RateSupplement.adjustment_type.
+    transfer_type = Column(String(50), nullable=False)
+    transfer_name = Column(String(200), nullable=True)
+    # Per round-trip, NOT per-night — deliberately not a RateSupplement row:
+    # calculation_basis has no "one-time round-trip" option, and forcing a
+    # flat one-time charge through the per_person_per_night mechanism would
+    # misrepresent it.
+    price_adult = Column(Float, nullable=False)
+    price_child = Column(Float, nullable=False)
+    price_infant = Column(Float, nullable=True)
+    status = Column(String(20), default="Active")
 
 
 class Rate(Base):

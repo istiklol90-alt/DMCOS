@@ -41,6 +41,7 @@ class ContractCreate(BaseModel):
     signed_date: Optional[date] = None
     minimum_markup_percent: Optional[float] = Field(None, ge=0, le=100)
     created_by: Optional[int] = None
+    transfer_required: bool = False
 
 
 class ContractUpdate(BaseModel):
@@ -54,6 +55,7 @@ class ContractUpdate(BaseModel):
     signed_date: Optional[date] = None
     minimum_markup_percent: Optional[float] = Field(None, ge=0, le=100)
     contract_status: Optional[ContractStatus] = None
+    transfer_required: Optional[bool] = None
 
 
 class ContractResponse(BaseModel):
@@ -73,6 +75,7 @@ class ContractResponse(BaseModel):
     created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime
+    transfer_required: bool
 
     class Config:
         from_attributes = True
@@ -176,6 +179,37 @@ class ContractMealPlanResponse(BaseModel):
     meal_code: str
     meal_name: Optional[str] = None
     description: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ---------------------------------------------------------------------------
+# Contract Transfer Option
+# ---------------------------------------------------------------------------
+
+
+class ContractTransferOptionCreate(BaseModel):
+    contract_id: int
+    # Deliberately a plain str, not a Literal/enum — see models.py's
+    # ContractTransferOption.transfer_type comment. A hotel-specific transfer
+    # kind is new data, never a schema change.
+    transfer_type: str = Field(..., min_length=1, max_length=50)
+    transfer_name: Optional[str] = None
+    price_adult: float = Field(..., ge=0)
+    price_child: float = Field(..., ge=0)
+    price_infant: Optional[float] = Field(None, ge=0)
+
+
+class ContractTransferOptionResponse(BaseModel):
+    id: int
+    contract_id: int
+    transfer_type: str
+    transfer_name: Optional[str] = None
+    price_adult: float
+    price_child: float
+    price_infant: Optional[float] = None
+    status: str
 
     class Config:
         from_attributes = True

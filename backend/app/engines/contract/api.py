@@ -24,6 +24,8 @@ from app.engines.contract.schemas import (
     ContractAgeCategoryResponse,
     ContractMealPlanCreate,
     ContractMealPlanResponse,
+    ContractTransferOptionCreate,
+    ContractTransferOptionResponse,
     RateCreate,
     RateUpdate,
     RateResponse,
@@ -259,6 +261,61 @@ def list_contract_meal_plans(
     contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.list_contract_meal_plans(db, contract_id))
+
+
+# ---------------------------------------------------------------------------
+# Contract Transfer Option
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/contract-transfer-options",
+    response_model=ContractTransferOptionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_contract_transfer_option(
+    data: ContractTransferOptionCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return _run(lambda: service.create_contract_transfer_option(db, data))
+
+
+@router.get(
+    "/contracts/{contract_id}/transfer-options", response_model=list[ContractTransferOptionResponse]
+)
+def list_contract_transfer_options(
+    contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """Every transfer option defined for this contract, any status — CRUD listing, matching list_contract_meal_plans."""
+    return _run(lambda: service.list_contract_transfer_options(db, contract_id))
+
+
+@router.get(
+    "/contracts/{contract_id}/transfer-options/available",
+    response_model=list[ContractTransferOptionResponse],
+)
+def get_transfer_options(
+    contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """Interface Contract function — only Active transfer options, the set an agent can actually select for a booking (see /contracts/{contract_id}/transfer-options for the full CRUD list)."""
+    return _run(lambda: service.get_transfer_options(db, contract_id))
+
+
+@router.get("/contracts/{contract_id}/transfer-price")
+def get_transfer_price(
+    contract_id: int,
+    transfer_type: str,
+    adults: int,
+    children: int,
+    infants: int = 0,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Interface Contract function. See service.get_transfer_price's docstring for the pricing formula (one-time round-trip, not per-night)."""
+    return _run(
+        lambda: service.get_transfer_price(db, contract_id, transfer_type, adults, children, infants)
+    )
 
 
 # ---------------------------------------------------------------------------

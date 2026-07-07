@@ -18,6 +18,7 @@ from app.engines.contract.models import (
     ContractSeason,
     ContractAgeCategory,
     ContractMealPlan,
+    ContractTransferOption,
     Rate,
     RateSupplement,
     Promotion,

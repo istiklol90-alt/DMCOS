@@ -520,6 +520,104 @@ from this fix.
 
 ---
 
+# Decision 022
+
+Date: 2026-07-08
+
+Decision: Added a reusable Transfer module to Contract Engine (LOCKED),
+designed as a formula/library any Maldives (or future non-Maldives) hotel
+contract can use, not hardcoded to Kandima. New model
+ContractTransferOption (contract_transfer_options table): transfer_type
+(free-form string, not an enum -- "seaplane", "domestic_comfort",
+"domestic_sapphire", etc. -- new transfer kind is new data, never a schema
+change, same open-string precedent as RateSupplement.adjustment_type),
+transfer_name, price_adult, price_child, price_infant (nullable -- no
+infant price exists in the real Kandima data), status. Deliberately not a
+RateSupplement row: transfers are a one-time round-trip charge per person,
+not RateSupplement's per_person_per_night pattern, so calculation_basis
+has no matching option and forcing it in would misrepresent a one-time
+charge as recurring. New Contract.transfer_required boolean (single
+column on the contract itself, not per-option): refined from an original
+per-option is_mandatory proposal after the project owner identified that
+was ambiguous (does each option need to be mandatory, or is it "pick one
+of the mandatory-flagged ones"?) -- transfer_required=true simply means
+"the agent must select exactly one of this contract's available transfer
+options," keeping the semantics unambiguous and still correctly handling
+a future hotel with a mix of mandatory-baseline and optional-upgrade
+transfer options (which a single option-level boolean couldn't express
+either way, but a contract-level flag sidesteps entirely by only gating
+"is a selection required," not "is this specific option mandatory").
+
+Two new Interface Contract functions, mirroring the get_meal_plans/
+get_room_price listing-vs-pricing split: get_transfer_options(db,
+contract_id) returns Active options only; get_transfer_price(db,
+contract_id, transfer_type, adults, children, infants=0) computes
+price_adult * adults + price_child * children + (price_infant or 0) *
+infants -- explicitly NOT multiplied by nights. Deliberately kept separate
+from get_room_price rather than bundled into its final_total: transfer
+price has no relationship to room_type_id, dates, or meal plan, so tying
+it to room-type-scoped pricing would be a category error. Migration: this
+is a new table (contract_transfer_options), created via
+Base.metadata.create_all (additive, no existing table touched) after
+adding the model to both init_db.py copies; Contract.transfer_required is
+a new column on the already-existing contracts table, which create_all
+does NOT retrofit onto a live table (same situation as Decision 017's
+base_occupancy), so it required an explicit
+`ALTER TABLE contracts ADD COLUMN transfer_required BOOLEAN NOT NULL
+DEFAULT 0` against dmc.db directly.
+
+Reason: Real-world requirement -- every Maldives island requires a hotel
+transfer, and this needed modeling as a genuinely separate pricing shape
+(one-time per-person round-trip, not per-night) rather than forced into
+the existing RateSupplement mechanism, plus a reusable, non-hardcoded
+schema so any future Maldives (or non-Maldives) hotel contract can define
+its own transfer options without a code change.
+
+Approved By: Daler
+
+Status: Implemented and verified end-to-end via real HTTP calls against
+the live contract-engine API (not direct function calls) using the real
+Kandima contract data from the original PDF's "HOTEL TRANSFER" section:
+Domestic Flight Comfort Class ($414/adult, $300/child), Domestic Flight
+Sapphire Class ($610/adult, $480/child), Shared Seaplane Transfer
+($725/adult, $375/child), transfer_required=true. All 3 created via the
+real POST /contract-transfer-options endpoint (not raw SQL). Verified:
+GET /contracts/2/transfer-options/available returns all 3; GET
+/contracts/2/transfer-price for seaplane (2 adults, 1 child) ->
+725*2+375*1=1825.0 exact; for domestic_comfort (2 adults) -> 414*2=828.0
+exact; PUT /contracts/2 with {"transfer_required": true} correctly
+persists and returns in the ContractResponse. Full regression suite
+re-run unchanged: Test Beach Resort 540.0, Kandima BB 1002.0, HB+
+1182.0, get_meal_plans still returns all 4 plans, get_active_contract
+still resolves correctly with check_in -- no regressions from adding
+this module.
+
+Not yet done, deliberately out of scope for this decision: Booking
+Engine integration (how create_booking consumes transfer_required/
+get_transfer_price) is proposed separately, not implemented here --
+matching the Decision 011 precedent of adding Contract Engine interface
+functions before Booking Engine's own task consumes them.
+
+Booking Engine integration proposal (logged now so it isn't lost, not
+implemented today): BookingCreate gains transfer_type: Optional[str] =
+None. Booking model gains two new nullable columns, transfer_type and
+transfer_total -- transfer_total is its own separate frozen-snapshot
+column, NOT merged into total_amount, so Finance Engine can itemize room
+vs. transfer revenue separately later; total_amount stays room-only,
+consistent with how pricing snapshots are already kept separate
+elsewhere. create_booking validates contract.transfer_required against
+data.transfer_type right after the existing get_active_contract call
+(raising ValueError if a selection is required but missing), then calls
+get_transfer_price to compute transfer_total when a transfer_type is
+given. Same new-column-on-existing-table situation as
+Contract.transfer_required: Booking.transfer_type/transfer_total would
+need an explicit ALTER TABLE against the already-existing bookings
+table, not just Base.metadata.create_all. Approved by Daler: keep
+transfer_total separate from total_amount. Timing: held for a dedicated
+Booking Engine task, not implemented as part of Decision 022.
+
+---
+
 # Decision Template
 
 Decision Number:

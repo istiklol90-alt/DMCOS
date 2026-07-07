@@ -33,6 +33,7 @@ from app.engines.contract.models import (
     ContractSeason,
     ContractAgeCategory,
     ContractMealPlan,
+    ContractTransferOption,
     Rate,
     RateSupplement,
     Promotion,
@@ -51,6 +52,7 @@ from app.engines.contract.schemas import (
     ContractSeasonUpdate,
     ContractAgeCategoryCreate,
     ContractMealPlanCreate,
+    ContractTransferOptionCreate,
     RateCreate,
     RateUpdate,
     RateSupplementCreate,
@@ -339,6 +341,24 @@ def update_contract_meal_plan(db: Session, meal_plan_id: int, **fields) -> Contr
     if "meal_code" in fields:
         validate_meal_code(fields["meal_code"])
     return repository.update_contract_meal_plan(db, meal_plan, **fields)
+
+
+# ---------------------------------------------------------------------------
+# Contract Transfer Option
+# ---------------------------------------------------------------------------
+
+
+def create_contract_transfer_option(
+    db: Session, data: ContractTransferOptionCreate
+) -> ContractTransferOption:
+    """Add a transfer option to a contract. Raises ValueError if the contract doesn't exist."""
+    _require_contract(db, data.contract_id)
+    return repository.create_contract_transfer_option(db, **data.model_dump())
+
+
+def list_contract_transfer_options(db: Session, contract_id: int) -> list[ContractTransferOption]:
+    """Return every transfer option defined for one contract (any status)."""
+    return repository.list_contract_transfer_options(db, contract_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1023,6 +1043,60 @@ def get_meal_plans(db: Session, contract_id: int, room_type_id: int) -> list[Con
                 priced_ids.add(supplement.meal_plan_id)
 
     return [mp for mp in all_meal_plans if mp.id in priced_ids]
+
+
+def get_transfer_options(db: Session, contract_id: int) -> list[ContractTransferOption]:
+    """Return every Active transfer option configured for this contract."""
+    return [
+        o for o in repository.list_contract_transfer_options(db, contract_id) if o.status == "Active"
+    ]
+
+
+def get_transfer_price(
+    db: Session, contract_id: int, transfer_type: str, adults: int, children: int, infants: int = 0
+) -> dict:
+    """
+    Compute the one-time round-trip transfer cost for a specific
+    transfer_type on this contract: price_adult * adults + price_child *
+    children + (price_infant or 0) * infants. Not multiplied by nights —
+    unlike RateSupplement's per_person_per_night pattern, a transfer is a
+    single round-trip charge, not a recurring nightly one. Currency comes
+    from the contract itself; ContractTransferOption has no currency column
+    of its own, since nothing so far suggests a transfer needs a currency
+    independent of its contract's.
+
+    Raises ValueError if the contract doesn't exist, or no Active transfer
+    option with this transfer_type exists on it.
+    """
+    contract = _require_contract(db, contract_id)
+    options = [
+        o
+        for o in repository.list_contract_transfer_options(db, contract_id)
+        if o.status == "Active" and o.transfer_type == transfer_type
+    ]
+    if not options:
+        raise ValueError(
+            f"Contract {contract_id} has no Active transfer option with transfer_type '{transfer_type}'"
+        )
+    option = options[0]
+
+    total = (
+        option.price_adult * adults
+        + option.price_child * children
+        + (option.price_infant or 0) * infants
+    )
+
+    return {
+        "contract_id": contract_id,
+        "transfer_type": option.transfer_type,
+        "transfer_name": option.transfer_name,
+        "currency": contract.currency,
+        "occupancy": {"adults": adults, "children": children, "infants": infants},
+        "price_adult": option.price_adult,
+        "price_child": option.price_child,
+        "price_infant": option.price_infant,
+        "total": total,
+    }
 
 
 def get_child_policy(db: Session, contract_id: int, room_type_id: int) -> list[dict]:

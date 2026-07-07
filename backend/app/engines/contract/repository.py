@@ -10,6 +10,7 @@ from app.engines.contract.models import (
     ContractSeason,
     ContractAgeCategory,
     ContractMealPlan,
+    ContractTransferOption,
     Rate,
     RateSupplement,
     Promotion,
@@ -246,6 +247,29 @@ def update_contract_meal_plan(
     db.commit()
     db.refresh(meal_plan)
     return meal_plan
+
+
+# ---------------------------------------------------------------------------
+# Contract Transfer Option
+# ---------------------------------------------------------------------------
+
+
+def create_contract_transfer_option(db: Session, **fields) -> ContractTransferOption:
+    """Insert a new transfer option row for a contract (must include contract_id, transfer_type, price_adult, price_child) and return it with its generated id."""
+    option = ContractTransferOption(**fields)
+    db.add(option)
+    db.commit()
+    db.refresh(option)
+    return option
+
+
+def list_contract_transfer_options(db: Session, contract_id: int) -> list[ContractTransferOption]:
+    """Return every transfer option defined for one contract."""
+    return (
+        db.query(ContractTransferOption)
+        .filter(ContractTransferOption.contract_id == contract_id)
+        .all()
+    )
 
 
 # ---------------------------------------------------------------------------
