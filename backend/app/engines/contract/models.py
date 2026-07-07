@@ -108,6 +108,13 @@ class Rate(Base):
     # RateSupplement below, not as fixed columns here — see Decision on
     # Contract Engine's flexible-core schema design.
     base_price = Column(Float, nullable=False)
+    # How many adults base_price already includes (e.g. "based on 2" in a
+    # real hotel contract) — distinct from Hotel Engine's RoomType.max_occupancy,
+    # which is a physical capacity ceiling, not a pricing inclusion count.
+    # Added per Decision 017 for the "extra_person" RateSupplement adjustment
+    # type (Decision 016's gap): adults beyond this count are charged per
+    # night via an extra_person RateSupplement, not folded into base_price.
+    base_occupancy = Column(Integer, nullable=False, default=2)
     minimum_stay = Column(Integer, nullable=True)
     maximum_stay = Column(Integer, nullable=True)
     booking_start = Column(Date, nullable=True)

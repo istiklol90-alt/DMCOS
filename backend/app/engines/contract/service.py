@@ -1205,6 +1205,19 @@ def get_room_price(
             ):
                 supplements_total += _calc_supplement_total(supplement, nights, rate.base_price, 1)
 
+    # Decision 017: adults beyond rate.base_occupancy ("based on 2" in a real
+    # contract) are charged via an "extra_person" RateSupplement, separate
+    # from age_category_price above — unlike that per-bucket-headcount
+    # mechanism, extra_person only charges for the adults NOT already
+    # included in base_price. Scoped to adults only, matching the real
+    # contract this was modeled on (Kandima) — no equivalent "extra child"
+    # rule has been confirmed, so this isn't extended to children/infants.
+    extra_adults = max(0, adults - rate.base_occupancy)
+    if extra_adults > 0:
+        for supplement in repository.list_rate_supplements(db, rate.id, adjustment_type="extra_person"):
+            if supplement.status == "Active":
+                supplements_total += _calc_supplement_total(supplement, nights, rate.base_price, extra_adults)
+
     price_before_promotions = base_total + supplements_total
 
     today = date_type.today()

@@ -290,6 +290,49 @@ dedicated future task.
 
 ---
 
+# Decision 017
+
+Date: 2026-07-07
+
+Decision: Added Rate.base_occupancy (Integer, nullable=False, default=2) to
+Contract Engine's Rate model — how many adults base_price already includes
+(e.g. "based on 2" in a real hotel contract), distinct from Hotel Engine's
+RoomType.max_occupancy, which is a physical capacity ceiling, not a pricing
+inclusion count. Implemented the "extra_person" RateSupplement adjustment
+type in get_room_price (one of Decision 016's three unimplemented types):
+adults beyond rate.base_occupancy are charged per the extra_person
+supplement's calculation_basis, added to supplements_total alongside (not
+replacing) the existing age_category_price mechanism. Scoped to adults only
+— no equivalent "extra child" rule has been confirmed against a real
+contract, so this is not extended to children/infants. "extra_bed" and
+"single_occupancy" remain unimplemented; Decision 016's gap for those two
+stays open pending project-owner business rules.
+
+Reason: Modeled directly on the real Kandima Maldives contract (Sunrise
+Beach Villa: base_price $2,390/night at base_occupancy=2, extra_person
+supplement $190/night per adult beyond that) — a concrete real-world case
+that needed base_occupancy-aware pricing, giving a bounded, verifiable slice
+of Decision 016's gap to implement now rather than waiting on all three
+adjustment types' business rules at once.
+
+Approved By: Daler
+
+Status: Implemented and verified end-to-end via real HTTP calls against
+contract-engine's /contracts/{id}/room-types/{id}/price endpoint, using
+persistent Kandima Maldives / Sunrise Beach Villa test data (hotel, room
+type, contract, Peak season, rate, extra_person RateSupplement — created via
+direct SQLite writes in a prior session; no migration file or seed script
+exists for it, consistent with this project having no migration tooling and
+dmc.db being gitignored). adults=3, children=0, infants=0, 1 night,
+meal_plan=BB -> final_total=2580.0 exactly (2390 base + 190 extra_person for
+the 1 adult over base_occupancy). Regression-checked against the
+pre-existing Test Beach Resort contract (2 adults, 6 nights, Early Bird 10%)
+-> still returns exactly 540.0, confirming the base_occupancy migration and
+new extra_person code path introduced no regression to existing pricing
+paths.
+
+---
+
 # Decision Template
 
 Decision Number:

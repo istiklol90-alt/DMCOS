@@ -194,6 +194,7 @@ class RateCreate(BaseModel):
     market_id: Optional[int] = None
     currency: Currency
     base_price: float = Field(..., gt=0)
+    base_occupancy: int = Field(2, ge=1)
     minimum_stay: Optional[int] = Field(None, ge=1)
     maximum_stay: Optional[int] = Field(None, ge=1)
     booking_start: Optional[date] = None
@@ -207,6 +208,7 @@ class RateUpdate(BaseModel):
     market_id: Optional[int] = None
     currency: Optional[Currency] = None
     base_price: Optional[float] = Field(None, gt=0)
+    base_occupancy: Optional[int] = Field(None, ge=1)
     minimum_stay: Optional[int] = Field(None, ge=1)
     maximum_stay: Optional[int] = Field(None, ge=1)
     booking_start: Optional[date] = None
@@ -226,6 +228,7 @@ class RateResponse(BaseModel):
     market_id: Optional[int] = None
     currency: str
     base_price: float
+    base_occupancy: int
     minimum_stay: Optional[int] = None
     maximum_stay: Optional[int] = None
     booking_start: Optional[date] = None
