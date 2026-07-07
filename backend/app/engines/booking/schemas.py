@@ -47,6 +47,11 @@ class BookingCreate(BaseModel):
     children: int = Field(0, ge=0)
     infants: int = Field(0, ge=0)
     market_id: Optional[int] = None
+    # ContractTransferOption.transfer_type the agent selected. Required by
+    # create_booking only if the hotel's active contract has
+    # transfer_required=true; otherwise an optional add-on, priced the same
+    # way if given.
+    transfer_type: Optional[str] = None
     special_requests: Optional[str] = None
     arrival_flight_number: Optional[str] = None
     departure_flight_number: Optional[str] = None
@@ -83,6 +88,8 @@ class BookingResponse(BaseModel):
     status: str
     currency: str
     total_amount: float
+    transfer_type: Optional[str] = None
+    transfer_total: Optional[float] = None
     special_requests: Optional[str] = None
     arrival_flight_number: Optional[str] = None
     departure_flight_number: Optional[str] = None

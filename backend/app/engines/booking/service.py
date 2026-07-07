@@ -144,6 +144,14 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
     with status="Pending" (see this module's docstring for why not
     "Draft"). Raises ValueError at whichever step fails first — no
     inventory is reserved if any earlier validation fails.
+
+    Decision 022: if the resolved contract has transfer_required=true,
+    data.transfer_type must be provided or this raises ValueError before
+    any allotment/pricing work happens. If a transfer_type is given
+    (required or not), it's priced via get_transfer_price and stored in
+    its own transfer_total column — never folded into total_amount, which
+    stays room-only, so Finance Engine can itemize room vs. transfer
+    revenue separately later.
     """
     hotel_service.get_hotel(db, data.hotel_id)
     hotel_service.get_room_type(db, data.room_type_id)
@@ -154,6 +162,11 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
     contract = contract_service.get_active_contract(db, data.hotel_id, data.arrival_date)
     if contract is None:
         raise ValueError(f"Hotel {data.hotel_id} has no currently-active contract")
+
+    if contract.transfer_required and data.transfer_type is None:
+        raise ValueError(
+            f"Hotel {data.hotel_id}'s contract requires selecting a transfer option"
+        )
 
     available = contract_service.check_allotment(
         db, contract.id, data.room_type_id, data.arrival_date, data.departure_date
@@ -175,6 +188,13 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
         data.children,
         data.infants,
     )
+
+    transfer_total = None
+    if data.transfer_type is not None:
+        transfer_price = contract_service.get_transfer_price(
+            db, contract.id, data.transfer_type, data.adults, data.children, data.infants
+        )
+        transfer_total = transfer_price["total"]
 
     contract_service.reserve_allotment(
         db, contract.id, data.room_type_id, data.arrival_date, data.departure_date
@@ -211,6 +231,8 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
             status="Pending",
             currency=price["currency"],
             total_amount=price["final_total"],
+            transfer_type=data.transfer_type,
+            transfer_total=transfer_total,
             special_requests=data.special_requests,
             arrival_flight_number=data.arrival_flight_number,
             departure_flight_number=data.departure_flight_number,

@@ -49,6 +49,14 @@ class Booking(Base):
     # promotions change afterward (same "original price never changes"
     # principle 02_Logic_Rules.md #18 applies to contracts, extended here).
     total_amount = Column(Float, nullable=False)
+    # Decision 022's Booking Engine integration: the agent's selected
+    # ContractTransferOption.transfer_type (None if the contract doesn't
+    # require one and the agent didn't add one), and its own frozen
+    # get_transfer_price snapshot — deliberately a separate column, NOT
+    # folded into total_amount, so Finance Engine can itemize room vs.
+    # transfer revenue later without unpacking a merged number.
+    transfer_type = Column(String(50), nullable=True)
+    transfer_total = Column(Float, nullable=True)
     # 02_Logic_Rules.md #50 fields not in 03_Domain_Model.md #37's flat list.
     special_requests = Column(Text, nullable=True)
     arrival_flight_number = Column(String(50), nullable=True)

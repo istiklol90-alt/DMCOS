@@ -592,29 +592,46 @@ re-run unchanged: Test Beach Resort 540.0, Kandima BB 1002.0, HB+
 still resolves correctly with check_in -- no regressions from adding
 this module.
 
-Not yet done, deliberately out of scope for this decision: Booking
-Engine integration (how create_booking consumes transfer_required/
-get_transfer_price) is proposed separately, not implemented here --
-matching the Decision 011 precedent of adding Contract Engine interface
-functions before Booking Engine's own task consumes them.
+Originally deferred, since implemented (2026-07-08, same Decision 022):
+Booking Engine integration -- how create_booking consumes
+transfer_required/get_transfer_price -- was first proposed and logged
+here without implementation (matching the Decision 011 precedent of
+adding Contract Engine interface functions before Booking Engine's own
+task consumes them), then implemented the same day once approved.
 
-Booking Engine integration proposal (logged now so it isn't lost, not
-implemented today): BookingCreate gains transfer_type: Optional[str] =
-None. Booking model gains two new nullable columns, transfer_type and
-transfer_total -- transfer_total is its own separate frozen-snapshot
-column, NOT merged into total_amount, so Finance Engine can itemize room
-vs. transfer revenue separately later; total_amount stays room-only,
-consistent with how pricing snapshots are already kept separate
-elsewhere. create_booking validates contract.transfer_required against
-data.transfer_type right after the existing get_active_contract call
-(raising ValueError if a selection is required but missing), then calls
-get_transfer_price to compute transfer_total when a transfer_type is
-given. Same new-column-on-existing-table situation as
-Contract.transfer_required: Booking.transfer_type/transfer_total would
-need an explicit ALTER TABLE against the already-existing bookings
-table, not just Base.metadata.create_all. Approved by Daler: keep
-transfer_total separate from total_amount. Timing: held for a dedicated
-Booking Engine task, not implemented as part of Decision 022.
+Booking Engine integration: BookingCreate gains transfer_type:
+Optional[str] = None. Booking model gains two new nullable columns,
+transfer_type and transfer_total -- transfer_total is its own separate
+frozen-snapshot column, NOT merged into total_amount, so Finance Engine
+can itemize room vs. transfer revenue separately later; total_amount
+stays room-only, consistent with how pricing snapshots are already kept
+separate elsewhere. create_booking validates contract.transfer_required
+against data.transfer_type right after the existing get_active_contract
+call (raising ValueError if a selection is required but missing), then
+calls get_transfer_price to compute transfer_total when a transfer_type
+is given (required or optional), before reserve_allotment -- so an
+invalid transfer_type still fails with zero inventory side effects.
+Same new-column-on-existing-table situation as Contract.transfer_required:
+Booking.transfer_type/transfer_total needed an explicit ALTER TABLE
+against the already-existing bookings table, not just
+Base.metadata.create_all. Approved by Daler: keep transfer_total
+separate from total_amount.
+
+Verified via real HTTP calls against the live booking-engine API:
+Kandima (transfer_required=true) booking attempt WITHOUT transfer_type
+correctly rejected with "Hotel 2's contract requires selecting a
+transfer option," zero side effects. Kandima booking WITH
+transfer_type="seaplane" (2 adults) succeeded: total_amount=1002.0
+(room-only, unchanged) and transfer_total=1450.0 (725*2) stored as
+separate columns, exactly as designed. Test Beach Resort
+(transfer_required=false) booking WITHOUT any transfer_type still
+succeeds normally (transfer_type/transfer_total both null,
+total_amount=90.0 unaffected) -- confirming the optional path is
+unchanged for hotels that don't require a transfer. One minimal test
+Allotment row was created for Kandima room_type_id=2 (2027-02-01) purely
+to unblock this end-to-end verification, since Kandima's real full
+inventory counts still aren't modeled (separate, already-logged TODO,
+not addressed here).
 
 ---
 
