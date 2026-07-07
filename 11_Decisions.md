@@ -309,27 +309,39 @@ contract, so this is not extended to children/infants. "extra_bed" and
 stays open pending project-owner business rules.
 
 Reason: Modeled directly on the real Kandima Maldives contract (Sunrise
-Beach Villa: base_price $2,390/night at base_occupancy=2, extra_person
-supplement $190/night per adult beyond that) — a concrete real-world case
-that needed base_occupancy-aware pricing, giving a bounded, verifiable slice
-of Decision 016's gap to implement now rather than waiting on all three
-adjustment types' business rules at once.
+Beach Pool Villa with Swirlpool: base_price $1,002/night at
+base_occupancy=2, extra_person supplement $190/night per adult beyond that)
+— a concrete real-world case that needed base_occupancy-aware pricing,
+giving a bounded, verifiable slice of Decision 016's gap to implement now
+rather than waiting on all three adjustment types' business rules at once.
 
 Approved By: Daler
 
 Status: Implemented and verified end-to-end via real HTTP calls against
 contract-engine's /contracts/{id}/room-types/{id}/price endpoint, using
-persistent Kandima Maldives / Sunrise Beach Villa test data (hotel, room
-type, contract, Peak season, rate, extra_person RateSupplement — created via
-direct SQLite writes in a prior session; no migration file or seed script
-exists for it, consistent with this project having no migration tooling and
-dmc.db being gitignored). adults=3, children=0, infants=0, 1 night,
-meal_plan=BB -> final_total=2580.0 exactly (2390 base + 190 extra_person for
-the 1 adult over base_occupancy). Regression-checked against the
-pre-existing Test Beach Resort contract (2 adults, 6 nights, Early Bird 10%)
--> still returns exactly 540.0, confirming the base_occupancy migration and
-new extra_person code path introduced no regression to existing pricing
-paths.
+persistent Kandima Maldives / Sunrise Beach Pool Villa with Swirlpool test
+data (hotel, room type, contract, Peak season, rate, extra_person
+RateSupplement — created via direct SQLite writes in a prior session; no
+migration file or seed script exists for it, consistent with this project
+having no migration tooling and dmc.db being gitignored). adults=3,
+children=0, infants=0, 1 night, meal_plan=BB -> final_total=1192.0 exactly
+(1002 base + 190 extra_person for the 1 adult over base_occupancy).
+Regression-checked against the pre-existing Test Beach Resort contract (2
+adults, 6 nights, Early Bird 10%) -> still returns exactly 540.0, confirming
+the base_occupancy migration and new extra_person code path introduced no
+regression to existing pricing paths.
+
+Correction (logged 2026-07-07, same day): the room name and Peak rate
+originally recorded here ("Sunrise Beach Villa," $2,390 base / $2,580
+final_total) were wrong. That room name isn't a real Kandima room type at
+all — the persistent test data was mislabeled with a placeholder price that
+didn't match the real Kandima PDF. Corrected here to the actual room name
+and rate ("Sunrise Beach Pool Villa with Swirlpool," $1,002/night) once the
+real contract data was verified against the source PDF. The extra_person
+mechanism itself was re-verified against the corrected numbers with the
+identical math (base + 190 extra_person), so the code fix this decision
+describes remains valid and unaffected — only the test data and the figures
+quoted here were wrong, not the pricing logic.
 
 ---
 
@@ -406,6 +418,59 @@ Approved By: Daler
 
 Status: Logged as a significant future task requiring careful scoping —
 current discount behavior remains unchanged for now.
+
+---
+
+# Decision 020
+
+Date: 2026-07-07
+
+Decision: Contract Engine's pricing rules (room-type-and-period discount
+matrices, meal-plan-specific discounts, occupancy-conditional rules like
+"different offer if 1 adult vs 2+ adults", transfer discounts by arrival
+date, extra-person supplements, age-category meal pricing) should be
+architected as a library of reusable, parameterized "pricing rule formulas"
+— not one-off code per hotel. When a new hotel/contract is added, the
+manager should be able to SELECT which formulas apply (from an existing
+catalog) and fill in the specific numbers/dates/thresholds for that
+contract, rather than any new code being written per hotel. Kandima's real
+KM26_03 special offer (discovered this session) is the first real-world
+case complex enough to require this — it needs at minimum: a
+room-type×date-range discount matrix formula, a meal-plan-discount-by-period
+formula, an adult-count-conditional family-offer formula, and a
+transfer-discount-by-arrival-date formula, and a real hotel WILL reuse a
+subset of these same formulas with different numbers.
+
+Reason: Project owner identified that pricing mechanisms (discount
+matrices, meal plan rules, occupancy-conditional offers) repeat across
+hotels with different specific values but the same underlying shape/logic.
+Building each as a reusable formula (vs. hotel-specific code) means every
+future hotel with similar contract structures can be onboarded by filling
+in data, not writing code — directly serving the AI-first, scalable
+architecture goal established early in this project.
+
+Approved By: Daler
+
+Status: Logged as a major future architecture direction for Contract
+Engine's pricing rule system. Not to be designed/implemented today — this
+is a significant redesign requiring careful scoping (which formulas are
+truly common across real contracts vs. hotel-specific edge cases) before
+implementation. Immediate next step remains: add Kandima's 9 missing room
+types using the existing, already-working pattern.
+
+---
+
+TODO (not a numbered decision — quick note, log properly if/when scoped):
+Kandima's real room inventory counts (Sky Studio 56, Beach Studio 72, Beach
+Villa with Swirlpool 18, Sunrise Beach Pool Villa with Swirlpool 14, Sunset
+Beach Pool Villa with Swirlpool 23, Aqua Villa 30, Aqua Villa with Swirlpool
+29, Ocean Pool Villa 18, 2-bedroom Family Sky Suite 8, Sunset Aqua Pool
+Suite 2 — from the real PDF) are not modeled anywhere yet. These map to
+Contract Engine's `allotments` table, which is day-by-day per room type and
+would need explicit rows across the whole contract period
+(2027-01-11..2028-01-07) to be real — a separate, larger task from just
+adding the room types/rates themselves. Don't forget these real unit counts
+exist when that task is eventually scoped.
 
 ---
 
