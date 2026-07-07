@@ -1006,11 +1006,22 @@ def get_cancellation_policy(
 
 
 def get_meal_plans(db: Session, contract_id: int, room_type_id: int) -> list[ContractMealPlan]:
-    """Return the meal plans that actually have a priced Rate for this room type — not just every meal plan defined anywhere on the contract."""
+    """
+    Return the meal plans that are actually priceable for this room type —
+    either via a direct Rate row, or via an active "meal_plan_supplement"
+    RateSupplement attached to one of this room type's rates (the same
+    fallback mechanism get_room_price already supports). Not just every
+    meal plan defined anywhere on the contract.
+    """
     all_meal_plans = repository.list_contract_meal_plans(db, contract_id)
-    priced_ids = {
-        r.meal_plan_id for r in repository.list_rates(db, contract_id, room_type_id=room_type_id)
-    }
+    rates = repository.list_rates(db, contract_id, room_type_id=room_type_id)
+
+    priced_ids = {r.meal_plan_id for r in rates}
+    for rate in rates:
+        for supplement in repository.list_rate_supplements(db, rate.id, adjustment_type="meal_plan_supplement"):
+            if supplement.status == "Active" and supplement.meal_plan_id is not None:
+                priced_ids.add(supplement.meal_plan_id)
+
     return [mp for mp in all_meal_plans if mp.id in priced_ids]
 
 

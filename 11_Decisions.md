@@ -474,6 +474,52 @@ exist when that task is eventually scoped.
 
 ---
 
+# Decision 021
+
+Date: 2026-07-07
+
+Decision: Contract Engine's get_meal_plans (LOCKED) only returned meal
+plans that have a direct Rate row for the requested room type — it never
+checked for meal plans reachable only via an active "meal_plan_supplement"
+RateSupplement on that room type's base rate, even though get_room_price
+has always supported pricing a meal plan that way (a base Rate plus
+meal_plan_supplement rows, not just a direct per-meal-plan Rate). Fixed by
+adding a second pass in get_meal_plans that collects meal_plan_id from
+every active meal_plan_supplement RateSupplement on the room type's rate(s),
+unioned with the existing direct-Rate meal_plan_ids. Purely additive — the
+direct-Rate half of the logic is unchanged, no existing signature, model,
+schema, or endpoint changed. docs/interface-contracts/contract-hotel-
+booking.md's get_meal_plans entry updated to match. No caller changes
+needed: HotelSearch.tsx's only caller already iterates the returned array
+generically, and the response shape (list[ContractMealPlan]) didn't change,
+only its contents can now be longer.
+
+Reason: Discovered when Kandima's HB+/FB+/PAI meal plan supplements (added
+this session, modeled as meal_plan_supplement RateSupplement rows on top of
+the BB direct rate, per the real Kandima PDF) priced correctly via direct
+get_room_price calls but never appeared in HotelSearch.tsx's meal-plan rate
+table — traced to get_meal_plans silently filtering them out, since it only
+implemented the direct-Rate half of the same two-path pricing model
+get_room_price already supports. Same category of gap as Decisions
+011/015/018: a downstream real usage (the meal-plan rate table UI) revealing
+a hole in an already-LOCKED Engine's function that a purely code-level read
+never would have caught.
+
+Approved By: Daler
+
+Status: Implemented and verified. get_meal_plans(contract_id=2,
+room_type_id=2) via real HTTP call now returns all 4 of Kandima's meal
+plans (BB, HB+, FB+, PAI) for Sunrise Beach Pool Villa with Swirlpool,
+where it previously returned only BB. Full regression suite re-run and
+unchanged: Test Beach Resort (2 adults, 6 nights, Early Bird 10%) ->
+540.0; Kandima Sunrise Beach Pool Villa BB (3 adults) -> 1192.0, BB (2
+adults + 1 child) -> 1062.0, BB (2 adults) -> 1002.0, HB+ -> 1182.0, FB+
+-> 1282.0, PAI -> 1392.0; Sunset Aqua Pool Suite BB -> 1927.0, HB+ ->
+2107.0, FB+ -> 2207.0, PAI -> 2317.0 — all exact matches, no regressions
+from this fix.
+
+---
+
 # Decision Template
 
 Decision Number:
