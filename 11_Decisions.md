@@ -196,6 +196,100 @@ Status: Logged as superseding Decision 007's deferral for Hotel, Contract, and B
 
 ---
 
+# Decision 014
+
+Date: 2026-07-07
+
+Decision: Port 8000 has an orphaned/phantom socket listener (PID 15248) with no identifiable owning process, unkillable via standard Windows tools, serving stale pre-Hotel/Contract/Booking-Engine code. Port 8001 is adopted as the standard dev backend port going forward. A reboot might clear the phantom socket, but rather than pause work for that, we're standardizing on 8001.
+
+Reason: Confirmed via netstat/Get-NetTCPConnection that PID 15248 has held port 8000 LISTENING since 2026-07-04, answering HTTP 200 with an OpenAPI schema missing the hotel-engine/contract-engine/booking-engine routers — yet tasklist, Get-Process, and wmic all report no such process exists. This blocks frontend work (HotelSearch.tsx) from reliably using port 8000. Port 8001 was confirmed live and serving the current backend (booking-engine routes present in its OpenAPI schema).
+
+Approved By: Daler
+
+Status: Implemented. config.ts, CLAUDE.md's documented dev commands, and AgentRegistration.tsx's hardcoded API host (which bypassed config.ts entirely) were all updated to use port 8001.
+
+---
+
+# Decision 015
+
+Date: 2026-07-07
+
+Decision: Contract Engine's get_room_price (LOCKED) and, transitively, Booking
+Engine's create_booking (LOCKED) never validated adults+children against Hotel
+Engine's RoomType.max_occupancy — confirmed by tracing the full call chain
+during Booking Engine frontend testing (adults=2 + children=2 = 4 was priced
+and would have been bookable against a room type with max_occupancy=3, no
+error). Fixed by adding a new validate_capacity(db, room_type_id, adults,
+children) function to Hotel Engine's service.py — a thin wrapper around the
+already-existing validate_occupancy_within_capacity validator, exposed
+through Hotel Engine's service boundary — and calling it from Contract
+Engine's get_room_price right after the existing adults<1 guard. Because
+Booking Engine's create_booking already calls get_room_price internally
+before reserve_allotment, this single insertion point closes the gap for
+both the standalone price-check endpoint and actual booking creation, with
+no changes needed in booking/service.py itself. Infants remain excluded from
+the check, consistent with validate_occupancy_within_capacity's existing
+documented rule.
+
+Reason: Discovered via live frontend testing of HotelSearch.tsx (Decision
+013's frontend workstream) — increasing guest count beyond a room's
+max_occupancy was silently priced with no error, which would let an agent
+create an invalid overbooked reservation. This is the same category of gap
+Decision 010 anticipated (a downstream Engine's real usage revealing a hole
+in an already-LOCKED Engine's contract) and the same additive-extension
+pattern as Decision 011 (reserve_allotment/release_allotment): a purely
+additive fix to a LOCKED engine's service surface, consumed by another
+LOCKED engine, re-verified for regressions before considered done.
+
+Approved By: Daler
+
+Status: Implemented and re-verified. Direct get_room_price calls: baseline
+(2 adults, 0 children, 6 nights) still returns exactly 540.0 (no
+regression); at-capacity boundary (2 adults + 1 child = 3, max_occupancy=3)
+still succeeds (648.0, no false rejection); over-capacity (adults=10)
+correctly raises ValueError ("Occupancy combination (10 adults + 0 children
+= 10) exceeds room type 'Beach Villa' max_occupancy of 3"). Also verified
+via a real create_booking call with adults=10 against an available night
+(check_allotment would otherwise pass) — raises the same ValueError with
+zero DB side effects (no allotment reserved, no Booking row inserted,
+confirmed by rollback + row-count check).
+
+---
+
+# Decision 016
+
+Date: 2026-07-07
+
+Decision: get_room_price only implements "age_category_price" and
+"meal_plan_supplement" RateSupplement adjustment types. "extra_bed",
+"single_occupancy", and "extra_person" exist only as a code comment
+(models.py:126-128) and in the governing docs (02_Logic_Rules.md #738-741,
+03_Domain_Model.md #919-925) but have zero implementation — any contract
+configured with these adjustment types would have them silently ignored.
+This requires project-owner business rule decisions before implementation
+(e.g., does single_occupancy apply whenever adults=1 regardless of room
+type, or only specific room types? Is extra_bed a fixed per-stay charge or
+per-night? Does extra_person differ from age_category_price for adults, or
+supersede it?) — not something to invent now. Flagging as a real, documented
+gap, separate from the capacity-check bug.
+
+Reason: Discovered while investigating why adults=10 and adults=1 returned
+identical prices during Booking Engine frontend testing. Traced to two
+separate causes: (1) this test contract has no "Adult" ContractAgeCategory
+or matching RateSupplement row, a test-data gap, not a code bug, since
+get_room_price's existing age_category_price bucket logic is generic and
+would charge per adult if that data existed (same mechanism already
+correctly charging per child); and (2) get_room_price never queries
+"extra_bed"/"single_occupancy"/"extra_person" adjustment types at all, which
+is the real code gap logged here.
+
+Approved By: Daler
+
+Status: Logged as known unimplemented pricing dimension, to be scoped in a
+dedicated future task.
+
+---
+
 # Decision Template
 
 Decision Number:

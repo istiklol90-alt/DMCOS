@@ -32,7 +32,7 @@ The numbered root-level docs are the project's spec and are treated as the sourc
 
 Backend (FastAPI, from `backend/`, using the committed `.venv`):
 ```
-./.venv/Scripts/python.exe -m uvicorn main:app --reload   # dev server on :8000
+./.venv/Scripts/python.exe -m uvicorn main:app --reload --port 8001   # dev server on :8001 (see Decision 014 — port 8000 has an unkillable phantom listener)
 ./.venv/Scripts/python.exe -m database.init_db            # create tables from models (also backend/init_db.py, duplicate); must be run as a module — `python database/init_db.py` fails with ModuleNotFoundError since backend/ never lands on sys.path that way
 ./.venv/Scripts/python.exe create_admin.py                 # create admin@dmcos.com / Admin@2026
 ./.venv/Scripts/python.exe check_db.py                     # inspect dmc.db tables/columns via sqlite3
@@ -41,7 +41,7 @@ Dependencies are pinned in `backend/requirements.txt` — install with `./.venv/
 
 Frontend (React + TypeScript + Vite, from `frontend/`):
 ```
-npm run dev       # vite dev server, expects backend at http://127.0.0.1:8000
+npm run dev       # vite dev server, expects backend at http://127.0.0.1:8001
 npm run build      # tsc -b && vite build
 npm run lint       # oxlint
 ```
@@ -67,6 +67,8 @@ No test suite exists in either backend or frontend.
   - **Known limitation:** `service.py`/`validators.py` only raise plain `ValueError`, so `api.py` maps every failure to HTTP 400, same known simplification as Hotel Engine.
   - **Known limitation:** `check_allotment(contract_id, room_type_id, check_in, check_out)` checks `available_rooms > 0` per night, not a specific requested room quantity — the Interface Contract's signature has no quantity parameter. Accepted as-is: most bookings are single-room, and multi-room group bookings already carry separate negotiated contract terms in practice. Revisit only if Booking Engine actually needs a multi-room check.
   - **Known limitation:** `get_room_price`'s `adults`/`children`/`infants` are mapped onto a contract's (possibly more granular) age categories by name-keyword matching (`"adult"`/`"infant"`, first non-matching category treated as "children") — a contract with more than one child-like category (e.g. both "Teen" and "Child") can't be fully disambiguated by this 3-bucket signature. Documented in `_resolve_age_categories`'s docstring.
+  - **Fixed (Decision 015):** `get_room_price` now calls Hotel Engine's `validate_capacity` before pricing anything, raising `ValueError` if `adults + children` exceeds the room type's `max_occupancy` (infants excluded). Previously, occupancy was never checked anywhere in the pricing or booking path — discovered via live Booking Engine frontend testing, where 4 guests were silently priced and would have been bookable against a 3-`max_occupancy` room. Because Booking Engine's `create_booking` already calls `get_room_price` internally before `reserve_allotment`, this single fix closes the gap for both the standalone price-check endpoint and actual booking creation.
+  - **Known limitation (Decision 016):** `get_room_price` only implements the `"age_category_price"` and `"meal_plan_supplement"` `RateSupplement` adjustment types. `"extra_bed"`, `"single_occupancy"`, and `"extra_person"` — corresponding to `02_Logic_Rules.md`'s `Extra Bed Price`/`Single Supplement` fields and mentioned in `models.py`'s own comment on `RateSupplement.adjustment_type` — are never queried anywhere in `get_room_price` and would be silently ignored if configured. Separately, this test contract has no `"Adult"` `ContractAgeCategory`/`RateSupplement` pair at all, so adult headcount currently contributes nothing to price regardless — a test-data gap, not a code bug, since the existing per-bucket supplement logic is generic and already correctly prices children. Needs project-owner business-rule decisions (does `single_occupancy` trigger whenever `adults == 1`? is `extra_bed` per-stay or per-night? does `extra_person` replace or stack with `age_category_price` for adults?) before implementation — not scoped to any task yet.
   - **Known architectural risk (Decision 010):** `service.py` directly imports and calls Hotel Engine's `service.py` (`app.engines.hotel.service`) to validate `hotel_id`/`room_type_id` existence. If Hotel Engine's service signatures ever change, Contract Engine could break silently with no automated check catching it — there's no test suite anywhere in the project to catch this class of regression either way. Flagged explicitly so a future Booking Engine (which will depend on both Hotel and Contract Engines) doesn't introduce a third silent link in this chain unnoticed.
   - No frontend consumes any `/contract-engine/*` endpoint yet. Was previously deferred pending Booking Engine; Decision 013 ended that deferral now that Booking Engine is built — see below.
   - `workflow.py`, `permissions.py`, `exceptions.py`, `constants.py`, `config.py`, `utils.py`, and `ai/` are still empty scaffolding, same reasoning as Hotel Engine's.
@@ -79,6 +81,7 @@ No test suite exists in either backend or frontend.
   - **Known limitation:** every endpoint duplicates JWT-decode logic locally, per Decision 006 — the third Engine repeating this.
   - **Known limitation:** `service.py`/`validators.py` only raise plain `ValueError`, same 400-for-everything simplification as Hotel/Contract Engine.
   - **Known limitations inherited from Contract Engine, unchanged here:** `check_allotment`'s single-room-only check (no requested-quantity parameter) and `get_room_price`'s 3-bucket age-category name-matching — both explicitly accepted as-is (see Contract Engine's entry above).
+  - **Fixed transitively (Decision 015):** `create_booking` calls `get_room_price` before `reserve_allotment`, so Contract Engine's new capacity check now also blocks booking creation for an over-capacity `adults`/`children` combination — no changes needed in `booking/service.py` itself. Verified directly: `adults=10` against a `max_occupancy=3` room type raises `ValueError` with zero DB side effects (no allotment reserved, no `Booking` row inserted).
   - `booking_number` has no documented format anywhere in the docs — `service._generate_booking_number` uses an invented `BK-` + UUID-hex scheme.
   - `api.py` exposes all of this as 12 authenticated REST endpoints under `/booking-engine` (see `11_Decisions.md` Decisions 011-013 for the full reasoning trail).
   - `workflow.py`, `permissions.py`, `exceptions.py`, `constants.py`, `config.py`, `utils.py`, and `ai/` are still empty scaffolding, same reasoning as Hotel/Contract Engine's.
@@ -90,7 +93,7 @@ No test suite exists in either backend or frontend.
 ## Frontend architecture
 
 - Entry (`main.tsx`) mounts `router.tsx` (`react-router-dom`), which routes `/`, `/register`, `/login`, `/dashboard`, `/admin-panel`, `/agent-dashboard` to page components — but `App.tsx` (rendered at `/`) *also* implements its own internal page switcher via `useState<Page>` and renders `Home`/`Register`/`Login`/`AdminPanel`/`AgentDashboard_v2`/`ManagerDashboard` conditionally instead of delegating to the router's child routes. In practice nearly all in-app navigation happens through `App.tsx`'s local state (and `localStorage.getItem("role")` on mount), not through the router paths — the router-defined child routes are largely dead paths. Be aware of this split when adding a new page/screen: decide which mechanism it should join rather than assuming the router config is authoritative. See "Known issues" below for the concrete failure modes this causes.
-- `config.ts` hardcodes `API_URL = "http://127.0.0.1:8000"`.
+- `config.ts` hardcodes `API_URL = "http://127.0.0.1:8001"` (see Decision 014 — port 8000 is avoided due to an unkillable phantom listener).
 - `pages/` — one component per screen (Home, Register/AgentRegistration, Login, ChangePassword, Dashboard, AdminPanel, AgentDashboard, AgentDashboard_v2, ManagerDashboard, CounteragentDashboard). `AgentDashboard.tsx` (v1) is no longer rendered anywhere — `App.tsx` renders `AgentDashboard_v2.tsx` for the agent role instead — but v1 hasn't been deleted.
 - `components/` grouped by feature area (`dashboard/`, `counteragents/`, `layout/`, `ui/`).
 - Role handling is string-based and inconsistently cased across the stack (backend stores/returns roles like `"Admin"`/`"agent"`; frontend checks both `"Admin"`/`"admin"` etc.) — check exact casing when touching role logic instead of assuming one convention.

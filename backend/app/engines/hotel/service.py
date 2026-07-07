@@ -241,6 +241,12 @@ def get_room_type(db: Session, room_type_id: int) -> RoomType:
     return _require_room_type(db, room_type_id)
 
 
+def validate_capacity(db: Session, room_type_id: int, adults: int, children: int) -> None:
+    """Raise ValueError if adults+children exceeds room_type_id's max_occupancy. Thin wrapper exposing validate_occupancy_within_capacity through Hotel Engine's service boundary, for Contract Engine's get_room_price to call (Decision 015)."""
+    room_type = _require_room_type(db, room_type_id)
+    validate_occupancy_within_capacity(room_type, adults, children)
+
+
 def list_room_types(db: Session, hotel_id: int) -> list[RoomType]:
     """Return all room/villa types for one hotel."""
     return repository.list_room_types(db, hotel_id)

@@ -1122,11 +1122,15 @@ def get_room_price(
         a contract with more than one child-like category can't be fully
         disambiguated by this 3-bucket signature.
 
-    Raises ValueError if adults < 1, no season covers check_in, or no Rate
-    exists at all (direct or base) for the room type/season.
+    Raises ValueError if adults < 1, if adults+children exceeds the room
+    type's max_occupancy (via Hotel Engine's validate_capacity — Decision
+    015; infants excluded from this check), if no season covers check_in,
+    or if no Rate exists at all (direct or base) for the room type/season.
     """
     if adults < 1:
         raise ValueError(f"adults must be at least 1, got {adults}")
+
+    hotel_service.validate_capacity(db, room_type_id, adults, children)
 
     meal_plans = [
         mp for mp in repository.list_contract_meal_plans(db, contract_id) if mp.meal_code == meal_plan
