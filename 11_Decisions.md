@@ -384,6 +384,31 @@ check-in date, not "always active" once a contract exists.
 
 ---
 
+# Decision 019
+
+Date: 2026-07-07
+
+Decision: Real-world discount calculation is more nuanced than currently
+implemented: discount % is calculated against the NET room price (before
+taxes), then subtracted from the GROSS price (after taxes), BEFORE
+meal-plan-upgrade and extra-service supplements are added. Example from
+project owner: net BB rate $200, gross (with taxes) $290, 10% discount = $20
+off the $200 net base, resulting in $290-$20=$270, THEN meal upgrade/extra-bed
+supplements are added on top. This requires: (1) modeling taxes (Green Tax,
+service charge, VAT/GST — currently not modeled at all in Contract Engine,
+only a single base_price exists), and (2) reordering the discount calculation
+to work against net-before-tax rather than base+supplements combined (current
+implementation). This is a significant, separate task — not a tweak to
+current work — and should not be implemented until scoped properly with the
+project owner, since it changes already-tested Contract Engine behavior.
+
+Approved By: Daler
+
+Status: Logged as a significant future task requiring careful scoping —
+current discount behavior remains unchanged for now.
+
+---
+
 # Decision Template
 
 Decision Number:
