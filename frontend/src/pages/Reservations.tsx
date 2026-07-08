@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { API_URL } from "../config";
+import { DateRangePicker } from "./HotelSearch";
 
 // ---------------------------------------------------------------------------
 // Types (only the fields this screen actually reads)
@@ -30,6 +31,8 @@ interface Booking {
   cancellation_reason: string | null;
   cancelled_at: string | null;
   cancellation_fee: number | null;
+  date_change_reason: string | null;
+  dates_changed_at: string | null;
   created_at: string;
 }
 
@@ -41,6 +44,7 @@ interface Guest {
   date_of_birth: string | null;
   nationality: string | null;
   passport_number: string | null;
+  passport_expiry: string | null;
   is_lead_guest: boolean;
 }
 
@@ -95,15 +99,28 @@ interface TransferPriceBreakdown {
 type SortKey = "created_at" | "arrival_date" | "status" | "net";
 type SortDir = "asc" | "desc";
 
+export interface Permissions {
+  canChangeDates: boolean;
+  canEditGuestDetails: boolean;
+  canEditFlights: boolean;
+}
+
+export type Scope = { type: "all" } | { type: "agent"; agentId: number };
+
 const TERMINAL_STATUSES = ["Cancelled", "Rejected", "Completed"];
 
 // ---------------------------------------------------------------------------
 // Fetch helper — same pattern as HotelSearch.tsx's fetchJson
 // ---------------------------------------------------------------------------
 
-async function fetchJson<T>(path: string, token: string): Promise<T> {
+async function fetchJson<T>(path: string, token: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...init?.headers,
+    },
   });
   if (!response.ok) {
     let detail = `Ошибка запроса (${response.status})`;
@@ -181,7 +198,8 @@ function formatDate(dateStr: string) {
 
 type AIFlag =
   | { kind: "pending_soon"; booking: Booking; daysUntilArrival: number }
-  | { kind: "cancellation_deadline"; booking: Booking; nextThreshold: number; daysUntilCross: number };
+  | { kind: "cancellation_deadline"; booking: Booking; nextThreshold: number; daysUntilCross: number }
+  | { kind: "recently_changed"; booking: Booking; hoursAgo: number };
 
 function computePendingSoonFlags(bookings: Booking[]): AIFlag[] {
   const today = todayStr();
@@ -228,7 +246,38 @@ function computeCancellationDeadlineFlags(
   return flags;
 }
 
-function flagText(flag: AIFlag, hotelName: string): string {
+// Admin-view-only rule (caller filters by scope): bookings whose dates were
+// changed by an agent within the last 24h — a "here's what changed, worth a
+// glance" signal, not an approval queue (Decision 029: Level 3 autonomous +
+// notification, not a Level 2 gate — the change is already applied).
+const RECENTLY_CHANGED_WINDOW_HOURS = 24;
+
+// The backend serializes datetime.utcnow() as a naive ISO string with no
+// "Z"/offset suffix (e.g. "2026-07-08T13:18:14.668797"). new Date(...) on
+// such a string parses it as LOCAL time, not UTC — for any viewer whose
+// timezone isn't UTC+0, that silently shifts every elapsed-time
+// computation by the local offset. Appending "Z" forces correct UTC parsing.
+function parseUtcTimestamp(isoString: string): number {
+  const withZ = /[zZ]|[+-]\d{2}:?\d{2}$/.test(isoString) ? isoString : `${isoString}Z`;
+  return new Date(withZ).getTime();
+}
+
+function computeRecentlyChangedFlags(bookings: Booking[]): AIFlag[] {
+  const now = Date.now();
+  return bookings
+    .filter((b): b is Booking & { dates_changed_at: string } => b.dates_changed_at !== null)
+    .map((b) => ({ booking: b, hoursAgo: (now - parseUtcTimestamp(b.dates_changed_at)) / (1000 * 60 * 60) }))
+    .filter((x) => x.hoursAgo >= 0 && x.hoursAgo <= RECENTLY_CHANGED_WINDOW_HOURS)
+    .map((x) => ({ kind: "recently_changed" as const, booking: x.booking, hoursAgo: Math.round(x.hoursAgo) }));
+}
+
+function isRecentlyChanged(b: Booking): boolean {
+  if (!b.dates_changed_at) return false;
+  const hoursAgo = (Date.now() - parseUtcTimestamp(b.dates_changed_at)) / (1000 * 60 * 60);
+  return hoursAgo >= 0 && hoursAgo <= RECENTLY_CHANGED_WINDOW_HOURS;
+}
+
+function flagText(flag: AIFlag, hotelName: string, agentNames: Record<number, string>): string {
   if (flag.kind === "pending_soon") {
     const days = flag.daysUntilArrival;
     const when =
@@ -238,6 +287,11 @@ function flagText(flag: AIFlag, hotelName: string): string {
           ? "заезд сегодня"
           : `заезд через ${days} дн.`;
     return `${flag.booking.booking_number} (${hotelName}) всё ещё "В ожидании" — ${when}`;
+  }
+  if (flag.kind === "recently_changed") {
+    const agentName = agentNames[flag.booking.agent_id] ?? `#${flag.booking.agent_id}`;
+    const when = flag.hoursAgo <= 0 ? "только что" : `${flag.hoursAgo} ч. назад`;
+    return `${flag.booking.booking_number} (${hotelName}) — даты изменены агентом ${agentName} ${when}`;
   }
   return `${flag.booking.booking_number} (${hotelName}) — через ${flag.daysUntilCross} дн. ужесточаются условия отмены (штраф начинает действовать за ${flag.nextThreshold} дн. до заезда)`;
 }
@@ -250,7 +304,15 @@ function IconSparkle({ className = "w-4 h-4" }: { className?: string }) {
   );
 }
 
-function AIInsightStrip({ flags, hotels }: { flags: AIFlag[]; hotels: Record<number, string> }) {
+function AIInsightStrip({
+  flags,
+  hotels,
+  agentNames,
+}: {
+  flags: AIFlag[];
+  hotels: Record<number, string>;
+  agentNames: Record<number, string>;
+}) {
   const [expanded, setExpanded] = useState(false);
 
   if (flags.length === 0) return null;
@@ -266,13 +328,13 @@ function AIInsightStrip({ flags, hotels }: { flags: AIFlag[]; hotels: Record<num
         </span>
         <div className="text-sm leading-relaxed text-white/90">
           <p>
-            <span className="font-medium text-white">AI заметил:</span> {flagText(first, firstHotelName)}
+            <span className="font-medium text-white">AI заметил:</span> {flagText(first, firstHotelName, agentNames)}
             {flags.length > 1 && <span className="text-white/60"> (и ещё {flags.length - 1})</span>}
           </p>
           {expanded && flags.length > 1 && (
             <ul className="mt-2 space-y-1 text-white/70">
               {flags.slice(1).map((f, i) => (
-                <li key={i}>— {flagText(f, hotels[f.booking.hotel_id] ?? `#${f.booking.hotel_id}`)}</li>
+                <li key={i}>— {flagText(f, hotels[f.booking.hotel_id] ?? `#${f.booking.hotel_id}`, agentNames)}</li>
               ))}
             </ul>
           )}
@@ -295,6 +357,244 @@ function AIInsightStrip({ flags, hotels }: { flags: AIFlag[]; hotels: Record<num
 }
 
 // ---------------------------------------------------------------------------
+// Guest edit — PUT /booking-engine/guests/{id}, a separate entity/endpoint
+// from Booking itself (flight numbers, a Booking field, are edited via
+// FlightNumbersEdit below instead — kept visually nearby, not merged).
+// ---------------------------------------------------------------------------
+
+function GuestRow({
+  guest,
+  onUpdated,
+  canEdit,
+}: {
+  guest: Guest;
+  onUpdated: (updated: Guest) => void;
+  canEdit: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [firstName, setFirstName] = useState(guest.first_name);
+  const [lastName, setLastName] = useState(guest.last_name);
+  const [nationality, setNationality] = useState(guest.nationality ?? "");
+  const [dateOfBirth, setDateOfBirth] = useState(guest.date_of_birth ?? "");
+  const [passportNumber, setPassportNumber] = useState(guest.passport_number ?? "");
+  const [passportExpiry, setPassportExpiry] = useState(guest.passport_expiry ?? "");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSave() {
+    if (!firstName.trim() || !lastName.trim()) {
+      setError("Имя и фамилия обязательны");
+      return;
+    }
+    const token = localStorage.getItem("token") || "";
+    setSubmitting(true);
+    setError(null);
+    try {
+      const updated = await fetchJson<Guest>(`/booking-engine/guests/${guest.id}`, token, {
+        method: "PUT",
+        body: JSON.stringify({
+          first_name: firstName.trim(),
+          last_name: lastName.trim(),
+          nationality: nationality.trim() || null,
+          date_of_birth: dateOfBirth || null,
+          passport_number: passportNumber.trim() || null,
+          passport_expiry: passportExpiry || null,
+        }),
+      });
+      onUpdated(updated);
+      setEditing(false);
+    } catch (err: any) {
+      setError(err.message || "Не удалось сохранить гостя");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <li className="flex items-center gap-2 rounded-lg bg-sand/50 px-3 py-2">
+        <span className="font-medium text-ink">{guest.first_name} {guest.last_name}</span>
+        {guest.is_lead_guest && (
+          <span className="rounded-full bg-coral/15 px-2 py-0.5 text-xs text-coral">Основной</span>
+        )}
+        {guest.nationality && <span className="text-slate/60">· {guest.nationality}</span>}
+        {guest.date_of_birth && <span className="text-slate/60">· {formatDate(guest.date_of_birth)}</span>}
+        {canEdit && (
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className="ml-auto shrink-0 rounded-lg border border-ink/15 bg-white px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:bg-sand"
+          >
+            Изменить
+          </button>
+        )}
+      </li>
+    );
+  }
+
+  return (
+    <li className="space-y-2 rounded-lg border border-ink/10 bg-sand/30 p-3">
+      <div className="grid grid-cols-2 gap-2">
+        <input
+          placeholder="Имя *"
+          value={firstName}
+          onChange={(e) => setFirstName(e.target.value)}
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+        />
+        <input
+          placeholder="Фамилия *"
+          value={lastName}
+          onChange={(e) => setLastName(e.target.value)}
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+        />
+        <input
+          placeholder="Гражданство"
+          value={nationality}
+          onChange={(e) => setNationality(e.target.value)}
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+        />
+        <input
+          type="date"
+          value={dateOfBirth}
+          onChange={(e) => setDateOfBirth(e.target.value)}
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+        />
+        <input
+          placeholder="Номер паспорта"
+          value={passportNumber}
+          onChange={(e) => setPassportNumber(e.target.value)}
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+        />
+        <input
+          type="date"
+          value={passportExpiry}
+          onChange={(e) => setPassportExpiry(e.target.value)}
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+        />
+      </div>
+      {error && (
+        <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{error}</div>
+      )}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={submitting}
+          className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+        >
+          {submitting ? "Сохранение..." : "Сохранить"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          disabled={submitting}
+          className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Отмена
+        </button>
+      </div>
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Flight-number edit — a Booking field (PUT /booking-engine/bookings/{id}),
+// deliberately a separate entity/endpoint from Guest — placed visually near
+// the guest section per project owner's preference, not merged with it.
+// ---------------------------------------------------------------------------
+
+function FlightNumbersEdit({
+  booking,
+  onUpdated,
+  canEdit,
+}: {
+  booking: Booking;
+  onUpdated: (updated: Booking) => void;
+  canEdit: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [arrivalFlight, setArrivalFlight] = useState(booking.arrival_flight_number ?? "");
+  const [departureFlight, setDepartureFlight] = useState(booking.departure_flight_number ?? "");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSave() {
+    const token = localStorage.getItem("token") || "";
+    setSubmitting(true);
+    setError(null);
+    try {
+      const updated = await fetchJson<Booking>(`/booking-engine/bookings/${booking.id}`, token, {
+        method: "PUT",
+        body: JSON.stringify({
+          arrival_flight_number: arrivalFlight.trim() || null,
+          departure_flight_number: departureFlight.trim() || null,
+        }),
+      });
+      onUpdated(updated);
+      setEditing(false);
+    } catch (err: any) {
+      setError(err.message || "Не удалось сохранить номера рейсов");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!canEdit) return null;
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        className="rounded-lg border border-ink/15 bg-white px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:bg-sand"
+      >
+        Изменить рейсы
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-2 space-y-2 rounded-lg border border-ink/10 bg-sand/30 p-3">
+      <div className="grid grid-cols-2 gap-2">
+        <input
+          placeholder="Номер рейса прилёта"
+          value={arrivalFlight}
+          onChange={(e) => setArrivalFlight(e.target.value)}
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+        />
+        <input
+          placeholder="Номер рейса вылета"
+          value={departureFlight}
+          onChange={(e) => setDepartureFlight(e.target.value)}
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+        />
+      </div>
+      {error && (
+        <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{error}</div>
+      )}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={submitting}
+          className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+        >
+          {submitting ? "Сохранение..." : "Сохранить"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          disabled={submitting}
+          className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Отмена
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Detail panel — guests, meal plan, transfer, cancellation info, and an
 // on-demand re-derived price breakdown for one booking
 // ---------------------------------------------------------------------------
@@ -305,12 +605,16 @@ function BookingDetail({
   roomTypeName,
   mealPlanInfo,
   onClose,
+  onBookingUpdated,
+  permissions,
 }: {
   booking: Booking;
   hotelName: string;
   roomTypeName: string;
   mealPlanInfo: MealPlanInfo | undefined;
   onClose: () => void;
+  onBookingUpdated: (updated: Booking) => void;
+  permissions: Permissions;
 }) {
   const [guests, setGuests] = useState<Guest[] | null>(null);
   const [guestsError, setGuestsError] = useState<string | null>(null);
@@ -318,6 +622,40 @@ function BookingDetail({
   const [transferBreakdown, setTransferBreakdown] = useState<TransferPriceBreakdown | null>(null);
   const [breakdownError, setBreakdownError] = useState<string | null>(null);
   const [breakdownLoading, setBreakdownLoading] = useState(true);
+
+  const [changeDatesOpen, setChangeDatesOpen] = useState(false);
+  const [newCheckIn, setNewCheckIn] = useState(booking.arrival_date);
+  const [newCheckOut, setNewCheckOut] = useState(booking.departure_date);
+  const [changeDatesReason, setChangeDatesReason] = useState("");
+  const [changeDatesError, setChangeDatesError] = useState<string | null>(null);
+  const [changeDatesSubmitting, setChangeDatesSubmitting] = useState(false);
+
+  async function handleChangeDatesSubmit() {
+    if (!newCheckIn || !newCheckOut || changeDatesReason.trim().length < 2) {
+      setChangeDatesError("Укажите обе даты и причину (минимум 2 символа)");
+      return;
+    }
+    const token = localStorage.getItem("token") || "";
+    setChangeDatesSubmitting(true);
+    setChangeDatesError(null);
+    try {
+      const updated = await fetchJson<Booking>(`/booking-engine/bookings/${booking.id}/change-dates`, token, {
+        method: "POST",
+        body: JSON.stringify({
+          new_arrival_date: newCheckIn,
+          new_departure_date: newCheckOut,
+          reason: changeDatesReason.trim(),
+        }),
+      });
+      onBookingUpdated(updated);
+      setChangeDatesOpen(false);
+      setChangeDatesReason("");
+    } catch (err: any) {
+      setChangeDatesError(err.message || "Не удалось изменить даты");
+    } finally {
+      setChangeDatesSubmitting(false);
+    }
+  }
 
   useEffect(() => {
     const token = localStorage.getItem("token") || "";
@@ -398,9 +736,70 @@ function BookingDetail({
           </button>
         </div>
 
-        <div className="mt-4">
+        <div className="mt-4 flex items-center justify-between gap-3">
           <StatusBadge status={booking.status} />
+          {permissions.canChangeDates && booking.status !== "Cancelled" && booking.status !== "Rejected" && !changeDatesOpen && (
+            <button
+              type="button"
+              onClick={() => {
+                setNewCheckIn(booking.arrival_date);
+                setNewCheckOut(booking.departure_date);
+                setChangeDatesError(null);
+                setChangeDatesOpen(true);
+              }}
+              className="rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sand"
+            >
+              Изменить даты
+            </button>
+          )}
         </div>
+
+        {changeDatesOpen && (
+          <div className="mt-3 space-y-3 rounded-lg border border-ink/10 bg-sand/30 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Изменить даты</p>
+            <DateRangePicker
+              checkIn={newCheckIn}
+              checkOut={newCheckOut}
+              onChange={(ci, co) => {
+                setNewCheckIn(ci);
+                setNewCheckOut(co);
+              }}
+            />
+            <textarea
+              placeholder="Причина изменения дат *"
+              value={changeDatesReason}
+              onChange={(e) => setChangeDatesReason(e.target.value)}
+              rows={2}
+              className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+            />
+            {changeDatesError && (
+              <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">
+                {changeDatesError}
+              </div>
+            )}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleChangeDatesSubmit}
+                disabled={changeDatesSubmitting}
+                className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+              >
+                {changeDatesSubmitting ? "Отправка..." : "Подтвердить"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setChangeDatesOpen(false);
+                  setChangeDatesError(null);
+                }}
+                disabled={changeDatesSubmitting}
+                className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Отмена
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
           <div>
@@ -502,21 +901,28 @@ function BookingDetail({
         )}
 
         <div className="mt-5">
-          <h4 className="mb-2 text-sm font-medium uppercase tracking-wide text-slate/50">Гости</h4>
+          <div className="mb-2 flex items-center justify-between">
+            <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">Гости</h4>
+            <FlightNumbersEdit
+              booking={booking}
+              onUpdated={onBookingUpdated}
+              canEdit={permissions.canEditFlights}
+            />
+          </div>
           {guestsError && <p className="text-sm text-red-600">{guestsError}</p>}
           {!guests && !guestsError && <p className="text-sm text-slate/50">Загрузка...</p>}
           {guests && guests.length === 0 && <p className="text-sm text-slate/50">Гости не добавлены</p>}
           {guests && guests.length > 0 && (
             <ul className="space-y-1.5 text-sm">
               {guests.map((g) => (
-                <li key={g.id} className="flex items-center gap-2 rounded-lg bg-sand/50 px-3 py-2">
-                  <span className="font-medium text-ink">{g.first_name} {g.last_name}</span>
-                  {g.is_lead_guest && (
-                    <span className="rounded-full bg-coral/15 px-2 py-0.5 text-xs text-coral">Основной</span>
-                  )}
-                  {g.nationality && <span className="text-slate/60">· {g.nationality}</span>}
-                  {g.date_of_birth && <span className="text-slate/60">· {formatDate(g.date_of_birth)}</span>}
-                </li>
+                <GuestRow
+                  key={g.id}
+                  guest={g}
+                  canEdit={permissions.canEditGuestDetails}
+                  onUpdated={(updated) =>
+                    setGuests((prev) => prev?.map((x) => (x.id === updated.id ? updated : x)) ?? null)
+                  }
+                />
               ))}
             </ul>
           )}
@@ -530,7 +936,7 @@ function BookingDetail({
 // Main Reservations screen
 // ---------------------------------------------------------------------------
 
-const Reservations = () => {
+const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permissions }) => {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [hotels, setHotels] = useState<Record<number, string>>({});
   const [roomTypes, setRoomTypes] = useState<Record<number, string>>({});
@@ -542,6 +948,7 @@ const Reservations = () => {
 
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [hotelFilter, setHotelFilter] = useState<string>("all");
+  const [agentFilter, setAgentFilter] = useState<string>("all");
   const [sortKey, setSortKey] = useState<SortKey>("created_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
@@ -553,7 +960,10 @@ const Reservations = () => {
         setLoading(true);
         setError(null);
 
-        const bookingsData = await fetchJson<Booking[]>("/booking-engine/bookings?limit=500", token);
+        const bookingsData =
+          scope.type === "all"
+            ? await fetchJson<Booking[]>("/booking-engine/bookings?limit=500", token)
+            : await fetchJson<Booking[]>(`/booking-engine/agents/${scope.agentId}/bookings`, token);
         setBookings(bookingsData);
 
         const hotelsData = await fetchJson<Hotel[]>("/hotel-engine/hotels", token);
@@ -561,10 +971,15 @@ const Reservations = () => {
         hotelsData.forEach((h) => (hotelMap[h.id] = h.hotel_name));
         setHotels(hotelMap);
 
-        const usersData = await fetchJson<UserRecord[]>("/users", token);
-        const userMap: Record<number, string> = {};
-        usersData.forEach((u) => (userMap[u.id] = u.name));
-        setAgentNames(userMap);
+        // Agent-scoped view never shows the Агент column/filter, so skip
+        // fetching the full user list — no reason to expose other users'
+        // data to a plain agent's own booking view.
+        if (scope.type === "all") {
+          const usersData = await fetchJson<UserRecord[]>("/users", token);
+          const userMap: Record<number, string> = {};
+          usersData.forEach((u) => (userMap[u.id] = u.name));
+          setAgentNames(userMap);
+        }
 
         const uniqueHotelIds = Array.from(new Set(bookingsData.map((b) => b.hotel_id)));
         const roomTypeMap: Record<number, string> = {};
@@ -619,17 +1034,28 @@ const Reservations = () => {
       }
     };
     load();
-  }, []);
+    // Depend on primitive values, not the scope object itself — a caller
+    // passing an inline object literal would otherwise create a new
+    // reference every render and refetch in a loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope.type, scope.type === "agent" ? scope.agentId : null]);
 
   const aiFlags = useMemo(() => {
     return [
       ...computePendingSoonFlags(bookings),
       ...computeCancellationDeadlineFlags(bookings, cancellationTiers),
+      // Admin-view only — an agent doesn't need to be told about their own edit.
+      ...(scope.type === "all" ? computeRecentlyChangedFlags(bookings) : []),
     ];
-  }, [bookings, cancellationTiers]);
+  }, [bookings, cancellationTiers, scope.type]);
 
   const availableStatuses = useMemo(
     () => Array.from(new Set(bookings.map((b) => b.status))).sort(),
+    [bookings]
+  );
+
+  const availableAgentIds = useMemo(
+    () => Array.from(new Set(bookings.map((b) => b.agent_id))),
     [bookings]
   );
 
@@ -639,6 +1065,9 @@ const Reservations = () => {
     let list = bookings;
     if (statusFilter !== "all") list = list.filter((b) => b.status === statusFilter);
     if (hotelFilter !== "all") list = list.filter((b) => String(b.hotel_id) === hotelFilter);
+    if (scope.type === "all" && agentFilter !== "all") {
+      list = list.filter((b) => String(b.agent_id) === agentFilter);
+    }
 
     const sorted = [...list].sort((a, b) => {
       let cmp = 0;
@@ -649,7 +1078,7 @@ const Reservations = () => {
       return sortDir === "asc" ? cmp : -cmp;
     });
     return sorted;
-  }, [bookings, statusFilter, hotelFilter, sortKey, sortDir]);
+  }, [bookings, statusFilter, hotelFilter, agentFilter, scope.type, sortKey, sortDir]);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -672,7 +1101,7 @@ const Reservations = () => {
 
   return (
     <div>
-      <AIInsightStrip flags={aiFlags} hotels={hotels} />
+      <AIInsightStrip flags={aiFlags} hotels={hotels} agentNames={agentNames} />
 
       <div className="mt-6 flex flex-wrap items-center gap-2.5">
         <select
@@ -701,11 +1130,27 @@ const Reservations = () => {
           ))}
         </select>
 
-        {(statusFilter !== "all" || hotelFilter !== "all") && (
+        {scope.type === "all" && (
+          <select
+            value={agentFilter}
+            onChange={(e) => setAgentFilter(e.target.value)}
+            className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+          >
+            <option value="all">Все агенты</option>
+            {availableAgentIds.map((id) => (
+              <option key={id} value={id}>
+                {agentNames[id] ?? `#${id}`}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {(statusFilter !== "all" || hotelFilter !== "all" || agentFilter !== "all") && (
           <button
             onClick={() => {
               setStatusFilter("all");
               setHotelFilter("all");
+              setAgentFilter("all");
             }}
             className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-xs font-medium text-slate/70 transition-colors hover:bg-sand/60"
           >
@@ -730,7 +1175,7 @@ const Reservations = () => {
               >
                 Заезд → Выезд{sortArrow("arrival_date")}
               </th>
-              <th className="px-4 py-3 font-medium">Агент</th>
+              {scope.type === "all" && <th className="px-4 py-3 font-medium">Агент</th>}
               <th className="px-4 py-3 font-medium">Отель</th>
               <th className="px-4 py-3 font-medium">Тип номера</th>
               <th className="px-4 py-3 font-medium">№ брони</th>
@@ -754,7 +1199,7 @@ const Reservations = () => {
           <tbody>
             {filteredSorted.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-4 py-10 text-center text-sm text-slate/50">
+                <td colSpan={scope.type === "all" ? 11 : 10} className="px-4 py-10 text-center text-sm text-slate/50">
                   Бронирования не найдены
                 </td>
               </tr>
@@ -771,10 +1216,24 @@ const Reservations = () => {
                     <td className="whitespace-nowrap px-4 py-3.5 text-slate/70">
                       {formatDate(b.arrival_date)} → {formatDate(b.departure_date)}
                     </td>
-                    <td className="px-4 py-3.5 text-slate/80">{agentNames[b.agent_id] ?? `#${b.agent_id}`}</td>
+                    {scope.type === "all" && (
+                      <td className="px-4 py-3.5 text-slate/80">{agentNames[b.agent_id] ?? `#${b.agent_id}`}</td>
+                    )}
                     <td className="px-4 py-3.5 text-slate/80">{hotels[b.hotel_id] ?? `#${b.hotel_id}`}</td>
                     <td className="px-4 py-3.5 text-slate/80">{roomTypes[b.room_type_id] ?? `#${b.room_type_id}`}</td>
-                    <td className="px-4 py-3.5 font-medium text-ink">{b.booking_number}</td>
+                    <td className="px-4 py-3.5 font-medium text-ink">
+                      <span className="inline-flex items-center gap-1.5">
+                        {b.booking_number}
+                        {scope.type === "all" && isRecentlyChanged(b) && (
+                          <span
+                            className="rounded-full bg-coral/15 px-1.5 py-0.5 text-[10px] font-medium text-coral"
+                            title="Даты изменены агентом менее 24 часов назад"
+                          >
+                            Изменено
+                          </span>
+                        )}
+                      </span>
+                    </td>
                     <td className="px-4 py-3.5">
                       <StatusBadge status={b.status} />
                     </td>
@@ -808,10 +1267,15 @@ const Reservations = () => {
           roomTypeName={roomTypes[selectedBooking.room_type_id] ?? `#${selectedBooking.room_type_id}`}
           mealPlanInfo={mealPlans[selectedBooking.meal_plan_id]}
           onClose={() => setSelectedBooking(null)}
+          onBookingUpdated={(updated) => {
+            setBookings((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
+            setSelectedBooking(updated);
+          }}
+          permissions={permissions}
         />
       )}
     </div>
   );
 };
 
-export default Reservations;
+export default BookingsList;

@@ -61,6 +61,27 @@ def _run(operation):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _require_owner_or_admin(current_user, booking) -> None:
+    """
+    Authorization check for the three agent-initiated edit paths
+    (change-dates, guest edit, flight-number edit via update_booking):
+    the requesting user must either be the booking's own agent, or hold
+    the Admin role. Deliberately a real HTTP 403 here, not folded into
+    _run's generic ValueError->400 convention — this is an authorization
+    failure, not a business-rule validation failure, and the project
+    owner asked for it to read as a distinct permission error.
+
+    Only "Admin" is exempted (case-insensitive) — Manager isn't wired to
+    any booking-editing surface yet, so exempting it now would be
+    speculative; revisit if/when a Manager-facing booking UI exists.
+    """
+    role = (current_user.role or "").strip().lower()
+    if role == "admin":
+        return
+    if current_user.id != booking.agent_id:
+        raise HTTPException(status_code=403, detail="You can only modify bookings you own")
+
+
 # ---------------------------------------------------------------------------
 # Booking
 # ---------------------------------------------------------------------------
@@ -120,6 +141,8 @@ def update_booking(
     current_user=Depends(get_current_user),
 ):
     """status cannot be set to "Cancelled" here at the type level (BookingUpdatableStatus excludes it) — use the dedicated /cancel endpoint."""
+    existing = _run(lambda: service.get_booking(db, booking_id))
+    _require_owner_or_admin(current_user, existing)
     return _run(lambda: service.update_booking(db, booking_id, data))
 
 
@@ -131,6 +154,8 @@ def cancel_booking(
     current_user=Depends(get_current_user),
 ):
     """Dedicated cancellation flow: computes cancellation_fee via Contract Engine's get_cancellation_policy, releases the reserved allotment, and records the cancellation atomically. Requires a reason (02_Logic_Rules.md #49)."""
+    existing = _run(lambda: service.get_booking(db, booking_id))
+    _require_owner_or_admin(current_user, existing)
     return _run(lambda: service.cancel_booking(db, booking_id, data))
 
 
@@ -142,6 +167,8 @@ def change_booking_dates(
     current_user=Depends(get_current_user),
 ):
     """Dedicated date-change flow (Decision 029, Stage 1): re-validates availability and re-prices for the new dates, reserves the new dates before releasing the old ones, and records the change (reason + timestamp). Requires a reason, same audit precedent as cancellation."""
+    existing = _run(lambda: service.get_booking(db, booking_id))
+    _require_owner_or_admin(current_user, existing)
     return _run(lambda: service.change_booking_dates(db, booking_id, data))
 
 
@@ -176,5 +203,8 @@ def update_guest(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    guest = _run(lambda: service.get_guest(db, guest_id))
+    booking = _run(lambda: service.get_booking(db, guest.booking_id))
+    _require_owner_or_admin(current_user, booking)
     fields = data.model_dump(exclude_unset=True)
     return _run(lambda: service.update_guest(db, guest_id, **fields))

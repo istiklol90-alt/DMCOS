@@ -366,7 +366,7 @@ function formatDateRangeLabel(checkIn: string, checkOut: string): string {
   return `${fmt(checkIn || checkOut)} – ?`;
 }
 
-function DateRangePicker({
+export function DateRangePicker({
   checkIn,
   checkOut,
   onChange,

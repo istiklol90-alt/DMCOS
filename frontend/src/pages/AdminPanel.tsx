@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { API_URL } from "../config";
-import Reservations from "./Reservations";
+import BookingsList from "./Reservations";
 
 type StatKey = "all" | "agent" | "admin" | "active" | "never_logged" | "inactive";
 type RegStatus = "pending" | "approved" | "rejected";
@@ -177,7 +177,10 @@ const AdminPanel = () => {
 
         {activeTab === "reservations" && (
           <div className="mt-6">
-            <Reservations />
+            <BookingsList
+              scope={{ type: "all" }}
+              permissions={{ canChangeDates: true, canEditGuestDetails: true, canEditFlights: true }}
+            />
           </div>
         )}
 

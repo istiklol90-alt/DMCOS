@@ -1241,6 +1241,155 @@ this task only built and verified the backend capability itself).
 
 ---
 
+# Decision 031
+
+Date: 2026-07-08
+
+Decision: Addendum to Decision 030 -- date changes are the FIRST of
+several distinct booking-modification types the real business needs,
+not the only one. Full list of editable fields, ranked by
+implementation complexity:
+
+1. Dates -- DONE (Decision 030). Requires re-pricing + allotment
+   release/reserve on the date dimension.
+2. Guest details (name/passport/flight info) -- low complexity. A
+   simple field update with no pricing or inventory impact at all --
+   closer to the existing special_requests/flight-number edit path
+   than to a date change.
+3. Meal plan -- medium complexity. Requires re-pricing (reuses the
+   get_room_price re-pricing logic already built for dates) but does
+   NOT touch allotment, since meal plan has no inventory dimension of
+   its own.
+4. Room type -- high complexity. Needs the same
+   release-old-allotment/reserve-new-allotment discipline as dates,
+   but for the room_type_id dimension instead of the date dimension --
+   structurally the closest analogue to Decision 030's own design.
+5. Hotel -- very high complexity. Not a true "edit" at all -- changing
+   a booking's hotel is effectively cancel + rebook against a
+   different Contract Engine hotel/contract entirely, and should be
+   treated as such rather than forced into this edit-capability
+   pattern.
+
+Per Decision 029's staged, one-thing-at-a-time approach, each of these
+gets its own explicit plan/implementation/verification pass -- never
+bundled together. Recommended build order, by complexity ascending:
+(1) guest details next -- simplest, zero pricing impact, highest
+immediate value; (2) meal plan -- reuses date-change's re-pricing
+logic directly; (3) room type -- reuses date-change's allotment
+release/reserve logic, applied to a different dimension; (4) hotel --
+deliberately deferred and reframed as cancel+rebook rather than
+implemented as a fifth "edit" variant.
+
+Reason: Confirms Decision 030's date-change work is a template for a
+family of related capabilities, not a one-off -- future work in this
+area should reuse its patterns (re-pricing before write, allotment
+reserve-new-before-release-old, required reason field) rather than
+re-deriving them from scratch each time.
+
+On AI involvement: per Decision 029, the AI-driven pieces (AI deciding
+when to initiate a change, AI emailing the hotel for confirmation)
+remain Stages 3-5 and are not started. All booking-modification types
+listed here (dates, guest details, meal plan, room type) are
+human-initiated mechanisms only -- Stage 1's pattern repeated per
+field -- which the later AI stages will eventually call into once
+built, not something these additions need to anticipate now.
+
+Approved By: Daler
+
+Status: Logged as roadmap addendum to Decision 029/030. Proceeding
+next with guest-details editing (item 2, simplest/highest-value).
+
+---
+
+# Decision 032
+
+Date: 2026-07-08
+
+Decision: Two tightly-related fixes to the Reservations/booking-edit
+surface, logged together because the second is only trustworthy once
+the first is true: (1) closed a real authorization gap where
+change_booking_dates, cancel_booking, update_booking, and update_guest
+never checked that the requesting user actually owned the booking
+being modified -- any authenticated agent could edit or cancel any
+other agent's booking via a direct API call, even though the UI only
+ever showed/linked to an agent's own bookings; (2) added an active
+"recently changed by an agent" notification to the admin Reservations
+view, addressing a real scaling concern the project owner raised: at
+volume (500 bookings/day, 100 agent-initiated changes/day), a manager
+cannot manually re-open every booking to notice a change, so a passive
+"discover it if you happen to click in" model doesn't scale.
+
+Part 1 -- authorization: added _require_owner_or_admin(current_user,
+booking) in booking/api.py, called after fetching the booking/guest
+and before invoking the actual mutating service call, in all four
+edit/cancel endpoints. Deliberately a real HTTP 403, not folded into
+_run's generic ValueError->400 convention -- this is an authorization
+failure, not a business-rule validation failure. Only the Admin role
+is exempted (case-insensitive); Manager isn't wired to any
+booking-editing surface yet, so exempting it now would be speculative.
+Verified via direct API calls with real minted JWTs for 3 different
+users: the booking's own agent succeeds (200), a different agent is
+rejected (403 "You can only modify bookings you own"), and an admin
+succeeds regardless of ownership (200) -- checked against both
+update_booking and update_guest (the latter needed for its extra
+guest-id -> booking-id indirection). Known related gap, NOT fixed here
+since it wasn't part of what was asked: the read side (GET
+/agents/{agent_id}/bookings) has the same missing check -- any agent
+could still enumerate another agent's booking list by ID, though no
+UI does this today.
+
+Part 2 -- notification: reused the existing AI-insight-strip mechanism
+(Decision-era rule-based, NOT an LLM call) rather than inventing a new
+one. New computeRecentlyChangedFlags rule (admin view only, gated on
+scope.type === "all" -- an agent doesn't need to be told about their
+own edit) flags bookings whose dates_changed_at is within the last 24
+hours, reusing the strip's existing "first flag + и ещё N" aggregation
+for a natural count-style summary. A parallel "Изменено" badge was
+added directly in the bookings table next to the booking number, so a
+manager scanning the list (not just reading the strip) notices without
+opening each row. This is explicitly NOT an approval queue -- the
+agent's change is already applied and already holds/released the real
+allotment; this is Level 3 autonomous action + notification (per the
+AI Autonomy Levels framework), not a Level 2 human gate blocking the
+agent.
+
+Bug found and fixed during live verification of Part 2: the backend
+serializes datetime.utcnow() as a naive ISO string with no "Z"/offset
+suffix (e.g. "2026-07-08T13:18:14.668797"). new Date(...) on such a
+string is parsed by JavaScript as LOCAL time, not UTC -- for any
+viewer whose browser timezone isn't UTC+0, every elapsed-time
+computation derived from it was silently wrong by exactly the local
+offset. Caught live: a change made ~2 minutes earlier displayed as
+"5 ч. назад" on this UTC+5 dev machine. Fixed with a parseUtcTimestamp
+helper (appends "Z" before parsing, unless an offset is already
+present) used by both computeRecentlyChangedFlags and the table
+badge's isRecentlyChanged check. Display-only date formatting
+(formatDate, used for arrival/departure/created_at everywhere else)
+is unaffected and correctly local -- the bug was specific to
+elapsed-time arithmetic on datetime fields, not date-only fields
+(which JS parses as UTC by spec) or display formatting (where local
+time is the correct, intended behavior).
+
+Verified end-to-end live in the browser (not just via API): logged in
+as the real test agent (istiklol90), changed BK-8D6B9B5CA2DA's dates
+through the actual UI; the admin Reservations view immediately showed
+both the "Изменено" badge on the row and the AI strip entry
+"BK-8D6B9B5CA2DA (Test Beach Resort) -- даты изменены агентом
+istiklol90 только что" (correct, post-timezone-fix) -- alongside the
+pre-existing "В ожидании"/заезд-through-N-дн. flag for the same
+booking, confirming the strip's multi-flag aggregation still works
+correctly with 3 rule types active simultaneously.
+
+Approved By: Daler
+
+Status: Both fixes implemented and verified live (API-level for
+authorization, full browser flow for the notification feature).
+Known deferred gap: the read-side agent-scoped list endpoint has no
+equivalent ownership check -- not fixed now, flagged for a future
+decision if it becomes a real concern.
+
+---
+
 # Decision Template
 
 Decision Number:

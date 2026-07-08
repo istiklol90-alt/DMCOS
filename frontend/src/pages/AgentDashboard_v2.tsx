@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import BookingsList from "./Reservations";
 
 // ---------------------------------------------------------------------------
 // Tiny inline icon set (no external icon package installed in this project)
@@ -119,91 +120,6 @@ function DemoTag() {
 // Mock data
 // ---------------------------------------------------------------------------
 
-type StatusKind = "draft" | "confirmed" | "processing";
-type PaymentKind = "paid" | "pending";
-
-type Booking = {
-  id: string;
-  hotel: string;
-  location: string;
-  initials: string;
-  gradient: string;
-  guest: string;
-  checkIn: string;
-  checkOut: string;
-  price: string;
-  status: StatusKind;
-  payment: PaymentKind;
-};
-
-const bookings: Booking[] = [
-  {
-    id: "BR-10487",
-    hotel: "Soneva Fushi",
-    location: "Baa Atoll, Мальдивы",
-    initials: "SF",
-    gradient: "from-teal to-ink",
-    guest: "Marina Petrova",
-    checkIn: "12 авг",
-    checkOut: "19 авг",
-    price: "$12,400",
-    status: "confirmed",
-    payment: "paid",
-  },
-  {
-    id: "BR-10432",
-    hotel: "Velaa Private Island",
-    location: "Noonu Atoll, Мальдивы",
-    initials: "VP",
-    gradient: "from-coral to-ink",
-    guest: "Rustam Aliyev",
-    checkIn: "03 сен",
-    checkOut: "10 сен",
-    price: "€17,250",
-    status: "processing",
-    payment: "pending",
-  },
-  {
-    id: "BR-10401",
-    hotel: "Rixos Premium Belek",
-    location: "Анталия, Турция",
-    initials: "RB",
-    gradient: "from-ink to-teal",
-    guest: "Elena Sokolova",
-    checkIn: "20 июл",
-    checkOut: "27 июл",
-    price: "$3,150",
-    status: "confirmed",
-    payment: "paid",
-  },
-  {
-    id: "BR-10398",
-    hotel: "Cocoon Maldives",
-    location: "Lhaviyani Atoll, Мальдивы",
-    initials: "CM",
-    gradient: "from-teal to-coral",
-    guest: "Diyor Nazarov",
-    checkIn: "05 окт",
-    checkOut: "12 окт",
-    price: "$6,780",
-    status: "draft",
-    payment: "pending",
-  },
-  {
-    id: "BR-10376",
-    hotel: "Maxx Royal Kemer",
-    location: "Кемер, Турция",
-    initials: "MK",
-    gradient: "from-coral to-teal",
-    guest: "Olga Krivenko",
-    checkIn: "14 авг",
-    checkOut: "21 авг",
-    price: "€4,320",
-    status: "confirmed",
-    payment: "paid",
-  },
-];
-
 const kpis = [
   { label: "Активные брони", value: "128", delta: "+12% за месяц", positive: true },
   { label: "Выручка (USD)", value: "$184,320", delta: "+8.4% за месяц", positive: true },
@@ -262,44 +178,6 @@ const chatMessages = [
     text: "Готово ✅ Напоминание отправлено Rustam Aliyev в WhatsApp и на email.",
   },
 ];
-
-// ---------------------------------------------------------------------------
-// Small presentational helpers
-// ---------------------------------------------------------------------------
-
-function StatusBadge({ status }: { status: StatusKind }) {
-  const styles: Record<StatusKind, string> = {
-    draft: "bg-slate/10 text-slate",
-    confirmed: "bg-teal/15 text-teal",
-    processing: "bg-ink/10 text-ink",
-  };
-  const labels: Record<StatusKind, string> = {
-    draft: "Черновик",
-    confirmed: "Подтверждено",
-    processing: "В обработке",
-  };
-  return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${styles[status]}`}>
-      {labels[status]}
-    </span>
-  );
-}
-
-function PaymentBadge({ payment }: { payment: PaymentKind }) {
-  const styles: Record<PaymentKind, string> = {
-    paid: "bg-teal/15 text-teal",
-    pending: "bg-coral/15 text-coral",
-  };
-  const labels: Record<PaymentKind, string> = {
-    paid: "Оплачено",
-    pending: "Ожидает",
-  };
-  return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${styles[payment]}`}>
-      {labels[payment]}
-    </span>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Page
@@ -497,62 +375,13 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
           ))}
         </div>
 
-        {/* Recent bookings table */}
-        <div className="mt-6 rounded-2xl border border-ink/10 bg-white">
-          <div className="flex items-center justify-between px-5 pt-5">
-            <div className="flex items-center gap-2">
-              <h2 className="font-display text-lg font-semibold text-ink">Последние бронирования</h2>
-              <DemoTag />
-            </div>
-            <button type="button" className="text-xs font-medium text-teal hover:underline">
-              Все брони →
-            </button>
-          </div>
-
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full min-w-[720px] border-collapse text-left text-sm">
-              <thead>
-                <tr className="border-y border-ink/10 text-xs uppercase tracking-wide text-slate/50">
-                  <th className="px-5 py-3 font-medium">Отель</th>
-                  <th className="px-5 py-3 font-medium">Гость</th>
-                  <th className="px-5 py-3 font-medium">Заезд</th>
-                  <th className="px-5 py-3 font-medium">Выезд</th>
-                  <th className="px-5 py-3 font-medium">Цена</th>
-                  <th className="px-5 py-3 font-medium">Статус</th>
-                  <th className="px-5 py-3 font-medium">Оплата</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bookings.map((b) => (
-                  <tr key={b.id} className="border-b border-ink/5 last:border-b-0">
-                    <td className="px-5 py-3.5">
-                      <div className="flex items-center gap-3">
-                        <span
-                          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br font-display text-xs font-semibold text-white ${b.gradient}`}
-                        >
-                          {b.initials}
-                        </span>
-                        <div className="min-w-0">
-                          <p className="truncate font-medium text-ink">{b.hotel}</p>
-                          <p className="truncate text-xs text-slate/50">{b.location}</p>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-3.5 text-slate/80">{b.guest}</td>
-                    <td className="whitespace-nowrap px-5 py-3.5 text-slate/80">{b.checkIn}</td>
-                    <td className="whitespace-nowrap px-5 py-3.5 text-slate/80">{b.checkOut}</td>
-                    <td className="whitespace-nowrap px-5 py-3.5 font-mono text-ink">{b.price}</td>
-                    <td className="whitespace-nowrap px-5 py-3.5">
-                      <StatusBadge status={b.status} />
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-3.5">
-                      <PaymentBadge payment={b.payment} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {/* Real bookings — scoped to this agent only, via GET /agents/{id}/bookings */}
+        <div className="mt-6">
+          <h2 className="mb-3 font-display text-lg font-semibold text-ink">Мои бронирования</h2>
+          <BookingsList
+            scope={{ type: "agent", agentId: user.id }}
+            permissions={{ canChangeDates: true, canEditGuestDetails: true, canEditFlights: true }}
+          />
         </div>
 
         {/* AI assistant + checklist */}
