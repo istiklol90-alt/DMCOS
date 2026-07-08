@@ -34,6 +34,17 @@ from app.engines.contract.schemas import (
     PromotionCreate,
     PromotionUpdate,
     PromotionResponse,
+    SpecialOfferCreate,
+    SpecialOfferUpdate,
+    SpecialOfferResponse,
+    SpecialOfferRoomDiscountCreate,
+    SpecialOfferRoomDiscountResponse,
+    SpecialOfferMealPlanDiscountCreate,
+    SpecialOfferMealPlanDiscountResponse,
+    SpecialOfferFamilyRuleCreate,
+    SpecialOfferFamilyRuleResponse,
+    SpecialOfferTransferDiscountCreate,
+    SpecialOfferTransferDiscountResponse,
     BlackoutDateCreate,
     BlackoutDateResponse,
     AllotmentCreate,
@@ -306,15 +317,19 @@ def get_transfer_options(
 def get_transfer_price(
     contract_id: int,
     transfer_type: str,
+    check_in: date_type,
+    check_out: date_type,
     adults: int,
     children: int,
     infants: int = 0,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Interface Contract function. See service.get_transfer_price's docstring for the pricing formula (one-time round-trip, not per-night)."""
+    """Interface Contract function. See service.get_transfer_price's docstring for the pricing formula (one-time round-trip, not per-night) and Decision 026's check_in/check_out addition for transfer-discount matching."""
     return _run(
-        lambda: service.get_transfer_price(db, contract_id, transfer_type, adults, children, infants)
+        lambda: service.get_transfer_price(
+            db, contract_id, transfer_type, check_in, check_out, adults, children, infants
+        )
     )
 
 
@@ -419,6 +434,136 @@ def update_promotion(
     current_user=Depends(get_current_user),
 ):
     return _run(lambda: service.update_promotion(db, promotion_id, data))
+
+
+# ---------------------------------------------------------------------------
+# Special Offer (Decision 026)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/special-offers", response_model=SpecialOfferResponse, status_code=status.HTTP_201_CREATED)
+def create_special_offer(
+    data: SpecialOfferCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    return _run(lambda: service.create_special_offer(db, data))
+
+
+@router.get("/contracts/{contract_id}/special-offers", response_model=list[SpecialOfferResponse])
+def list_special_offers(
+    contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    return _run(lambda: service.list_special_offers(db, contract_id))
+
+
+@router.get("/special-offers/{offer_id}", response_model=SpecialOfferResponse)
+def get_special_offer(
+    offer_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    return _run(lambda: service.get_special_offer(db, offer_id))
+
+
+@router.put("/special-offers/{offer_id}", response_model=SpecialOfferResponse)
+def update_special_offer(
+    offer_id: int,
+    data: SpecialOfferUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return _run(lambda: service.update_special_offer(db, offer_id, data))
+
+
+@router.post(
+    "/special-offer-room-discounts",
+    response_model=SpecialOfferRoomDiscountResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_special_offer_room_discount(
+    data: SpecialOfferRoomDiscountCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return _run(lambda: service.create_special_offer_room_discount(db, data))
+
+
+@router.get(
+    "/special-offers/{offer_id}/room-discounts",
+    response_model=list[SpecialOfferRoomDiscountResponse],
+)
+def list_special_offer_room_discounts(
+    offer_id: int,
+    room_type_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return _run(lambda: service.list_special_offer_room_discounts(db, offer_id, room_type_id))
+
+
+@router.post(
+    "/special-offer-meal-plan-discounts",
+    response_model=SpecialOfferMealPlanDiscountResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_special_offer_meal_plan_discount(
+    data: SpecialOfferMealPlanDiscountCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return _run(lambda: service.create_special_offer_meal_plan_discount(db, data))
+
+
+@router.get(
+    "/special-offers/{offer_id}/meal-plan-discounts",
+    response_model=list[SpecialOfferMealPlanDiscountResponse],
+)
+def list_special_offer_meal_plan_discounts(
+    offer_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    return _run(lambda: service.list_special_offer_meal_plan_discounts(db, offer_id))
+
+
+@router.post(
+    "/special-offer-family-rules",
+    response_model=SpecialOfferFamilyRuleResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_special_offer_family_rule(
+    data: SpecialOfferFamilyRuleCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return _run(lambda: service.create_special_offer_family_rule(db, data))
+
+
+@router.get(
+    "/special-offers/{offer_id}/family-rules", response_model=list[SpecialOfferFamilyRuleResponse]
+)
+def list_special_offer_family_rules(
+    offer_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    return _run(lambda: service.list_special_offer_family_rules(db, offer_id))
+
+
+@router.post(
+    "/special-offer-transfer-discounts",
+    response_model=SpecialOfferTransferDiscountResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_special_offer_transfer_discount(
+    data: SpecialOfferTransferDiscountCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return _run(lambda: service.create_special_offer_transfer_discount(db, data))
+
+
+@router.get(
+    "/special-offers/{offer_id}/transfer-discounts",
+    response_model=list[SpecialOfferTransferDiscountResponse],
+)
+def list_special_offer_transfer_discounts(
+    offer_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    return _run(lambda: service.list_special_offer_transfer_discounts(db, offer_id))
 
 
 # ---------------------------------------------------------------------------

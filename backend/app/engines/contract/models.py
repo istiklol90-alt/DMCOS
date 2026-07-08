@@ -198,6 +198,140 @@ class Promotion(Base):
     stacking_group = Column(String(50), nullable=True)
 
 
+class SpecialOffer(Base):
+    """
+    A named, bounded promotional package (e.g. Kandima's "KM26_03") that
+    bundles several distinct discount mechanisms under one booking
+    window/market/combinability rule (Decision 026). Deliberately separate
+    from Promotion: Promotion is one flat discount applied to a room type's
+    whole price_before_promotions total, from a fixed 9-value documented
+    type list; a SpecialOffer's mechanisms each target specific price
+    components (room rate, meal-plan supplement, per-child charges,
+    transfer price) and vary by room type and period in ways Promotion was
+    never built to express. combinable_with_other_offers governs only
+    other SpecialOffer rows on this contract -- entirely independent of
+    Promotion.is_stackable, a structurally separate system.
+    """
+
+    __tablename__ = "special_offers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    contract_id = Column(Integer, ForeignKey("contracts.id"), nullable=False)
+    offer_name = Column(String(100), nullable=False)
+    booking_start = Column(Date, nullable=True)
+    booking_end = Column(Date, nullable=True)
+    # NULL = all markets, same nullable-means-unrestricted convention as
+    # Rate.market_id.
+    market_id = Column(Integer, ForeignKey("contract_markets.id"), nullable=True)
+    combinable_with_other_offers = Column(Boolean, default=False)
+    status = Column(String(20), default="Active")
+
+
+class SpecialOfferRoomDiscount(Base):
+    """
+    Mechanism 1: a percentage discount on a specific room type's base room
+    rate for a specific period, optionally also applied to that room
+    type's extra_person charge (applies_to_extra_person) -- never to
+    age_category_price, which is a separate mechanism (SpecialOfferFamilyRule)
+    or untouched. One row per (room_type, period); a room type with 7
+    differently-priced periods is 7 rows, not one row with a formula.
+    """
+
+    __tablename__ = "special_offer_room_discounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    offer_id = Column(Integer, ForeignKey("special_offers.id"), nullable=False)
+    # Plain Integer, not a real ForeignKey into Hotel Engine's `room_types`
+    # table -- same cross-engine decoupling as Rate.room_type_id.
+    room_type_id = Column(Integer, nullable=False)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    discount_percent = Column(Float, nullable=False)
+    applies_to_extra_person = Column(Boolean, default=False)
+    priority = Column(Integer, default=0)
+    status = Column(String(20), default="Active")
+
+
+class SpecialOfferMealPlanDiscount(Base):
+    """
+    Mechanism 2: a percentage discount on the meal_plan_supplement amount
+    for a specific period, independent of the room discount percentage.
+    meal_plan_id NULL means it applies uniformly to every
+    meal_plan_supplement-priced upgrade (HB+/FB+/PAI alike); set it to
+    target one meal plan specifically if a future contract varies the
+    discount by meal plan. A period with no row for this offer means "No"
+    discount that period -- no sentinel value needed.
+    """
+
+    __tablename__ = "special_offer_meal_plan_discounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    offer_id = Column(Integer, ForeignKey("special_offers.id"), nullable=False)
+    meal_plan_id = Column(Integer, ForeignKey("contract_meal_plans.id"), nullable=True)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    discount_percent = Column(Float, nullable=False)
+    status = Column(String(20), default="Active")
+
+
+class SpecialOfferFamilyRule(Base):
+    """
+    Mechanism 3: waives age_category_price for up to
+    max_free_children_accommodation children aged
+    <= max_free_child_age_accommodation, conditional on min_adults being
+    met, for a specific period. min_adults lets a "2+ adults" row and a
+    separate "1 adult" row coexist for the same period with different
+    terms (per the real KM26_03 offer's own "requires minimum 2 adults or
+    a different offer applies for 1 adult" note).
+
+    max_free_children_meals/max_free_child_age_meals capture the real
+    contract's "up to 2 children 5.99 and under also get free meals"
+    clause for documentation completeness, but are NOT read by
+    get_room_price today: there is no existing per-child meal-plan charge
+    to waive (Decision 022's meal_plan_supplement only ever targets the
+    Adult age category), so this clause is already true by default with
+    zero implementation needed. Revisit only if a future per-child
+    meal-plan pricing mechanism is built.
+    """
+
+    __tablename__ = "special_offer_family_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    offer_id = Column(Integer, ForeignKey("special_offers.id"), nullable=False)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    min_adults = Column(Integer, nullable=False)
+    max_free_children_accommodation = Column(Integer, nullable=False)
+    max_free_child_age_accommodation = Column(Float, nullable=False)
+    # Documentation-only today -- see class docstring.
+    max_free_children_meals = Column(Integer, nullable=True)
+    max_free_child_age_meals = Column(Float, nullable=True)
+    status = Column(String(20), default="Active")
+
+
+class SpecialOfferTransferDiscount(Base):
+    """
+    Mechanism 4: a percentage discount on a specific transfer_type's
+    get_transfer_price total, conditional on the stay being at least
+    min_nights long, keyed by ARRIVAL date (not check_in/check_out both --
+    per the real offer's own "determined by arrival date when stay spans
+    multiple months" note, the same check_in-for-the-whole-stay
+    simplification precedent get_room_price already uses for seasons).
+    """
+
+    __tablename__ = "special_offer_transfer_discounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    offer_id = Column(Integer, ForeignKey("special_offers.id"), nullable=False)
+    # Matches ContractTransferOption.transfer_type -- free-form, not an enum.
+    transfer_type = Column(String(50), nullable=False)
+    discount_percent = Column(Float, nullable=False)
+    min_nights = Column(Integer, nullable=False)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    status = Column(String(20), default="Active")
+
+
 class BlackoutDate(Base):
     __tablename__ = "blackout_dates"
 

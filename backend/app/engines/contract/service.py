@@ -37,6 +37,11 @@ from app.engines.contract.models import (
     Rate,
     RateSupplement,
     Promotion,
+    SpecialOffer,
+    SpecialOfferRoomDiscount,
+    SpecialOfferMealPlanDiscount,
+    SpecialOfferFamilyRule,
+    SpecialOfferTransferDiscount,
     BlackoutDate,
     Allotment,
     StopSale,
@@ -59,6 +64,12 @@ from app.engines.contract.schemas import (
     RateSupplementUpdate,
     PromotionCreate,
     PromotionUpdate,
+    SpecialOfferCreate,
+    SpecialOfferUpdate,
+    SpecialOfferRoomDiscountCreate,
+    SpecialOfferMealPlanDiscountCreate,
+    SpecialOfferFamilyRuleCreate,
+    SpecialOfferTransferDiscountCreate,
     BlackoutDateCreate,
     AllotmentCreate,
     AllotmentUpdate,
@@ -142,6 +153,13 @@ def _require_promotion(db: Session, promotion_id: int) -> Promotion:
     if promotion is None:
         raise ValueError(f"Promotion {promotion_id} not found")
     return promotion
+
+
+def _require_special_offer(db: Session, offer_id: int) -> SpecialOffer:
+    offer = repository.get_special_offer(db, offer_id)
+    if offer is None:
+        raise ValueError(f"Special offer {offer_id} not found")
+    return offer
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +567,106 @@ def update_promotion_status(db: Session, promotion_id: int, status: str) -> Prom
     promotion = _require_promotion(db, promotion_id)
     validate_child_status(status)
     return repository.update_promotion_status(db, promotion, status)
+
+
+# ---------------------------------------------------------------------------
+# Special Offer (Decision 026)
+# ---------------------------------------------------------------------------
+
+
+def create_special_offer(db: Session, data: SpecialOfferCreate) -> SpecialOffer:
+    """Create a new special offer package on a contract. Raises ValueError if the contract doesn't exist or booking_start/booking_end are inverted."""
+    _require_contract(db, data.contract_id)
+    validate_date_range(data.booking_start, data.booking_end)
+    return repository.create_special_offer(db, **data.model_dump())
+
+
+def get_special_offer(db: Session, offer_id: int) -> SpecialOffer:
+    """Fetch one special offer by id, or raise ValueError if it doesn't exist."""
+    return _require_special_offer(db, offer_id)
+
+
+def list_special_offers(db: Session, contract_id: int) -> list[SpecialOffer]:
+    """Return every special offer defined for one contract."""
+    return repository.list_special_offers(db, contract_id)
+
+
+def update_special_offer(db: Session, offer_id: int, data: SpecialOfferUpdate) -> SpecialOffer:
+    """Update a special offer's profile fields and/or status."""
+    offer = _require_special_offer(db, offer_id)
+    update_data = data.model_dump(exclude_unset=True)
+    if "booking_start" in update_data or "booking_end" in update_data:
+        validate_date_range(
+            update_data.get("booking_start", offer.booking_start),
+            update_data.get("booking_end", offer.booking_end),
+        )
+    if "status" in update_data:
+        validate_child_status(update_data["status"])
+    if update_data:
+        offer = repository.update_special_offer(db, offer, **update_data)
+    return offer
+
+
+def create_special_offer_room_discount(
+    db: Session, data: SpecialOfferRoomDiscountCreate
+) -> SpecialOfferRoomDiscount:
+    """Add a room discount row (mechanism 1) to a special offer. Raises ValueError if the offer doesn't exist or start_date/end_date are inverted."""
+    _require_special_offer(db, data.offer_id)
+    validate_date_range(data.start_date, data.end_date)
+    return repository.create_special_offer_room_discount(db, **data.model_dump())
+
+
+def list_special_offer_room_discounts(
+    db: Session, offer_id: int, room_type_id: Optional[int] = None
+) -> list[SpecialOfferRoomDiscount]:
+    """Return every room discount row for one offer, optionally narrowed to a single room type."""
+    return repository.list_special_offer_room_discounts(db, offer_id, room_type_id=room_type_id)
+
+
+def create_special_offer_meal_plan_discount(
+    db: Session, data: SpecialOfferMealPlanDiscountCreate
+) -> SpecialOfferMealPlanDiscount:
+    """Add a meal plan discount row (mechanism 2) to a special offer. Raises ValueError if the offer doesn't exist or start_date/end_date are inverted."""
+    _require_special_offer(db, data.offer_id)
+    validate_date_range(data.start_date, data.end_date)
+    return repository.create_special_offer_meal_plan_discount(db, **data.model_dump())
+
+
+def list_special_offer_meal_plan_discounts(
+    db: Session, offer_id: int
+) -> list[SpecialOfferMealPlanDiscount]:
+    """Return every meal plan discount row for one offer."""
+    return repository.list_special_offer_meal_plan_discounts(db, offer_id)
+
+
+def create_special_offer_family_rule(
+    db: Session, data: SpecialOfferFamilyRuleCreate
+) -> SpecialOfferFamilyRule:
+    """Add a family rule row (mechanism 3) to a special offer. Raises ValueError if the offer doesn't exist or start_date/end_date are inverted."""
+    _require_special_offer(db, data.offer_id)
+    validate_date_range(data.start_date, data.end_date)
+    return repository.create_special_offer_family_rule(db, **data.model_dump())
+
+
+def list_special_offer_family_rules(db: Session, offer_id: int) -> list[SpecialOfferFamilyRule]:
+    """Return every family rule row for one offer."""
+    return repository.list_special_offer_family_rules(db, offer_id)
+
+
+def create_special_offer_transfer_discount(
+    db: Session, data: SpecialOfferTransferDiscountCreate
+) -> SpecialOfferTransferDiscount:
+    """Add a transfer discount row (mechanism 4) to a special offer. Raises ValueError if the offer doesn't exist or start_date/end_date are inverted."""
+    _require_special_offer(db, data.offer_id)
+    validate_date_range(data.start_date, data.end_date)
+    return repository.create_special_offer_transfer_discount(db, **data.model_dump())
+
+
+def list_special_offer_transfer_discounts(
+    db: Session, offer_id: int
+) -> list[SpecialOfferTransferDiscount]:
+    """Return every transfer discount row for one offer."""
+    return repository.list_special_offer_transfer_discounts(db, offer_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1053,7 +1171,14 @@ def get_transfer_options(db: Session, contract_id: int) -> list[ContractTransfer
 
 
 def get_transfer_price(
-    db: Session, contract_id: int, transfer_type: str, adults: int, children: int, infants: int = 0
+    db: Session,
+    contract_id: int,
+    transfer_type: str,
+    check_in: date_type,
+    check_out: date_type,
+    adults: int,
+    children: int,
+    infants: int = 0,
 ) -> dict:
     """
     Compute the one-time round-trip transfer cost for a specific
@@ -1064,6 +1189,15 @@ def get_transfer_price(
     from the contract itself; ContractTransferOption has no currency column
     of its own, since nothing so far suggests a transfer needs a currency
     independent of its contract's.
+
+    Decision 026: check_in/check_out are new as of mechanism 4 (transfer
+    discounts) — a purely additive signature change (Decision 022 didn't
+    need dates at all; this adds them as required parameters since a
+    transfer discount's min_nights and period-matching genuinely can't be
+    evaluated without them). Applied as a percentage reduction to the
+    total above via _find_active_special_offer_transfer_discount, keyed by
+    check_in (arrival date), never check_out — see that helper's docstring
+    for why.
 
     Raises ValueError if the contract doesn't exist, or no Active transfer
     option with this transfer_type exists on it.
@@ -1085,6 +1219,13 @@ def get_transfer_price(
         + option.price_child * children
         + (option.price_infant or 0) * infants
     )
+
+    nights = (check_out - check_in).days
+    transfer_discount = _find_active_special_offer_transfer_discount(
+        db, contract_id, transfer_type, check_in, nights
+    )
+    if transfer_discount is not None:
+        total *= 1 - (transfer_discount.discount_percent / 100)
 
     return {
         "contract_id": contract_id,
@@ -1185,6 +1326,106 @@ def _calc_supplement_total(
     return 0.0
 
 
+def _bookable_special_offers(db: Session, contract_id: int) -> list[SpecialOffer]:
+    """
+    Return every Active SpecialOffer on this contract whose booking_start/
+    booking_end window covers today — the same "book by" semantic Promotion
+    already uses for its own booking_start/booking_end. Does not check
+    market_id or combinable_with_other_offers here; callers that need those
+    filter further.
+    """
+    today = date_type.today()
+    return [
+        o
+        for o in repository.list_special_offers(db, contract_id)
+        if o.status == "Active"
+        and (o.booking_start is None or o.booking_start <= today)
+        and (o.booking_end is None or today <= o.booking_end)
+    ]
+
+
+def _find_active_special_offer_room_discount(
+    db: Session, contract_id: int, room_type_id: int, check_in: date_type
+) -> Optional[SpecialOfferRoomDiscount]:
+    """
+    Decision 026, mechanism 1: the highest-priority Active room discount row
+    for this room type whose period covers check_in, across every currently
+    bookable offer on this contract. Uses check_in for the whole stay — the
+    same simplification get_room_price already applies for seasons (no
+    per-night proration across a period boundary).
+    """
+    candidates = []
+    for offer in _bookable_special_offers(db, contract_id):
+        for row in repository.list_special_offer_room_discounts(db, offer.id, room_type_id=room_type_id):
+            if row.status == "Active" and row.start_date <= check_in <= row.end_date:
+                candidates.append(row)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda r: r.priority)
+
+
+def _find_active_special_offer_meal_plan_discount(
+    db: Session, contract_id: int, meal_plan_id: int, check_in: date_type
+) -> Optional[SpecialOfferMealPlanDiscount]:
+    """
+    Decision 026, mechanism 2: the first Active meal plan discount row
+    covering check_in, matching either this specific meal_plan_id or a
+    meal_plan_id=None row (applies to every meal_plan_supplement-priced
+    upgrade uniformly). A period with no matching row means "No" discount
+    that period — not an error, just nothing to apply.
+    """
+    for offer in _bookable_special_offers(db, contract_id):
+        for row in repository.list_special_offer_meal_plan_discounts(db, offer.id):
+            if (
+                row.status == "Active"
+                and row.start_date <= check_in <= row.end_date
+                and (row.meal_plan_id is None or row.meal_plan_id == meal_plan_id)
+            ):
+                return row
+    return None
+
+
+def _find_active_special_offer_family_rule(
+    db: Session, contract_id: int, check_in: date_type, adults: int
+) -> Optional[SpecialOfferFamilyRule]:
+    """
+    Decision 026, mechanism 3: among Active family rules covering check_in
+    whose min_adults this booking's adults count actually meets, the one
+    with the highest min_adults — the most specific match, so a "2+ adults"
+    rule and a distinct "1 adult" rule for the same period each apply to
+    the right bookings rather than the first one found winning arbitrarily.
+    """
+    candidates = []
+    for offer in _bookable_special_offers(db, contract_id):
+        for row in repository.list_special_offer_family_rules(db, offer.id):
+            if row.status == "Active" and row.start_date <= check_in <= row.end_date and adults >= row.min_adults:
+                candidates.append(row)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda r: r.min_adults)
+
+
+def _find_active_special_offer_transfer_discount(
+    db: Session, contract_id: int, transfer_type: str, arrival_date: date_type, nights: int
+) -> Optional[SpecialOfferTransferDiscount]:
+    """
+    Decision 026, mechanism 4: the first Active transfer discount row for
+    this transfer_type whose min_nights is met and whose period covers
+    arrival_date — keyed by arrival date only, per the real offer's own
+    "determined by arrival date when stay spans multiple months" note.
+    """
+    for offer in _bookable_special_offers(db, contract_id):
+        for row in repository.list_special_offer_transfer_discounts(db, offer.id):
+            if (
+                row.status == "Active"
+                and row.transfer_type == transfer_type
+                and nights >= row.min_nights
+                and row.start_date <= arrival_date <= row.end_date
+            ):
+                return row
+    return None
+
+
 def get_room_price(
     db: Session,
     contract_id: int,
@@ -1213,11 +1454,34 @@ def get_room_price(
 
     Known simplifications:
       - Only the season covering check_in is used for the whole stay — a
-        stay spanning two seasons is not prorated night-by-night.
+        stay spanning two seasons is not prorated night-by-night. Decision
+        026's special offer mechanisms use the exact same check_in-for-the-
+        whole-stay simplification for their own period boundaries.
       - adults/children/infants are mapped onto the contract's age
         categories by name-keyword matching (see _resolve_age_categories);
         a contract with more than one child-like category can't be fully
         disambiguated by this 3-bucket signature.
+
+    Decision 026: applies up to three special-offer mechanisms, each
+    targeting a specific, distinct part of the price so they compose
+    correctly rather than double-discounting the same money:
+      - A SpecialOfferFamilyRule (mechanism 3) waives age_category_price
+        for up to N qualifying children BEFORE that supplement is computed
+        — by reducing the children count used in the calculation, not by
+        discounting an amount. Since the "children" bucket is already,
+        by construction, restricted to the contract's child age category
+        (e.g. 2-11.99), any count in it already satisfies a family rule's
+        age ceiling with no extra age check needed here.
+      - A SpecialOfferRoomDiscount (mechanism 1) reduces base_total, and —
+        only if applies_to_extra_person — the extra_person contribution,
+        AFTER those are computed. Never touches age_category_price.
+      - A SpecialOfferMealPlanDiscount (mechanism 2) reduces the
+        meal_plan_supplement contribution specifically, independent of the
+        room discount percentage.
+    All three are additive-but-isolated: implemented as reductions to
+    already-computed components, applied before the existing Promotion
+    sequential-discount step (which still applies on top of whatever
+    price_before_promotions these produce, exactly as before).
 
     Raises ValueError if adults < 1, if adults+children exceeds the room
     type's max_occupancy (via Hotel Engine's validate_capacity — Decision
@@ -1272,18 +1536,27 @@ def get_room_price(
     nights = (check_out - check_in).days
     base_total = rate.base_price * nights
 
+    # Decision 026, mechanism 3: waive age_category_price for up to N
+    # qualifying children before computing that supplement at all.
+    chargeable_children = children
+    family_rule = _find_active_special_offer_family_rule(db, contract_id, check_in, adults)
+    if family_rule is not None:
+        waived = min(children, family_rule.max_free_children_accommodation)
+        chargeable_children = children - waived
+
     categories = repository.list_contract_age_categories(db, contract_id)
     bucket_categories = _resolve_age_categories(categories)
-    buckets = {"adults": adults, "children": children, "infants": infants}
+    buckets = {"adults": adults, "children": chargeable_children, "infants": infants}
 
-    supplements_total = 0.0
+    age_category_total = 0.0
+    meal_plan_supplement_total = 0.0
     for bucket_name, count in buckets.items():
         category = bucket_categories[bucket_name]
         if count <= 0 or category is None:
             continue
         for supplement in repository.list_rate_supplements(db, rate.id, adjustment_type="age_category_price"):
             if supplement.status == "Active" and supplement.age_category_id == category.id:
-                supplements_total += _calc_supplement_total(supplement, nights, rate.base_price, count)
+                age_category_total += _calc_supplement_total(supplement, nights, rate.base_price, count)
         if needs_meal_plan_supplement:
             for supplement in repository.list_rate_supplements(db, rate.id, adjustment_type="meal_plan_supplement"):
                 if (
@@ -1291,7 +1564,9 @@ def get_room_price(
                     and supplement.meal_plan_id == target_meal_plan_id
                     and supplement.age_category_id == category.id
                 ):
-                    supplements_total += _calc_supplement_total(supplement, nights, rate.base_price, count)
+                    meal_plan_supplement_total += _calc_supplement_total(
+                        supplement, nights, rate.base_price, count
+                    )
 
     if needs_meal_plan_supplement:
         for supplement in repository.list_rate_supplements(db, rate.id, adjustment_type="meal_plan_supplement"):
@@ -1300,7 +1575,7 @@ def get_room_price(
                 and supplement.meal_plan_id == target_meal_plan_id
                 and supplement.age_category_id is None
             ):
-                supplements_total += _calc_supplement_total(supplement, nights, rate.base_price, 1)
+                meal_plan_supplement_total += _calc_supplement_total(supplement, nights, rate.base_price, 1)
 
     # Decision 017: adults beyond rate.base_occupancy ("based on 2" in a real
     # contract) are charged via an "extra_person" RateSupplement, separate
@@ -1310,11 +1585,35 @@ def get_room_price(
     # contract this was modeled on (Kandima) — no equivalent "extra child"
     # rule has been confirmed, so this isn't extended to children/infants.
     extra_adults = max(0, adults - rate.base_occupancy)
+    extra_person_total = 0.0
     if extra_adults > 0:
         for supplement in repository.list_rate_supplements(db, rate.id, adjustment_type="extra_person"):
             if supplement.status == "Active":
-                supplements_total += _calc_supplement_total(supplement, nights, rate.base_price, extra_adults)
+                extra_person_total += _calc_supplement_total(supplement, nights, rate.base_price, extra_adults)
 
+    # Decision 026, mechanism 1: room discount — reduces base_total, and
+    # extra_person_total too if applies_to_extra_person is set. Never
+    # touches age_category_total.
+    room_discount = _find_active_special_offer_room_discount(db, contract_id, room_type_id, check_in)
+    if room_discount is not None:
+        factor = 1 - (room_discount.discount_percent / 100)
+        base_total *= factor
+        if room_discount.applies_to_extra_person:
+            extra_person_total *= factor
+
+    # Decision 026, mechanism 2: meal plan discount — reduces
+    # meal_plan_supplement_total specifically, independent of the room
+    # discount percentage. Only relevant when a meal_plan_supplement was
+    # actually used (direct-rate meal plans like BB have nothing to
+    # discount here).
+    if needs_meal_plan_supplement:
+        meal_discount = _find_active_special_offer_meal_plan_discount(
+            db, contract_id, target_meal_plan_id, check_in
+        )
+        if meal_discount is not None:
+            meal_plan_supplement_total *= 1 - (meal_discount.discount_percent / 100)
+
+    supplements_total = age_category_total + meal_plan_supplement_total + extra_person_total
     price_before_promotions = base_total + supplements_total
 
     today = date_type.today()

@@ -838,6 +838,147 @@ for this adjustment_type.
 
 ---
 
+# Decision 026
+
+Date: 2026-07-08
+
+Decision: Implemented a general, reusable "special offer / promotional
+package" system for Contract Engine, modeling Kandima's real KM26_03
+offer as configurable data rather than hotel-specific code. New parent
+entity SpecialOffer (contract_id, offer_name, booking_start/booking_end,
+market_id nullable = ALL markets, combinable_with_other_offers) groups
+four child mechanisms, each its own table:
+
+1. SpecialOfferRoomDiscount -- percentage off a specific room type's
+   base rate for a specific period, optionally also off extra_person
+   (applies_to_extra_person), never age_category_price. One row per
+   (room_type, period).
+2. SpecialOfferMealPlanDiscount -- percentage off the
+   meal_plan_supplement contribution for a period, independent of the
+   room discount. meal_plan_id nullable = applies to every
+   meal_plan_supplement-priced upgrade uniformly; no row for a period
+   means "No" discount that period, no sentinel needed.
+3. SpecialOfferFamilyRule -- waives age_category_price for up to N
+   qualifying children, conditional on min_adults being met, for a
+   period. Deliberately contract-wide, not room-type-scoped, matching
+   the real offer's own structure -- multiple rows with different
+   min_adults can coexist for the same period (e.g. a "2+ adults" rule
+   and a distinct "1 adult" rule), resolved by picking the row with the
+   highest min_adults the actual booking's adult count still satisfies.
+   max_free_children_meals/max_free_child_age_meals capture the real
+   contract's "children also get free meals" clause for documentation
+   only -- not read by get_room_price, since there is no existing
+   per-child meal-plan charge to waive (Decision 022's
+   meal_plan_supplement only ever targets the Adult age category), so
+   this clause is already true by default with zero implementation
+   needed.
+4. SpecialOfferTransferDiscount -- percentage off get_transfer_price's
+   total for a specific transfer_type, conditional on min_nights, keyed
+   by arrival date (check_in) only.
+
+Deliberately NOT built on the existing Promotion table: Promotion is
+one flat discount on a room type's whole price_before_promotions total
+from a fixed 9-value documented type list; a SpecialOffer's mechanisms
+each target specific, isolated price components and vary by room type
+in ways Promotion was never built to express.
+combinable_with_other_offers governs only other SpecialOffer rows on a
+contract -- entirely independent of Promotion.is_stackable, a
+structurally separate system (confirmed by project owner).
+
+get_transfer_price's signature gained required check_in/check_out
+parameters (previously took no dates at all, per Decision 022 -- a
+transfer was modeled as fully date-independent) since mechanism 4's
+min_nights and period-matching genuinely can't be evaluated without
+them. Its one caller, Booking Engine's create_booking, updated to pass
+data.arrival_date/data.departure_date.
+
+All three get_room_price mechanisms are implemented as reductions to
+already-isolated price components (chargeable_children count before
+age_category_price is computed; base_total and optionally
+extra_person_total after they're computed; meal_plan_supplement_total
+separately) rather than a blanket discount on the whole total, so they
+compose correctly with each other and with Promotion's own sequential
+step, which still runs on top of whatever price_before_promotions they
+produce. Both the special-offer period matching and the pre-existing
+season matching use the same check_in-for-the-whole-stay
+simplification (no per-night proration across a period boundary).
+
+Reason: Project owner requested KM26_03 be modeled as reusable
+formulas any hotel could use, not Kandima-specific code, continuing
+this session's established principle (Contract Engine's flexible-core
+schema design, RateSupplement's adjustment_type, ContractTransferOption).
+A significant design discussion preceded implementation, resolving:
+period-spanning stays use check_in for the whole stay (matching
+existing precedent); the family rule's "free meals" clause needs no
+new pricing mechanism since none exists to waive; offer combinability
+is scoped only to other offers, independent of Promotion; the four
+mechanisms within one offer are meant to stack with each other
+(only "other offers" are non-combinable).
+
+Approved By: Daler
+
+Status: Implemented and verified end-to-end via real HTTP calls,
+using the real KM26_03 numbers for Sky Studio (the one room type with
+a complete 7-period table given): 55%/55%/40%/50%/55%/45%/40% across
+now-31 Oct 2026 through 26 Dec 2027-10 Jan 2028, all
+applies_to_extra_person=true; a family rule for Jan 2027-Jan 2028
+(min_adults=2, up to 2 children under 11.99 free); transfer discounts
+of 50% (domestic_comfort) and 25% (seaplane), both min_nights=4.
+
+Primary verification (hand-calculated before running): Sky Studio,
+2 adults + 2 children, HB+, 2027-02-01 (Peak period, 50% room
+discount) -- expected base_total=251.5 (503*0.50), age_category_price
+fully waived by the family rule (2 children <= max_free 2),
+meal_plan_supplement=108 (90*2 adults*0.60 after 40% meal discount),
+extra_person=0 (2 adults = base_occupancy) -> price_before_promotions
+= final_total = 359.5 (no Promotion exists on Kandima's contract).
+Real HTTP call matched exactly: base_total=251.5, supplements_total=
+108.0, final_total=359.5.
+
+Transfer discount verified independently: domestic_comfort at 4 nights
+(meets min_nights) -> 414.0 (828*0.50); domestic_comfort at 2 nights
+(below min_nights) -> 828.0, correctly undiscounted; seaplane at 4
+nights -> 1087.5 (1450*0.75). Verified through the actual booking flow
+too: a 4-night Kandima booking with transfer_type=seaplane correctly
+stored transfer_total=1087.5 and total_amount=4008.0 (room-only,
+unaffected).
+
+Full regression suite re-run: Test Beach Resort 540.0 (different
+contract, no special offers, fully unaffected); Sunrise Beach Pool
+Villa's own base_total unaffected (1002.0 at 2 adults) since no
+SpecialOfferRoomDiscount row exists for that room type; Sunrise Beach
+Pool Villa at 3 adults still 1192.0 (Decision 024's capacity fix
+unaffected); Sky Studio at 4 adults still correctly rejected (Decision
+024 unaffected).
+
+One real, notable (not a bug) behavior change surfaced by this
+regression pass: Sunrise Beach Pool Villa at 2 adults + 1 child now
+returns 1002.0 instead of the pre-KM26_03 1062.0 -- because
+SpecialOfferFamilyRule is deliberately contract-wide, not
+room-type-scoped, matching the real offer's structure, it correctly
+waives the child charge for every room type under Kandima's contract
+during Jan 2027-Jan 2028, not just Sky Studio. This is the feature
+working as designed, not a regression -- any booking within the
+offer's real scope legitimately reprices once a live special offer
+exists for that period.
+
+Known gaps, flagged rather than guessed at: the other 9 Kandima room
+types' exact per-period room-discount percentages were only partially
+given ("most villas get 50% instead of 55%, Sunset Aqua Pool Suite
+gets 30%/25%") -- only Sky Studio's complete table was provided and
+implemented; the meal-plan-discount and transfer-discount mechanisms'
+exact real period boundaries (which periods get 40%/have "No"
+discount; which periods the transfer discounts apply in) weren't
+given either, so the periods used for testing (matching Sky Studio's
+Peak-season row, 11 Jan-4 Apr 2027) are test assumptions, not
+confirmed real contract terms, and are flagged here so they aren't
+mistaken for verified data. One minimal additional test Allotment
+data point (3 more nights for Kandima room_type_id=2) was added purely
+to unblock the 4-night transfer-discount booking verification, same
+category as prior sessions' minimal test-support data additions.
+
+---
+
 # Decision Template
 
 Decision Number:

@@ -192,7 +192,14 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
     transfer_total = None
     if data.transfer_type is not None:
         transfer_price = contract_service.get_transfer_price(
-            db, contract.id, data.transfer_type, data.adults, data.children, data.infants
+            db,
+            contract.id,
+            data.transfer_type,
+            data.arrival_date,
+            data.departure_date,
+            data.adults,
+            data.children,
+            data.infants,
         )
         transfer_total = transfer_price["total"]
 

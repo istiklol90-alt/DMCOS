@@ -390,6 +390,139 @@ class PromotionResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Special Offer (Decision 026)
+# ---------------------------------------------------------------------------
+
+
+class SpecialOfferCreate(BaseModel):
+    contract_id: int
+    offer_name: str = Field(..., min_length=2, max_length=100)
+    booking_start: Optional[date] = None
+    booking_end: Optional[date] = None
+    market_id: Optional[int] = None
+    combinable_with_other_offers: bool = False
+
+
+class SpecialOfferUpdate(BaseModel):
+    offer_name: Optional[str] = Field(None, min_length=2, max_length=100)
+    booking_start: Optional[date] = None
+    booking_end: Optional[date] = None
+    market_id: Optional[int] = None
+    combinable_with_other_offers: Optional[bool] = None
+    status: Optional[ChildStatus] = None
+
+
+class SpecialOfferResponse(BaseModel):
+    id: int
+    contract_id: int
+    offer_name: str
+    booking_start: Optional[date] = None
+    booking_end: Optional[date] = None
+    market_id: Optional[int] = None
+    combinable_with_other_offers: bool
+    status: str
+
+    class Config:
+        from_attributes = True
+
+
+class SpecialOfferRoomDiscountCreate(BaseModel):
+    offer_id: int
+    room_type_id: int
+    start_date: date
+    end_date: date
+    discount_percent: float = Field(..., gt=0, le=100)
+    applies_to_extra_person: bool = False
+    priority: int = 0
+
+
+class SpecialOfferRoomDiscountResponse(BaseModel):
+    id: int
+    offer_id: int
+    room_type_id: int
+    start_date: date
+    end_date: date
+    discount_percent: float
+    applies_to_extra_person: bool
+    priority: int
+    status: str
+
+    class Config:
+        from_attributes = True
+
+
+class SpecialOfferMealPlanDiscountCreate(BaseModel):
+    offer_id: int
+    meal_plan_id: Optional[int] = None
+    start_date: date
+    end_date: date
+    discount_percent: float = Field(..., gt=0, le=100)
+
+
+class SpecialOfferMealPlanDiscountResponse(BaseModel):
+    id: int
+    offer_id: int
+    meal_plan_id: Optional[int] = None
+    start_date: date
+    end_date: date
+    discount_percent: float
+    status: str
+
+    class Config:
+        from_attributes = True
+
+
+class SpecialOfferFamilyRuleCreate(BaseModel):
+    offer_id: int
+    start_date: date
+    end_date: date
+    min_adults: int = Field(..., ge=1)
+    max_free_children_accommodation: int = Field(..., ge=0)
+    max_free_child_age_accommodation: float = Field(..., ge=0)
+    max_free_children_meals: Optional[int] = Field(None, ge=0)
+    max_free_child_age_meals: Optional[float] = Field(None, ge=0)
+
+
+class SpecialOfferFamilyRuleResponse(BaseModel):
+    id: int
+    offer_id: int
+    start_date: date
+    end_date: date
+    min_adults: int
+    max_free_children_accommodation: int
+    max_free_child_age_accommodation: float
+    max_free_children_meals: Optional[int] = None
+    max_free_child_age_meals: Optional[float] = None
+    status: str
+
+    class Config:
+        from_attributes = True
+
+
+class SpecialOfferTransferDiscountCreate(BaseModel):
+    offer_id: int
+    transfer_type: str = Field(..., min_length=1, max_length=50)
+    discount_percent: float = Field(..., gt=0, le=100)
+    min_nights: int = Field(..., ge=1)
+    start_date: date
+    end_date: date
+
+
+class SpecialOfferTransferDiscountResponse(BaseModel):
+    id: int
+    offer_id: int
+    transfer_type: str
+    discount_percent: float
+    min_nights: int
+    start_date: date
+    end_date: date
+    status: str
+
+    class Config:
+        from_attributes = True
+
+
+# ---------------------------------------------------------------------------
 # Blackout Date
 # ---------------------------------------------------------------------------
 

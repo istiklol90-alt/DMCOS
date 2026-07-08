@@ -14,6 +14,11 @@ from app.engines.contract.models import (
     Rate,
     RateSupplement,
     Promotion,
+    SpecialOffer,
+    SpecialOfferRoomDiscount,
+    SpecialOfferMealPlanDiscount,
+    SpecialOfferFamilyRule,
+    SpecialOfferTransferDiscount,
     BlackoutDate,
     Allotment,
     StopSale,
@@ -418,6 +423,114 @@ def update_promotion_status(db: Session, promotion: Promotion, status: str) -> P
     db.commit()
     db.refresh(promotion)
     return promotion
+
+
+# ---------------------------------------------------------------------------
+# Special Offer (Decision 026)
+# ---------------------------------------------------------------------------
+
+
+def create_special_offer(db: Session, **fields) -> SpecialOffer:
+    """Insert a new special offer row from already-validated fields. New offers start with the model's default status ("Active") unless status is explicitly passed."""
+    offer = SpecialOffer(**fields)
+    db.add(offer)
+    db.commit()
+    db.refresh(offer)
+    return offer
+
+
+def get_special_offer(db: Session, offer_id: int) -> Optional[SpecialOffer]:
+    """Fetch a single special offer by its primary key, or None if it doesn't exist."""
+    return db.query(SpecialOffer).filter(SpecialOffer.id == offer_id).first()
+
+
+def list_special_offers(db: Session, contract_id: int) -> list[SpecialOffer]:
+    """Return every special offer defined for one contract."""
+    return db.query(SpecialOffer).filter(SpecialOffer.contract_id == contract_id).all()
+
+
+def update_special_offer(db: Session, offer: SpecialOffer, **fields) -> SpecialOffer:
+    """Apply the given field values to an existing special offer row and persist them."""
+    for key, value in fields.items():
+        setattr(offer, key, value)
+    db.commit()
+    db.refresh(offer)
+    return offer
+
+
+def create_special_offer_room_discount(db: Session, **fields) -> SpecialOfferRoomDiscount:
+    """Insert a new room discount row for a special offer."""
+    row = SpecialOfferRoomDiscount(**fields)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_special_offer_room_discounts(
+    db: Session, offer_id: int, room_type_id: Optional[int] = None
+) -> list[SpecialOfferRoomDiscount]:
+    """Return every room discount row for one offer, optionally narrowed to a single room_type_id."""
+    query = db.query(SpecialOfferRoomDiscount).filter(SpecialOfferRoomDiscount.offer_id == offer_id)
+    if room_type_id is not None:
+        query = query.filter(SpecialOfferRoomDiscount.room_type_id == room_type_id)
+    return query.order_by(SpecialOfferRoomDiscount.priority.desc()).all()
+
+
+def create_special_offer_meal_plan_discount(db: Session, **fields) -> SpecialOfferMealPlanDiscount:
+    """Insert a new meal plan discount row for a special offer."""
+    row = SpecialOfferMealPlanDiscount(**fields)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_special_offer_meal_plan_discounts(
+    db: Session, offer_id: int
+) -> list[SpecialOfferMealPlanDiscount]:
+    """Return every meal plan discount row for one offer."""
+    return (
+        db.query(SpecialOfferMealPlanDiscount)
+        .filter(SpecialOfferMealPlanDiscount.offer_id == offer_id)
+        .all()
+    )
+
+
+def create_special_offer_family_rule(db: Session, **fields) -> SpecialOfferFamilyRule:
+    """Insert a new family rule row for a special offer."""
+    row = SpecialOfferFamilyRule(**fields)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_special_offer_family_rules(db: Session, offer_id: int) -> list[SpecialOfferFamilyRule]:
+    """Return every family rule row for one offer."""
+    return (
+        db.query(SpecialOfferFamilyRule).filter(SpecialOfferFamilyRule.offer_id == offer_id).all()
+    )
+
+
+def create_special_offer_transfer_discount(db: Session, **fields) -> SpecialOfferTransferDiscount:
+    """Insert a new transfer discount row for a special offer."""
+    row = SpecialOfferTransferDiscount(**fields)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_special_offer_transfer_discounts(
+    db: Session, offer_id: int
+) -> list[SpecialOfferTransferDiscount]:
+    """Return every transfer discount row for one offer."""
+    return (
+        db.query(SpecialOfferTransferDiscount)
+        .filter(SpecialOfferTransferDiscount.offer_id == offer_id)
+        .all()
+    )
 
 
 # ---------------------------------------------------------------------------
