@@ -1390,6 +1390,61 @@ decision if it becomes a real concern.
 
 ---
 
+# Decision 033
+
+Date: 2026-07-08
+
+Decision: Addendum to Decision 029's staged autonomous-booking-
+modification roadmap -- cancellation follows the identical staged
+philosophy already established for date changes (manual now,
+notification next, AI-driven hotel communication later), not a
+separate plan of its own:
+
+- NOW (Stage 1, done): cancellation is immediate/direct -- already
+  implemented (Decision 032's authorization fix plus the frontend
+  cancel-booking UI), with cancellation_fee computed per the
+  contract's cancellation-policy tiers at the moment of cancellation
+  (service._resolve_cancellation_fee).
+- NEXT (small addition, this decision's implementation step): a
+  "recently cancelled by agent" signal added to the existing AI
+  insight strip, exact same pattern as Decision 032's "recently
+  changed dates" signal -- so a manager notices a cancellation without
+  manually opening every booking.
+- FUTURE (Stage 4-5 of Decision 029's numbering, not started): when a
+  cancellation carries NO penalty (inside the free-cancellation
+  window), the system already allows it immediately today -- but nothing
+  yet confirms the hotel has actually released the room on their end.
+  This becomes an AI-driven follow-up task: AI emails the hotel
+  confirming the cancellation, tracks whether the hotel acknowledges
+  it, and reports the outcome to the manager. Per the AI Autonomy
+  Levels framework (same reasoning as Decision 029's Stage 4 for date
+  changes): the outbound email + tracking is Level 3 autonomous, since
+  a free cancellation carries no new financial risk to auto-send --
+  but any hotel non-response or dispute would need to escalate to a
+  human via a Level 2 Gate rather than being silently resolved by AI.
+
+Reason: Decision 031 already established that Decision 030's
+date-change work is a template for a family of related
+booking-modification capabilities, not a one-off. This extends that
+same conclusion explicitly to cancellation, which was already built
+(Decision 032) but never had its own place in the staged roadmap
+Decision 029 laid out for dates. Keeping both under one staged
+philosophy avoids re-deriving the AI-autonomy reasoning from scratch
+for every future booking-modification type.
+
+Approved By: Daler
+
+Status: Logged as roadmap addendum to Decision 029/032. Implementing
+the NEXT step now: a "recently cancelled by agent" AI-insight-strip
+flag and a table badge, mirroring computeRecentlyChangedFlags/
+isRecentlyChanged/the "Изменено" badge exactly (new
+computeRecentlyCancelledFlags/isRecentlyCancelled off Booking's
+existing cancelled_at field, admin-view-only, same 24h window). FUTURE
+stage (AI-hotel-confirmation-email for free cancellations) remains
+unstarted, same as Decision 029's Stages 3-5 for dates.
+
+---
+
 # Decision Template
 
 Decision Number:

@@ -103,6 +103,7 @@ export interface Permissions {
   canChangeDates: boolean;
   canEditGuestDetails: boolean;
   canEditFlights: boolean;
+  canCancel: boolean;
 }
 
 export type Scope = { type: "all" } | { type: "agent"; agentId: number };
@@ -143,6 +144,23 @@ function daysBetween(fromDateStr: string, toDateStr: string): number {
 
 function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+// Mirrors backend/app/engines/booking/service.py's _resolve_cancellation_fee
+// exactly, so the confirmation panel can preview the fee before the user
+// commits: among tiers where actual notice is less than the tier's
+// days_before_arrival threshold, the tier with the smallest threshold
+// (strictest, closest to arrival) wins. No breached tier -> no fee.
+function resolveCancellationFeePreview(
+  policies: CancellationPolicy[],
+  booking: Booking
+): { fee: number | null; currency: string } {
+  const noticeDays = daysBetween(todayStr(), booking.arrival_date);
+  const applicable = policies.filter((p) => noticeDays < p.days_before_arrival);
+  if (applicable.length === 0) return { fee: null, currency: booking.currency };
+  const tier = applicable.reduce((min, p) => (p.days_before_arrival < min.days_before_arrival ? p : min));
+  const fee = tier.penalty_type === "percentage" ? booking.total_amount * (tier.penalty_value / 100) : tier.penalty_value;
+  return { fee, currency: tier.currency || booking.currency };
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -199,7 +217,8 @@ function formatDate(dateStr: string) {
 type AIFlag =
   | { kind: "pending_soon"; booking: Booking; daysUntilArrival: number }
   | { kind: "cancellation_deadline"; booking: Booking; nextThreshold: number; daysUntilCross: number }
-  | { kind: "recently_changed"; booking: Booking; hoursAgo: number };
+  | { kind: "recently_changed"; booking: Booking; hoursAgo: number }
+  | { kind: "recently_cancelled"; booking: Booking; hoursAgo: number };
 
 function computePendingSoonFlags(bookings: Booking[]): AIFlag[] {
   const today = todayStr();
@@ -252,6 +271,12 @@ function computeCancellationDeadlineFlags(
 // notification, not a Level 2 gate — the change is already applied).
 const RECENTLY_CHANGED_WINDOW_HOURS = 24;
 
+// Same pattern, cancellation instead of date-change (Decision 029/033
+// addendum: cancellation follows the identical staged rollout as
+// date-change — Stage "next" is this notification, nothing about the
+// cancellation flow itself changes here).
+const RECENTLY_CANCELLED_WINDOW_HOURS = 24;
+
 // The backend serializes datetime.utcnow() as a naive ISO string with no
 // "Z"/offset suffix (e.g. "2026-07-08T13:18:14.668797"). new Date(...) on
 // such a string parses it as LOCAL time, not UTC — for any viewer whose
@@ -277,6 +302,21 @@ function isRecentlyChanged(b: Booking): boolean {
   return hoursAgo >= 0 && hoursAgo <= RECENTLY_CHANGED_WINDOW_HOURS;
 }
 
+function computeRecentlyCancelledFlags(bookings: Booking[]): AIFlag[] {
+  const now = Date.now();
+  return bookings
+    .filter((b): b is Booking & { cancelled_at: string } => b.cancelled_at !== null)
+    .map((b) => ({ booking: b, hoursAgo: (now - parseUtcTimestamp(b.cancelled_at)) / (1000 * 60 * 60) }))
+    .filter((x) => x.hoursAgo >= 0 && x.hoursAgo <= RECENTLY_CANCELLED_WINDOW_HOURS)
+    .map((x) => ({ kind: "recently_cancelled" as const, booking: x.booking, hoursAgo: Math.round(x.hoursAgo) }));
+}
+
+function isRecentlyCancelled(b: Booking): boolean {
+  if (!b.cancelled_at) return false;
+  const hoursAgo = (Date.now() - parseUtcTimestamp(b.cancelled_at)) / (1000 * 60 * 60);
+  return hoursAgo >= 0 && hoursAgo <= RECENTLY_CANCELLED_WINDOW_HOURS;
+}
+
 function flagText(flag: AIFlag, hotelName: string, agentNames: Record<number, string>): string {
   if (flag.kind === "pending_soon") {
     const days = flag.daysUntilArrival;
@@ -292,6 +332,11 @@ function flagText(flag: AIFlag, hotelName: string, agentNames: Record<number, st
     const agentName = agentNames[flag.booking.agent_id] ?? `#${flag.booking.agent_id}`;
     const when = flag.hoursAgo <= 0 ? "только что" : `${flag.hoursAgo} ч. назад`;
     return `${flag.booking.booking_number} (${hotelName}) — даты изменены агентом ${agentName} ${when}`;
+  }
+  if (flag.kind === "recently_cancelled") {
+    const agentName = agentNames[flag.booking.agent_id] ?? `#${flag.booking.agent_id}`;
+    const when = flag.hoursAgo <= 0 ? "только что" : `${flag.hoursAgo} ч. назад`;
+    return `${flag.booking.booking_number} (${hotelName}) — отменено агентом ${agentName} ${when}`;
   }
   return `${flag.booking.booking_number} (${hotelName}) — через ${flag.daysUntilCross} дн. ужесточаются условия отмены (штраф начинает действовать за ${flag.nextThreshold} дн. до заезда)`;
 }
@@ -630,6 +675,55 @@ function BookingDetail({
   const [changeDatesError, setChangeDatesError] = useState<string | null>(null);
   const [changeDatesSubmitting, setChangeDatesSubmitting] = useState(false);
 
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const [cancelSubmitting, setCancelSubmitting] = useState(false);
+  const [cancelFeePreview, setCancelFeePreview] = useState<{ fee: number | null; currency: string } | null>(null);
+  const [cancelFeeLoading, setCancelFeeLoading] = useState(false);
+  const [cancelFeeError, setCancelFeeError] = useState<string | null>(null);
+
+  function openCancelPanel() {
+    setChangeDatesOpen(false);
+    setCancelError(null);
+    setCancelReason("");
+    setCancelOpen(true);
+    setCancelFeePreview(null);
+    setCancelFeeError(null);
+    setCancelFeeLoading(true);
+    const token = localStorage.getItem("token") || "";
+    fetchJson<CancellationPolicy[]>(
+      `/contract-engine/contracts/${booking.contract_id}/cancellation-policies?check_in=${booking.arrival_date}`,
+      token
+    )
+      .then((policies) => setCancelFeePreview(resolveCancellationFeePreview(policies, booking)))
+      .catch((err) => setCancelFeeError(err.message || "Не удалось рассчитать штраф"))
+      .finally(() => setCancelFeeLoading(false));
+  }
+
+  async function handleCancelSubmit() {
+    if (cancelReason.trim().length < 2) {
+      setCancelError("Укажите причину отмены (минимум 2 символа)");
+      return;
+    }
+    const token = localStorage.getItem("token") || "";
+    setCancelSubmitting(true);
+    setCancelError(null);
+    try {
+      const updated = await fetchJson<Booking>(`/booking-engine/bookings/${booking.id}/cancel`, token, {
+        method: "POST",
+        body: JSON.stringify({ reason: cancelReason.trim() }),
+      });
+      onBookingUpdated(updated);
+      setCancelOpen(false);
+      setCancelReason("");
+    } catch (err: any) {
+      setCancelError(err.message || "Не удалось отменить бронирование");
+    } finally {
+      setCancelSubmitting(false);
+    }
+  }
+
   async function handleChangeDatesSubmit() {
     if (!newCheckIn || !newCheckOut || changeDatesReason.trim().length < 2) {
       setChangeDatesError("Укажите обе даты и причину (минимум 2 символа)");
@@ -738,21 +832,83 @@ function BookingDetail({
 
         <div className="mt-4 flex items-center justify-between gap-3">
           <StatusBadge status={booking.status} />
-          {permissions.canChangeDates && booking.status !== "Cancelled" && booking.status !== "Rejected" && !changeDatesOpen && (
-            <button
-              type="button"
-              onClick={() => {
-                setNewCheckIn(booking.arrival_date);
-                setNewCheckOut(booking.departure_date);
-                setChangeDatesError(null);
-                setChangeDatesOpen(true);
-              }}
-              className="rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sand"
-            >
-              Изменить даты
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {permissions.canChangeDates && booking.status !== "Cancelled" && booking.status !== "Rejected" && !changeDatesOpen && !cancelOpen && (
+              <button
+                type="button"
+                onClick={() => {
+                  setNewCheckIn(booking.arrival_date);
+                  setNewCheckOut(booking.departure_date);
+                  setChangeDatesError(null);
+                  setChangeDatesOpen(true);
+                }}
+                className="rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sand"
+              >
+                Изменить даты
+              </button>
+            )}
+            {permissions.canCancel && booking.status !== "Cancelled" && booking.status !== "Rejected" && !changeDatesOpen && !cancelOpen && (
+              <button
+                type="button"
+                onClick={openCancelPanel}
+                className="rounded-lg border border-red-500/30 bg-white px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50"
+              >
+                Отменить бронь
+              </button>
+            )}
+          </div>
         </div>
+
+        {cancelOpen && (
+          <div className="mt-3 space-y-3 rounded-lg border border-red-500/20 bg-red-50/40 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-red-600/80">Отмена бронирования</p>
+            <div className="rounded-lg bg-white/70 px-3 py-2 text-sm">
+              {cancelFeeLoading && <span className="text-slate/50">Расчёт штрафа...</span>}
+              {cancelFeeError && <span className="text-red-600">{cancelFeeError}</span>}
+              {!cancelFeeLoading && !cancelFeeError && cancelFeePreview && (
+                <span className="text-ink">
+                  Штраф за отмену:{" "}
+                  <strong>
+                    {cancelFeePreview.fee === null
+                      ? "без штрафа"
+                      : formatMoney(cancelFeePreview.fee, cancelFeePreview.currency)}
+                  </strong>
+                </span>
+              )}
+            </div>
+            <textarea
+              placeholder="Причина отмены *"
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+              rows={2}
+              className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+            />
+            {cancelError && (
+              <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{cancelError}</div>
+            )}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleCancelSubmit}
+                disabled={cancelSubmitting || cancelFeeLoading}
+                className="rounded-lg bg-red-600 px-4 py-2 text-xs font-medium text-white shadow-sm shadow-red-600/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+              >
+                {cancelSubmitting ? "Отправка..." : "Подтвердить отмену"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCancelOpen(false);
+                  setCancelError(null);
+                }}
+                disabled={cancelSubmitting}
+                className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Отмена
+              </button>
+            </div>
+          </div>
+        )}
 
         {changeDatesOpen && (
           <div className="mt-3 space-y-3 rounded-lg border border-ink/10 bg-sand/30 p-4">
@@ -1046,6 +1202,7 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
       ...computeCancellationDeadlineFlags(bookings, cancellationTiers),
       // Admin-view only — an agent doesn't need to be told about their own edit.
       ...(scope.type === "all" ? computeRecentlyChangedFlags(bookings) : []),
+      ...(scope.type === "all" ? computeRecentlyCancelledFlags(bookings) : []),
     ];
   }, [bookings, cancellationTiers, scope.type]);
 
@@ -1230,6 +1387,14 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
                             title="Даты изменены агентом менее 24 часов назад"
                           >
                             Изменено
+                          </span>
+                        )}
+                        {scope.type === "all" && isRecentlyCancelled(b) && (
+                          <span
+                            className="rounded-full bg-red-500/15 px-1.5 py-0.5 text-[10px] font-medium text-red-600"
+                            title="Отменено агентом менее 24 часов назад"
+                          >
+                            Отменено
                           </span>
                         )}
                       </span>

@@ -179,7 +179,7 @@ const AdminPanel = () => {
           <div className="mt-6">
             <BookingsList
               scope={{ type: "all" }}
-              permissions={{ canChangeDates: true, canEditGuestDetails: true, canEditFlights: true }}
+              permissions={{ canChangeDates: true, canEditGuestDetails: true, canEditFlights: true, canCancel: true }}
             />
           </div>
         )}
