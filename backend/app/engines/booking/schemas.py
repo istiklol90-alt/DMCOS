@@ -69,6 +69,12 @@ class BookingCancelRequest(BaseModel):
     reason: str = Field(..., min_length=2)
 
 
+class BookingDateChangeRequest(BaseModel):
+    new_arrival_date: date
+    new_departure_date: date
+    reason: str = Field(..., min_length=2)
+
+
 class BookingResponse(BaseModel):
     id: int
     booking_number: str
@@ -96,6 +102,8 @@ class BookingResponse(BaseModel):
     cancellation_reason: Optional[str] = None
     cancelled_at: Optional[datetime] = None
     cancellation_fee: Optional[float] = None
+    date_change_reason: Optional[str] = None
+    dates_changed_at: Optional[datetime] = None
     created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime

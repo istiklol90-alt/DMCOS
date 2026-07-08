@@ -13,6 +13,7 @@ from app.engines.booking.schemas import (
     BookingCreate,
     BookingUpdate,
     BookingCancelRequest,
+    BookingDateChangeRequest,
     BookingResponse,
     GuestCreate,
     GuestUpdate,
@@ -131,6 +132,17 @@ def cancel_booking(
 ):
     """Dedicated cancellation flow: computes cancellation_fee via Contract Engine's get_cancellation_policy, releases the reserved allotment, and records the cancellation atomically. Requires a reason (02_Logic_Rules.md #49)."""
     return _run(lambda: service.cancel_booking(db, booking_id, data))
+
+
+@router.post("/bookings/{booking_id}/change-dates", response_model=BookingResponse)
+def change_booking_dates(
+    booking_id: int,
+    data: BookingDateChangeRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Dedicated date-change flow (Decision 029, Stage 1): re-validates availability and re-prices for the new dates, reserves the new dates before releasing the old ones, and records the change (reason + timestamp). Requires a reason, same audit precedent as cancellation."""
+    return _run(lambda: service.change_booking_dates(db, booking_id, data))
 
 
 # ---------------------------------------------------------------------------

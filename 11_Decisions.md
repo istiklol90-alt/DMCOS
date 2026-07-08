@@ -1104,6 +1104,143 @@ was already sent as-is (null when unset).
 
 ---
 
+# Decision 029
+
+Date: 2026-07-07
+
+Decision: Full autonomous booking-modification workflow is a confirmed
+future goal, to be built incrementally in stages, not all at once. The
+complete target workflow: (1) agent changes booking dates through
+their own login; (2) change reflects in Admin Panel immediately; (3)
+automatic email confirmation sent to agent; (4) AI automatically
+emails the hotel requesting confirmation of the new dates (Level 3
+autonomous -- matches the established pattern for outbound
+information-gathering emails, low risk, easily reversible); (5) AI
+reads the hotel's email reply and determines whether to auto-confirm
+or escalate; (6) if confirmed, AI updates the booking's confirmation
+status; (7) AI notifies the agent of the final outcome via email and
+in-app.
+
+Build order (staged, not all at once):
+Stage 1: Manual date-change capability in Reservations/Booking Engine
+(agent or manager can change dates, system re-validates
+availability/re-prices, releases old allotment + reserves new) -- pure
+functionality, no AI yet.
+Stage 2: Automatic email notifications (agent confirmation email, no
+AI decision-making, just templated notifications) -- Level 3,
+straightforward.
+Stage 3: AI-Core Engine build-out (shared email-reading/sending
+infrastructure, since this doesn't exist yet in any Engine).
+Stage 4: AI auto-emails hotel requesting confirmation (Level 3,
+outbound only).
+Stage 5: AI reads hotel reply and prepares a recommendation, but a
+human (manager) must approve before the booking's confirmation status
+actually changes (Level 2 Gate) -- matching the original
+reservation-workflow example from early in this project.
+
+Reason: Per the AI Autonomy Levels framework: steps 1-4, 6
+(notification), and 7 are Level 3 (autonomous, low-risk, informational
+or easily-reversible). Step 5 (AI unilaterally deciding to confirm a
+date change based on reading an email) is Level 2 -- requires a human
+Gate before finalizing, since date changes affect pricing/season and
+are a financial commitment with an external party (the hotel),
+matching the established criteria for when Gates are mandatory.
+
+Approved By: Daler
+
+Status: Logged as staged roadmap. Starting now with Stage 1 (manual
+date-change capability) as the first concrete implementation step.
+
+---
+
+# Decision 030
+
+Date: 2026-07-08
+
+Decision: Implemented Stage 1 of Decision 029's staged
+autonomous-booking-modification roadmap: manual date-change capability
+for Booking Engine, added post-LOCK (same additive-only precedent as
+Decisions 011/015/022/026). New service.change_booking_dates(db,
+booking_id, data: BookingDateChangeRequest) mirrors create_booking's
+rigor rather than treating this as a simple field edit: rejects
+terminal bookings (Cancelled/Rejected); re-resolves the active contract
+for the NEW arrival_date via get_active_contract (may differ from the
+booking's current contract_id if the new dates cross into a different
+contract/season window); re-checks availability via check_allotment;
+re-prices via get_room_price (meal_plan code resolved from the
+existing meal_plan_id via get_contract_meal_plan) and, if a transfer
+was selected, re-prices via get_transfer_price for the new dates too.
+All of the above are read-only validation -- nothing is written if any
+step fails.
+
+Atomicity ordering: reserve_allotment on the NEW dates happens BEFORE
+release_allotment on the OLD dates. If the new reservation fails,
+nothing has changed and the old dates stay safely held -- a clean,
+zero-side-effect rejection. Only after the new reservation succeeds
+does this release the old dates and write the updated booking row
+(new arrival_date/departure_date/nights/contract_id/rate_id/
+total_amount/transfer_total plus date_change_reason/dates_changed_at).
+If the booking-row write itself fails after the new reservation
+succeeded and the old one was released, a compensating action releases
+the new reservation and attempts to re-reserve the old dates -- if
+that re-reservation also fails (a second, independent failure), the
+booking ends up holding NEITHER old nor new inventory. This residual
+risk is accepted for the same reason Decision 012 accepted the
+analogous risk in create_booking: a real fix needs actual DB-level
+transaction coordination across Hotel/Contract/Booking, which this
+project doesn't have.
+
+Per project-owner instruction, a date change requires a reason (same
+audit precedent as cancellation's "every cancellation must have a
+reason", 02_Logic_Rules.md #49): two new nullable columns on Booking,
+date_change_reason and dates_changed_at, mirroring
+cancellation_reason/cancelled_at's exact shape rather than a general
+audit-note/edit-history field -- a full edit-history system belongs to
+the future Audit & Log Engine, not scoped here. Same known
+simplification as cancellation: only the LATEST date change's reason/
+timestamp is retained, no history of prior changes.
+
+New dedicated endpoint POST /booking-engine/bookings/{id}/change-dates
+(BookingDateChangeRequest -> BookingResponse), separate from the
+generic PUT /bookings/{id}, matching cancellation's own dedicated-
+endpoint precedent rather than folding this into the generic update
+path.
+
+Verified via real HTTP calls against the live server using a real
+Kandima booking (contract_id=2, room_type_id=2 "Sunrise Beach Pool
+Villa with Swirlpool"): (1) changed dates from Peak season
+(2027-02-01, base_price=1002, KM26_03 50% off -> total_amount=501)
+to Low season (2027-05-01 to 2027-05-03, base_price=649, 50% off ->
+total_amount=649) -- rate_id updated, total matched the hand-calc
+exactly, old allotment (2027-02-01) released to sold=0, new allotment
+(2027-05-01/02) correctly reserved to sold=1, checkout-exclusive
+2027-05-03 untouched; (2) attempted a change into a date range with
+zero allotment coverage (2027-06-01 to 2027-06-03) -- cleanly rejected
+(ValueError/HTTP 400), confirmed byte-for-byte zero state change
+(booking's updated_at untouched, allotment on the current dates
+untouched, no allotment rows spuriously created for the rejected
+range); (3) re-ran the full existing regression suite (9 checks
+spanning Test Beach Resort, Kandima's original Peak pricing, occupancy
+rejection, all 3 newer seasons from Decision 027, transfer pricing) --
+zero regressions. Required adding 3 minimal test-support Allotment
+rows for room_type_id=2 covering 2027-05-01/02/03 (same
+minimal-test-data precedent as earlier sessions), left in place as
+legitimate Low-season inventory data. The verification-only test
+booking itself was cancelled and deleted afterward so the Reservations
+table stays honest, real-data-only (per the project's standing
+"no demo/placeholder data" rule) -- only the one real
+browser-created booking (BK-8D6B9B5CA2DA) remains.
+
+Approved By: Daler
+
+Status: Stage 1 complete and verified. Next: Stage 2 (automatic email
+notifications) per Decision 029's build order, or wiring this new
+change-dates capability into the Reservations.tsx frontend so a
+manager/agent can actually trigger it through the UI (not yet done --
+this task only built and verified the backend capability itself).
+
+---
+
 # Decision Template
 
 Decision Number:

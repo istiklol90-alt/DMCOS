@@ -36,7 +36,7 @@ inert draft. create_booking explicitly sets status="Pending", matching
 and "Booking is created" are the same step, not two.
 """
 
-from datetime import date as date_type
+from datetime import date as date_type, datetime
 from typing import Optional
 import uuid
 
@@ -48,6 +48,7 @@ from app.engines.booking.schemas import (
     BookingCreate,
     BookingUpdate,
     BookingCancelRequest,
+    BookingDateChangeRequest,
     GuestCreate,
 )
 from app.engines.booking.validators import (
@@ -56,6 +57,7 @@ from app.engines.booking.validators import (
     validate_stay_dates,
     validate_nights_consistency,
     validate_occupancy,
+    TERMINAL_STATUSES,
 )
 
 # Per docs/interface-contracts/contract-hotel-booking.md — the two other
@@ -342,6 +344,134 @@ def cancel_booking(db: Session, booking_id: int, data: BookingCancelRequest) -> 
     )
 
     return repository.cancel_booking(db, booking, data.reason, cancellation_fee)
+
+
+def change_booking_dates(db: Session, booking_id: int, data: BookingDateChangeRequest) -> Booking:
+    """
+    Change a booking's arrival/departure dates (Decision 029, Stage 1 of
+    the staged autonomous-booking-modification roadmap). Unlike
+    special_requests/flight-number edits, this touches inventory and
+    price, so it gets the same rigor as create_booking:
+
+    1. Reject if the booking is terminal (Cancelled/Rejected) — same
+       principle as validate_status_transition.
+    2. validate_stay_dates on the new range.
+    3. Re-resolve the active contract for the NEW arrival_date (may differ
+       from the booking's current contract_id if the new dates fall into a
+       different contract/season window).
+    4. check_allotment for the new range — raises before anything is
+       written if unavailable.
+    5. Re-price via get_room_price (same room_type/occupancy, meal plan
+       code resolved from the existing meal_plan_id) and, if a transfer
+       was selected, get_transfer_price for the new dates too. Both raise
+       before any write on a real problem (capacity, no season, transfer
+       option not active on the new contract).
+    6. reserve_allotment on the NEW dates first. If this fails, nothing
+       has changed — the OLD dates are still held. Only once that
+       succeeds does this release the OLD dates and write the updated
+       booking row (new dates, nights, contract_id, rate_id, total_amount,
+       transfer_total, date_change_reason, dates_changed_at).
+
+    Compensating action if the booking-row write itself fails after the
+    new reservation succeeded and the old one was released (mirrors
+    Decision 012's standard for create_booking, not a true transaction):
+    release the new reservation and attempt to re-reserve the old dates.
+    If that re-reservation also fails (a second, independent failure —
+    e.g. the old capacity was taken by another booking in the interim),
+    the booking ends up holding NEITHER old nor new inventory. This
+    residual risk is accepted for the same reason Decision 012 accepted
+    it: a real fix needs actual DB-level transaction coordination across
+    Hotel/Contract/Booking, which this project doesn't have.
+    """
+    booking = _require_booking(db, booking_id)
+    if booking.status in TERMINAL_STATUSES:
+        raise ValueError(
+            f"Booking status '{booking.status}' is terminal (allotment already released) — "
+            f"cannot change dates"
+        )
+
+    validate_stay_dates(data.new_arrival_date, data.new_departure_date)
+
+    new_contract = contract_service.get_active_contract(db, booking.hotel_id, data.new_arrival_date)
+    if new_contract is None:
+        raise ValueError(f"Hotel {booking.hotel_id} has no currently-active contract for the new dates")
+
+    available = contract_service.check_allotment(
+        db, new_contract.id, booking.room_type_id, data.new_arrival_date, data.new_departure_date
+    )
+    if not available:
+        raise ValueError(
+            f"Room type {booking.room_type_id} is not available for "
+            f"{data.new_arrival_date} to {data.new_departure_date}"
+        )
+
+    meal_plan = contract_service.get_contract_meal_plan(db, booking.meal_plan_id)
+
+    price = contract_service.get_room_price(
+        db,
+        new_contract.id,
+        booking.room_type_id,
+        data.new_arrival_date,
+        data.new_departure_date,
+        meal_plan.meal_code,
+        booking.adults,
+        booking.children,
+        booking.infants,
+    )
+
+    transfer_total = booking.transfer_total
+    if booking.transfer_type is not None:
+        transfer_price = contract_service.get_transfer_price(
+            db,
+            new_contract.id,
+            booking.transfer_type,
+            data.new_arrival_date,
+            data.new_departure_date,
+            booking.adults,
+            booking.children,
+            booking.infants,
+        )
+        transfer_total = transfer_price["total"]
+
+    old_contract_id = booking.contract_id
+    old_arrival_date = booking.arrival_date
+    old_departure_date = booking.departure_date
+    new_nights = (data.new_departure_date - data.new_arrival_date).days
+
+    contract_service.reserve_allotment(
+        db, new_contract.id, booking.room_type_id, data.new_arrival_date, data.new_departure_date
+    )
+
+    try:
+        contract_service.release_allotment(
+            db, old_contract_id, booking.room_type_id, old_arrival_date, old_departure_date
+        )
+        booking = repository.update_booking(
+            db,
+            booking,
+            arrival_date=data.new_arrival_date,
+            departure_date=data.new_departure_date,
+            nights=new_nights,
+            contract_id=new_contract.id,
+            rate_id=price["rate_id"],
+            total_amount=price["final_total"],
+            transfer_total=transfer_total,
+            date_change_reason=data.reason,
+            dates_changed_at=datetime.utcnow(),
+        )
+    except Exception:
+        contract_service.release_allotment(
+            db, new_contract.id, booking.room_type_id, data.new_arrival_date, data.new_departure_date
+        )
+        try:
+            contract_service.reserve_allotment(
+                db, old_contract_id, booking.room_type_id, old_arrival_date, old_departure_date
+            )
+        except Exception:
+            pass
+        raise
+
+    return booking
 
 
 # ---------------------------------------------------------------------------

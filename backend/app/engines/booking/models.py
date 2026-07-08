@@ -67,6 +67,13 @@ class Booking(Base):
     cancellation_reason = Column(Text, nullable=True)
     cancelled_at = Column(DateTime, nullable=True)
     cancellation_fee = Column(Float, nullable=True)
+    # Date-change audit fields (Decision 029/Stage 1) — mirror the
+    # cancellation fields' shape exactly. Only the LATEST change's reason/
+    # timestamp is retained (no history table) if dates are changed more
+    # than once — same single-event simplification cancellation already
+    # has, since a booking can only be cancelled once anyway.
+    date_change_reason = Column(Text, nullable=True)
+    dates_changed_at = Column(DateTime, nullable=True)
     created_by = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
