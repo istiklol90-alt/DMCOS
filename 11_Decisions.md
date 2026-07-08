@@ -1016,6 +1016,53 @@ tables.
 
 ---
 
+# Decision 027
+
+Date: 2026-07-08
+
+Decision: Corrected Kandima's contract (contract_id=2) to have its
+real 4 rate seasons instead of only 1. Confirmed from the original
+Kandima PDF's rate table headers that the base contract defines
+exactly 4 seasons across its 2027-01-11 to 2028-01-07 term -- Peak
+(2027-01-11 to 2027-04-04, already modeled since TASK-002) plus three
+that were never entered: Low (2027-04-05 to 2027-10-15), Shoulder
+(2027-10-16 to 2027-12-25), and a second Peak (2027-12-26 to
+2028-01-07). Added the 3 missing ContractSeason rows and 30 Rate rows
+(10 room types x 3 seasons), same base_occupancy/meal_plan (BB)
+pattern as the existing Peak rows, using the real base_price figures
+from the PDF's Low/Shoulder/Peak-27-28 columns.
+
+This is explicitly separate from the KM26_03 special offer's own
+7-period table (Decision 026): the offer's promotional periods are a
+wider, differently-sliced date range that was designed independently
+of the base contract's 4 rate seasons and was never meant to align
+with them 1:1 -- confirmed this isn't 2 conflicting season models,
+just 2 independently-varying dimensions (base rate season vs.
+promotional discount period) that both key off check_in date
+independently, exactly as get_room_price already computes them (base
+rate resolved from ContractSeason, special-offer discount resolved
+from SpecialOfferRoomDiscount, applied multiplicatively on top).
+
+Verified with spot-checks on 3 room types/seasons (Sky Studio/Low,
+Beach Villa with Swirlpool/Shoulder, Sunset Aqua Pool Suite/Peak
+27-28), each matching base_price x nights x (1 - active KM26_03 room
+discount for that period) exactly -- confirming the new Rate rows are
+correctly picked up by season lookup AND that the pre-existing
+KM26_03 discount table (whose periods were built to span this same
+wider range from the start) applies correctly on top without any
+code changes needed. Regression suite re-run: Kandima's original Peak
+season pricing (Sky Studio, Sunrise Beach Pool Villa, Sunset Aqua Pool
+Suite, all at check_in=2027-02-01) unchanged; occupancy rejection
+unchanged; domestic_comfort transfer pricing unchanged. Zero
+regressions.
+
+Confirmed Contract.start_date=2027-01-11 is correct and intentional --
+a search against 2026 dates (e.g. 18-25 June 2026) correctly finds no
+active contract for Kandima, since the contract genuinely has no
+validity before 2027-01-11. Not a bug.
+
+---
+
 # Decision Template
 
 Decision Number:
