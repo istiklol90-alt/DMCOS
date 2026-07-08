@@ -978,16 +978,41 @@ Swirlpool (849*0.50=424.5) -- all exact. Full regression suite
 Studio's 4-adult rejection) re-confirmed unchanged after completing
 the table.
 
-Remaining known gaps, still flagged rather than guessed at: the
-meal-plan-discount and transfer-discount mechanisms' exact real period
-boundaries (which periods get the 40% meal discount vs "No" discount;
-which periods the transfer discounts apply in) still weren't given, so
-the periods used for testing (matching Sky Studio's Peak-season row,
-11 Jan-4 Apr 2027) remain test assumptions, not confirmed real
-contract terms. One minimal additional test Allotment data point
-(3 more nights for Kandima room_type_id=2) was added purely to unblock
-the 4-night transfer-discount booking verification, same category as
-prior sessions' minimal test-support data additions.
+Update (same day, 2026-07-08): the project owner subsequently provided
+the complete real meal-plan-discount and transfer-discount period
+tables, closing the gap noted above. Meal plan discount (40% off HB+/
+FB+/PAI, meal_plan_id NULL = applies uniformly): now-31 Oct 2026,
+1 Nov-25 Dec 2026, 11 Jan-4 Apr 2027 (already existed), and 16 Oct-25
+Dec 2027 all at 40%; no rows for 26 Dec 2026-10 Jan 2027, 5 Apr-15 Oct
+2027, or 26 Dec 2027-10 Jan 2028, correctly meaning "No" discount those
+periods via row-absence, no sentinel needed. Transfer discount
+(domestic_comfort 50%, seaplane 25%, both min_nights=4): same four
+"CONTRACTED OFFER" periods (now-31 Oct 2026, 1 Nov-25 Dec 2026, 11
+Jan-4 Apr 2027, 5 Apr-15 Oct 2027) get rows; the three "CONTRACT RATES,
+NO DISCOUNTS" festive/high-demand periods (26 Dec 2026-10 Jan 2027, 16
+Oct-25 Dec 2027, 26 Dec 2027-10 Jan 2028) correctly have none.
+
+Verified: the "No discount" transfer periods confirmed undiscounted
+(domestic_comfort, 26 Dec 2026-10 Jan 2027 window, 4 nights -> still
+828.0, full price) -- the equivalent meal-plan "No discount" check
+can't be directly exercised via get_room_price since Kandima's only
+modeled ContractSeason (Peak) doesn't cover any of those periods (a
+pre-existing single-season data limitation, not a gap in this
+mechanism), but shares the identical "no matching row -> no discount"
+lookup already proven by the transfer-discount test.
+
+Combined all-four-mechanisms hand-calculated verification (the only
+period where room, meal, family, and transfer discounts are all
+simultaneously active, since the family rule only starts Jan 2027):
+Sky Studio, 2 adults + 2 children, HB+, 4 nights (2027-02-01 to
+2027-02-05, satisfying transfer's min_nights=4) + seaplane transfer.
+Expected: base_total=1006.0 (503*4*0.50), age_category_price fully
+waived by the family rule, meal_plan_supplement=432.0 (90*2*4*0.60),
+room+meal+family final_total=1438.0; transfer total=1087.5
+(725*2*0.75); combined grand total=2525.5. Real HTTP calls matched
+every figure exactly. Full regression suite re-confirmed unchanged
+across all previously-verified scenarios after completing both
+tables.
 
 ---
 
