@@ -1063,6 +1063,47 @@ validity before 2027-01-11. Not a bug.
 
 ---
 
+# Decision 028
+
+Date: 2026-07-08
+
+Decision: Fixed a real bug in HotelSearch.tsx found via live browser
+testing while creating a fresh Reservations-module test booking: any
+hotel with zero ContractTransferOption rows configured could never be
+booked at all. RoomTypeCard's grandTotal required
+selectedTransferTotal != null before showing any total (and therefore
+the "Забронировать" button), and handleBookingSubmit's guard
+unconditionally required selectedTransferType -- but a hotel with no
+transfer options has no radio button to ever select one, so
+selectedTransferType can never become non-null, and both the total
+and the booking button silently never appeared. Confirmed live: Test
+Beach Resort (Contract.transfer_required=false, zero
+ContractTransferOption rows) was completely unbookable through the UI
+before this fix.
+
+Fix: grandTotal now treats a missing transfer as a 0 contribution
+(selectedMeal.price.final_total + (selectedTransferTotal ?? 0))
+instead of blocking on it. handleBookingSubmit's guard now only
+requires selectedTransferType when transferOptions.length > 0 AND
+Contract.transfer_required is true (Kandima's real case -- unchanged
+behavior, still blocks submission until an option is picked).
+Deliberately does NOT silently allow submission for the edge case of
+transfer_required=true with zero configured options (a contract
+data-integrity problem, not a normal booking state) -- that combination
+now surfaces an explicit error ("Контракт требует трансфер, но ни один
+вариант трансфера не настроен...") instead of proceeding, per project
+owner's explicit requirement that this case not be silently allowed.
+
+Verified via the actual browser flow (Playwright-driven, real
+localStorage-injected JWT against the running backend, not a direct
+API call): Test Beach Resort search -> Beach Villa -> BB meal plan ->
+guest details -> booking created (BK-8D6B9B5CA2DA), confirmed in the
+database with the correct transfer_type=None and guest row attached.
+No changes to the payload construction itself -- selectedTransferType
+was already sent as-is (null when unset).
+
+---
+
 # Decision Template
 
 Decision Number:

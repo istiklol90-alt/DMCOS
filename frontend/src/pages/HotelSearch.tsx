@@ -679,13 +679,20 @@ function RoomTypeCard({
       (selectedTransfer.price_infant ?? 0) * infants
     : null;
   const grandTotal =
-    selectedMeal?.price && selectedTransferTotal != null
-      ? selectedMeal.price.final_total + selectedTransferTotal
+    selectedMeal?.price
+      ? selectedMeal.price.final_total + (selectedTransferTotal ?? 0)
       : null;
 
   async function handleBookingSubmit(guest: GuestFormValues) {
     const token = localStorage.getItem("token");
-    if (!token || !selectedMealCode || !selectedTransferType) return;
+    if (!token || !selectedMealCode) return;
+    if (transferRequired && transferOptions.length === 0) {
+      setSubmitError(
+        "Контракт требует трансфер, но ни один вариант трансфера не настроен — обратитесь к администратору контракта."
+      );
+      return;
+    }
+    if (transferRequired && !selectedTransferType) return;
 
     setSubmitting(true);
     setSubmitError(null);
