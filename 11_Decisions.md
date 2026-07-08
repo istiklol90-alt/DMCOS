@@ -962,20 +962,32 @@ working as designed, not a regression -- any booking within the
 offer's real scope legitimately reprices once a live special offer
 exists for that period.
 
-Known gaps, flagged rather than guessed at: the other 9 Kandima room
-types' exact per-period room-discount percentages were only partially
-given ("most villas get 50% instead of 55%, Sunset Aqua Pool Suite
-gets 30%/25%") -- only Sky Studio's complete table was provided and
-implemented; the meal-plan-discount and transfer-discount mechanisms'
-exact real period boundaries (which periods get 40%/have "No"
-discount; which periods the transfer discounts apply in) weren't
-given either, so the periods used for testing (matching Sky Studio's
-Peak-season row, 11 Jan-4 Apr 2027) are test assumptions, not
-confirmed real contract terms, and are flagged here so they aren't
-mistaken for verified data. One minimal additional test Allotment
-data point (3 more nights for Kandima room_type_id=2) was added purely
-to unblock the 4-night transfer-discount booking verification, same
-category as prior sessions' minimal test-support data additions.
+Update (same day, 2026-07-08): the project owner subsequently provided
+the complete real room-discount table for all 10 room types across all
+7 periods. All 63 remaining rows (9 room types x 7 periods) created via
+the real API, matching this table exactly: Sky Studio/Beach Studio at
+55/55/40/50/55/45/40; Beach Villa with Swirlpool, Sunrise/Sunset Beach
+Pool Villa with Swirlpool, Aqua Villa, Aqua Villa with Swirlpool, Ocean
+Pool Villa, and 2-bedroom Family Sky Suite all at 50/50/40/50/50/50/40;
+Sunset Aqua Pool Suite at 30/30/40/25/30/25/40. Verified against 3
+additional room types beyond Sky Studio: Sunrise Beach Pool Villa with
+Swirlpool (1002*0.50=501.0), Sunset Aqua Pool Suite (1927*0.75=
+1445.25, its own distinct 25% for this period), Beach Villa with
+Swirlpool (849*0.50=424.5) -- all exact. Full regression suite
+(Test Beach Resort 540.0, Sky Studio's 359.5 combined scenario, Sky
+Studio's 4-adult rejection) re-confirmed unchanged after completing
+the table.
+
+Remaining known gaps, still flagged rather than guessed at: the
+meal-plan-discount and transfer-discount mechanisms' exact real period
+boundaries (which periods get the 40% meal discount vs "No" discount;
+which periods the transfer discounts apply in) still weren't given, so
+the periods used for testing (matching Sky Studio's Peak-season row,
+11 Jan-4 Apr 2027) remain test assumptions, not confirmed real
+contract terms. One minimal additional test Allotment data point
+(3 more nights for Kandima room_type_id=2) was added purely to unblock
+the 4-night transfer-discount booking verification, same category as
+prior sessions' minimal test-support data additions.
 
 ---
 
