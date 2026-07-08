@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
 import { API_URL } from "../config";
+import Reservations from "./Reservations";
 
 type StatKey = "all" | "agent" | "admin" | "active" | "never_logged" | "inactive";
 type RegStatus = "pending" | "approved" | "rejected";
+type AdminTab = "users" | "reservations";
 
 const statusBadgeClasses: Record<RegStatus, string> = {
   pending: "bg-coral/15 text-coral",
@@ -22,6 +24,7 @@ const AdminPanel = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterType, setFilterType] = useState("all");
+  const [activeTab, setActiveTab] = useState<AdminTab>("users");
 
   const loadData = async () => {
     try {
@@ -148,6 +151,38 @@ const AdminPanel = () => {
         <h1 className="font-display text-3xl font-semibold text-ink">Admin Panel</h1>
         <p className="mt-1 text-sm text-slate/70">Управление системой</p>
 
+        {/* ===== ВКЛАДКИ ===== */}
+        <div className="mt-6 flex gap-2 border-b border-ink/10">
+          <button
+            onClick={() => setActiveTab("users")}
+            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+              activeTab === "users"
+                ? "border-coral text-ink"
+                : "border-transparent text-slate/60 hover:text-ink"
+            }`}
+          >
+            Пользователи
+          </button>
+          <button
+            onClick={() => setActiveTab("reservations")}
+            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+              activeTab === "reservations"
+                ? "border-coral text-ink"
+                : "border-transparent text-slate/60 hover:text-ink"
+            }`}
+          >
+            Бронирования
+          </button>
+        </div>
+
+        {activeTab === "reservations" && (
+          <div className="mt-6">
+            <Reservations />
+          </div>
+        )}
+
+        {activeTab === "users" && (
+        <>
         {/* ===== СТАТИСТИКА ===== */}
         <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
           {statCards.map((card) => (
@@ -323,6 +358,8 @@ const AdminPanel = () => {
             </span>
           )}
         </div>
+        </>
+        )}
       </div>
     </div>
   );
