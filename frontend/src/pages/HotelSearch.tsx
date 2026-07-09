@@ -132,6 +132,20 @@ type PricedTransferOption = {
   priceError?: string;
 };
 
+// GET /contracts/{id}/mandatory-tax's response shape — a flat
+// per-person-per-night government tax (e.g. Kandima's Green Tax), keyed
+// only by contract_id/nights/adults/children, never room_type_id or
+// meal_plan, so it's fetched once per hotel (like transferOptions), not
+// per room type or per meal plan.
+type MandatoryTax = {
+  label: string | null;
+  rate_per_person_per_night: number;
+  chargeable_guests: number;
+  nights: number;
+  currency: string;
+  total: number;
+};
+
 // Minimal shapes — only the fields this page actually reads from
 // BookingResponse/GuestResponse, not the full Pydantic schemas.
 type BookingCreateResult = {
@@ -184,6 +198,7 @@ type HotelResult = Hotel & {
   transferRequired: boolean;
   transferOptions: PricedTransferOption[];
   transferCurrency: string | null;
+  mandatoryTax?: MandatoryTax;
   roomTypes: RoomTypeResult[];
 };
 
@@ -658,6 +673,7 @@ function RoomTypeCard({
   transferOptions,
   transferRequired,
   transferCurrency,
+  mandatoryTax,
   adults,
   childrenCount,
   infants,
@@ -671,6 +687,7 @@ function RoomTypeCard({
   transferOptions: PricedTransferOption[];
   transferRequired: boolean;
   transferCurrency: string | null;
+  mandatoryTax?: MandatoryTax;
   adults: number;
   childrenCount: number;
   infants: number;
@@ -696,7 +713,7 @@ function RoomTypeCard({
   const selectedTransferTotal = selectedTransfer?.price?.total ?? null;
   const grandTotal =
     selectedMeal?.price
-      ? selectedMeal.price.final_total + (selectedTransferTotal ?? 0)
+      ? selectedMeal.price.final_total + (selectedTransferTotal ?? 0) + (mandatoryTax?.total ?? 0)
       : null;
 
   async function handleBookingSubmit(guest: GuestFormValues) {
@@ -919,10 +936,27 @@ function RoomTypeCard({
             </div>
           )}
 
+          {mandatoryTax && (
+            <div className="border-t border-ink/5 px-4 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-slate/50">{mandatoryTax.label ?? "Обязательный налог"}</span>
+                <span className="font-mono text-xs font-semibold text-ink">
+                  {mandatoryTax.currency} {mandatoryTax.total.toLocaleString("ru-RU")}
+                </span>
+              </div>
+              <p className="pl-0 text-[11px] leading-relaxed text-slate/50">
+                {mandatoryTax.chargeable_guests} чел. × {mandatoryTax.currency}{" "}
+                {mandatoryTax.rate_per_person_per_night.toLocaleString("ru-RU")}/ночь × {mandatoryTax.nights} ноч.
+              </p>
+            </div>
+          )}
+
           {grandTotal != null && (
             <div className="border-t border-ink/10 bg-sand/40 px-4 py-3">
               <div className="flex items-center justify-between gap-3">
-                <span className="text-sm font-medium text-ink">Итого (проживание + трансфер)</span>
+                <span className="text-sm font-medium text-ink">
+                  Итого (проживание + трансфер{mandatoryTax ? " + налог" : ""})
+                </span>
                 <span className="font-mono text-base font-semibold text-ink">
                   {selectedMeal!.price!.currency} {grandTotal.toLocaleString("ru-RU")}
                 </span>
@@ -1035,6 +1069,7 @@ function HotelCard({
                   transferOptions={hotel.transferOptions}
                   transferRequired={hotel.transferRequired}
                   transferCurrency={hotel.transferCurrency}
+                  mandatoryTax={hotel.mandatoryTax}
                   adults={adults}
                   childrenCount={childrenCount}
                   infants={infants}
@@ -1203,6 +1238,27 @@ function HotelSearch({ onBack }: HotelSearchProps) {
             }
           }
 
+          let mandatoryTax: MandatoryTax | undefined;
+          if (contractId) {
+            try {
+              const nights = Math.round(
+                (parseISODate(checkOut).getTime() - parseISODate(checkIn).getTime()) / (1000 * 60 * 60 * 24)
+              );
+              const taxQuery = new URLSearchParams({
+                nights: String(nights),
+                adults: String(occupancy.adults),
+                children: String(occupancy.children),
+              });
+              const tax = await fetchJson<MandatoryTax>(
+                `/contract-engine/contracts/${contractId}/mandatory-tax?${taxQuery.toString()}`,
+                token
+              );
+              if (tax.total > 0) mandatoryTax = tax;
+            } catch {
+              mandatoryTax = undefined;
+            }
+          }
+
           const roomTypeResults = await Promise.all(
             roomTypes.map(async (rt): Promise<RoomTypeResult> => {
               if (!contractId) {
@@ -1260,6 +1316,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
             transferRequired,
             transferOptions,
             transferCurrency,
+            mandatoryTax,
             roomTypes: roomTypeResults,
           };
         })
