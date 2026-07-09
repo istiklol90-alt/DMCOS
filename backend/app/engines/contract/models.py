@@ -50,6 +50,20 @@ class Contract(Base):
     # individually mandatory," which per-option placement would leave
     # ambiguous.
     transfer_required = Column(Boolean, nullable=False, default=False)
+    # General, reusable mandatory-government-tax mechanism (e.g. Maldives
+    # Green Tax) -- flat per-person-per-night amount, charged on
+    # adults+children (infants exempt, same 3-bucket convention as
+    # get_room_price/get_transfer_price), added AFTER final_total's
+    # discounts/promotions via the separate get_mandatory_tax function --
+    # never itself discountable, since it's a pass-through government
+    # charge, not a hotel service. NULL/0 = no mandatory tax (Decision
+    # 025's "absent means free" precedent, applied as a zero/null value
+    # here since this is one flat rate per contract, not a variable-shaped
+    # row like RateSupplement). mandatory_tax_label is purely a display
+    # name (e.g. "Green Tax", "City Tax", "VAT") so a future non-Maldives
+    # hotel's own government tax can reuse this without any code change.
+    mandatory_tax_per_person_per_night = Column(Float, nullable=True)
+    mandatory_tax_label = Column(String(50), nullable=True)
 
 
 class ContractMarket(Base):

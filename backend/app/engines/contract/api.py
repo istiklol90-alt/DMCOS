@@ -333,6 +333,19 @@ def get_transfer_price(
     )
 
 
+@router.get("/contracts/{contract_id}/mandatory-tax")
+def get_mandatory_tax(
+    contract_id: int,
+    nights: int,
+    adults: int,
+    children: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Interface Contract function. See service.get_mandatory_tax's docstring — a flat per-person-per-night government tax (e.g. Green Tax), added after the room price's discounts/promotions, never itself discountable."""
+    return _run(lambda: service.get_mandatory_tax(db, contract_id, nights, adults, children))
+
+
 # ---------------------------------------------------------------------------
 # Rate
 # ---------------------------------------------------------------------------

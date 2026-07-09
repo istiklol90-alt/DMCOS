@@ -25,6 +25,7 @@ interface Booking {
   total_amount: number;
   transfer_type: string | null;
   transfer_total: number | null;
+  mandatory_tax_total: number | null;
   special_requests: string | null;
   arrival_flight_number: string | null;
   departure_flight_number: string | null;
@@ -92,6 +93,15 @@ interface TransferPriceBreakdown {
   price_adult: number;
   price_child: number;
   price_infant: number;
+  total: number;
+  currency: string;
+}
+
+interface MandatoryTaxBreakdown {
+  label: string | null;
+  rate_per_person_per_night: number;
+  chargeable_guests: number;
+  nights: number;
   total: number;
   currency: string;
 }
@@ -665,6 +675,7 @@ function BookingDetail({
   const [guestsError, setGuestsError] = useState<string | null>(null);
   const [roomBreakdown, setRoomBreakdown] = useState<RoomPriceBreakdown | null>(null);
   const [transferBreakdown, setTransferBreakdown] = useState<TransferPriceBreakdown | null>(null);
+  const [mandatoryTaxBreakdown, setMandatoryTaxBreakdown] = useState<MandatoryTaxBreakdown | null>(null);
   const [breakdownError, setBreakdownError] = useState<string | null>(null);
   const [breakdownLoading, setBreakdownLoading] = useState(true);
 
@@ -777,12 +788,24 @@ function BookingDetail({
       infants: String(booking.infants),
     });
 
+    const mandatoryTaxParams = new URLSearchParams({
+      nights: String(booking.nights),
+      adults: String(booking.adults),
+      children: String(booking.children),
+    });
+
     const promises: Promise<void>[] = [
       fetchJson<RoomPriceBreakdown>(
         `/contract-engine/contracts/${booking.contract_id}/room-types/${booking.room_type_id}/price?${roomPriceParams}`,
         token
       )
         .then(setRoomBreakdown)
+        .catch((err) => setBreakdownError(err.message)),
+      fetchJson<MandatoryTaxBreakdown>(
+        `/contract-engine/contracts/${booking.contract_id}/mandatory-tax?${mandatoryTaxParams}`,
+        token
+      )
+        .then(setMandatoryTaxBreakdown)
         .catch((err) => setBreakdownError(err.message)),
     ];
 
@@ -999,13 +1022,19 @@ function BookingDetail({
           <div>
             <p className="text-slate/50">Net cost</p>
             <p className="font-medium text-ink">
-              {formatMoney((booking.total_amount || 0) + (booking.transfer_total || 0), booking.currency)}
+              {formatMoney(
+                (booking.total_amount || 0) + (booking.transfer_total || 0) + (booking.mandatory_tax_total || 0),
+                booking.currency
+              )}
             </p>
           </div>
           <div>
             <p className="text-slate/50">Sale price</p>
             <p className="font-medium text-ink">
-              {formatMoney((booking.total_amount || 0) + (booking.transfer_total || 0), booking.currency)}
+              {formatMoney(
+                (booking.total_amount || 0) + (booking.transfer_total || 0) + (booking.mandatory_tax_total || 0),
+                booking.currency
+              )}
             </p>
           </div>
           <div>
@@ -1043,6 +1072,16 @@ function BookingDetail({
           {transferBreakdown && (
             <div className="mt-2 border-t border-ink/5 pt-2">
               <p className="text-slate/50">Трансфер ({transferBreakdown.transfer_name}): <span className="text-ink">{formatMoney(transferBreakdown.total, transferBreakdown.currency)}</span></p>
+            </div>
+          )}
+          {mandatoryTaxBreakdown && mandatoryTaxBreakdown.total > 0 && (
+            <div className="mt-2 border-t border-ink/5 pt-2">
+              <p className="text-slate/50">
+                {mandatoryTaxBreakdown.label || "Обязательный налог"} ({mandatoryTaxBreakdown.chargeable_guests} чел. ×{" "}
+                {formatMoney(mandatoryTaxBreakdown.rate_per_person_per_night, mandatoryTaxBreakdown.currency)} ×{" "}
+                {mandatoryTaxBreakdown.nights} ноч., начисляется после скидок и не подлежит скидке):{" "}
+                <span className="text-ink">{formatMoney(mandatoryTaxBreakdown.total, mandatoryTaxBreakdown.currency)}</span>
+              </p>
             </div>
           )}
         </div>
@@ -1216,7 +1255,7 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
     [bookings]
   );
 
-  const netOf = (b: Booking) => (b.total_amount || 0) + (b.transfer_total || 0);
+  const netOf = (b: Booking) => (b.total_amount || 0) + (b.transfer_total || 0) + (b.mandatory_tax_total || 0);
 
   const filteredSorted = useMemo(() => {
     let list = bookings;

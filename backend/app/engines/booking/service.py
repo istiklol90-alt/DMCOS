@@ -154,6 +154,13 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
     its own transfer_total column — never folded into total_amount, which
     stays room-only, so Finance Engine can itemize room vs. transfer
     revenue separately later.
+
+    Decision 033: always prices get_mandatory_tax (e.g. Kandima's Green
+    Tax) and stores it in its own mandatory_tax_total column, same
+    separate-column precedent as transfer_total — resolves to 0 for every
+    contract that has no mandatory_tax_per_person_per_night configured, so
+    this is a no-op for every contract except one that's actually been
+    given a tax rate.
     """
     hotel_service.get_hotel(db, data.hotel_id)
     hotel_service.get_room_type(db, data.room_type_id)
@@ -205,12 +212,16 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
         )
         transfer_total = transfer_price["total"]
 
+    nights = (data.departure_date - data.arrival_date).days
+    validate_nights_consistency(nights, data.arrival_date, data.departure_date)
+
+    mandatory_tax_total = contract_service.get_mandatory_tax(
+        db, contract.id, nights, data.adults, data.children
+    )["total"]
+
     contract_service.reserve_allotment(
         db, contract.id, data.room_type_id, data.arrival_date, data.departure_date
     )
-
-    nights = (data.departure_date - data.arrival_date).days
-    validate_nights_consistency(nights, data.arrival_date, data.departure_date)
 
     # Compensating action (Decision 012): reserve_allotment already
     # succeeded above. If the insert below fails for any reason, release
@@ -242,6 +253,7 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
             total_amount=price["final_total"],
             transfer_type=data.transfer_type,
             transfer_total=transfer_total,
+            mandatory_tax_total=mandatory_tax_total,
             special_requests=data.special_requests,
             arrival_flight_number=data.arrival_flight_number,
             departure_flight_number=data.departure_flight_number,
@@ -362,15 +374,17 @@ def change_booking_dates(db: Session, booking_id: int, data: BookingDateChangeRe
     4. check_allotment for the new range — raises before anything is
        written if unavailable.
     5. Re-price via get_room_price (same room_type/occupancy, meal plan
-       code resolved from the existing meal_plan_id) and, if a transfer
-       was selected, get_transfer_price for the new dates too. Both raise
+       code resolved from the existing meal_plan_id), get_mandatory_tax
+       for the new nights count (Decision 033), and, if a transfer was
+       selected, get_transfer_price for the new dates too. All raise
        before any write on a real problem (capacity, no season, transfer
        option not active on the new contract).
     6. reserve_allotment on the NEW dates first. If this fails, nothing
        has changed — the OLD dates are still held. Only once that
        succeeds does this release the OLD dates and write the updated
        booking row (new dates, nights, contract_id, rate_id, total_amount,
-       transfer_total, date_change_reason, dates_changed_at).
+       transfer_total, mandatory_tax_total, date_change_reason,
+       dates_changed_at).
 
     Compensating action if the booking-row write itself fails after the
     new reservation succeeded and the old one was released (mirrors
@@ -438,6 +452,10 @@ def change_booking_dates(db: Session, booking_id: int, data: BookingDateChangeRe
     old_departure_date = booking.departure_date
     new_nights = (data.new_departure_date - data.new_arrival_date).days
 
+    mandatory_tax_total = contract_service.get_mandatory_tax(
+        db, new_contract.id, new_nights, booking.adults, booking.children
+    )["total"]
+
     contract_service.reserve_allotment(
         db, new_contract.id, booking.room_type_id, data.new_arrival_date, data.new_departure_date
     )
@@ -456,6 +474,7 @@ def change_booking_dates(db: Session, booking_id: int, data: BookingDateChangeRe
             rate_id=price["rate_id"],
             total_amount=price["final_total"],
             transfer_total=transfer_total,
+            mandatory_tax_total=mandatory_tax_total,
             date_change_reason=data.reason,
             dates_changed_at=datetime.utcnow(),
         )

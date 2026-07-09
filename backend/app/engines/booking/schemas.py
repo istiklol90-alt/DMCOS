@@ -96,6 +96,7 @@ class BookingResponse(BaseModel):
     total_amount: float
     transfer_type: Optional[str] = None
     transfer_total: Optional[float] = None
+    mandatory_tax_total: Optional[float] = None
     special_requests: Optional[str] = None
     arrival_flight_number: Optional[str] = None
     departure_flight_number: Optional[str] = None

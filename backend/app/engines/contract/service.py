@@ -1240,6 +1240,36 @@ def get_transfer_price(
     }
 
 
+def get_mandatory_tax(db: Session, contract_id: int, nights: int, adults: int, children: int) -> dict:
+    """
+    Flat per-person-per-night mandatory government tax (e.g. Kandima's
+    Green Tax): Contract.mandatory_tax_per_person_per_night x
+    (adults + children) x nights. Infants are exempt, matching the same
+    3-bucket adults/children/infants convention get_room_price and
+    get_transfer_price already use. Deliberately its own function, not a
+    step inside get_room_price -- same reasoning as get_transfer_price
+    being separate: this is a pass-through government charge, added AFTER
+    final_total's discounts/promotions, and must never itself be
+    discountable. Contract.mandatory_tax_per_person_per_night defaults to
+    NULL, which resolves to 0 here -- every existing contract has no
+    mandatory tax until a project owner explicitly sets one.
+    """
+    contract = _require_contract(db, contract_id)
+    rate = contract.mandatory_tax_per_person_per_night or 0
+    chargeable_guests = adults + children
+    total = rate * chargeable_guests * nights
+
+    return {
+        "contract_id": contract_id,
+        "label": contract.mandatory_tax_label,
+        "rate_per_person_per_night": rate,
+        "chargeable_guests": chargeable_guests,
+        "nights": nights,
+        "currency": contract.currency,
+        "total": total,
+    }
+
+
 def get_child_policy(db: Session, contract_id: int, room_type_id: int) -> list[dict]:
     """
     Return this contract's age categories along with whatever per-person

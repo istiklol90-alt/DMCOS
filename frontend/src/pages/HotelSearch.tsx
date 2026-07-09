@@ -112,6 +112,26 @@ type TransferOption = {
   status: string;
 };
 
+// GET /contracts/{id}/transfer-price's response shape — the authoritative,
+// discount-aware total (applies any active SpecialOfferTransferDiscount,
+// e.g. Kandima's KM26_03 50%/25% off), unlike TransferOption's raw catalog
+// price_adult/price_child/price_infant, which say nothing about discounts.
+type TransferPrice = {
+  transfer_type: string;
+  transfer_name: string | null;
+  currency: string;
+  price_adult: number;
+  price_child: number;
+  price_infant: number | null;
+  total: number;
+};
+
+type PricedTransferOption = {
+  option: TransferOption;
+  price?: TransferPrice;
+  priceError?: string;
+};
+
 // Minimal shapes — only the fields this page actually reads from
 // BookingResponse/GuestResponse, not the full Pydantic schemas.
 type BookingCreateResult = {
@@ -162,7 +182,7 @@ type RoomTypeResult = RoomType & {
 type HotelResult = Hotel & {
   contractId?: number;
   transferRequired: boolean;
-  transferOptions: TransferOption[];
+  transferOptions: PricedTransferOption[];
   transferCurrency: string | null;
   roomTypes: RoomTypeResult[];
 };
@@ -648,7 +668,7 @@ function RoomTypeCard({
   rt: RoomTypeResult;
   expanded: boolean;
   onToggle: () => void;
-  transferOptions: TransferOption[];
+  transferOptions: PricedTransferOption[];
   transferRequired: boolean;
   transferCurrency: string | null;
   adults: number;
@@ -672,12 +692,8 @@ function RoomTypeCard({
   const cheapestPerNight = cheapest?.price ? cheapest.price.final_total / cheapest.price.nights : null;
 
   const selectedMeal = rt.options.find((o) => o.mealCode === selectedMealCode) ?? null;
-  const selectedTransfer = transferOptions.find((o) => o.transfer_type === selectedTransferType) ?? null;
-  const selectedTransferTotal = selectedTransfer
-    ? selectedTransfer.price_adult * adults +
-      selectedTransfer.price_child * childrenCount +
-      (selectedTransfer.price_infant ?? 0) * infants
-    : null;
+  const selectedTransfer = transferOptions.find((o) => o.option.transfer_type === selectedTransferType) ?? null;
+  const selectedTransferTotal = selectedTransfer?.price?.total ?? null;
   const grandTotal =
     selectedMeal?.price
       ? selectedMeal.price.final_total + (selectedTransferTotal ?? 0)
@@ -848,44 +864,50 @@ function RoomTypeCard({
               </div>
               <div className="mt-2 space-y-2.5">
                 {transferOptions.map((opt) => {
-                  const adultTotal = opt.price_adult * adults;
-                  const childTotal = opt.price_child * childrenCount;
-                  const infantTotal = (opt.price_infant ?? 0) * infants;
-                  const total = adultTotal + childTotal + infantTotal;
+                  const adultTotal = opt.option.price_adult * adults;
+                  const childTotal = opt.option.price_child * childrenCount;
+                  const infantTotal = (opt.option.price_infant ?? 0) * infants;
                   return (
-                    <div key={opt.id}>
+                    <div key={opt.option.id}>
                       <label className="flex cursor-pointer items-center justify-between gap-3 text-sm">
                         <span className="flex items-center gap-2">
                           <input
                             type="radio"
                             name={`transfer-${rt.id}`}
-                            checked={selectedTransferType === opt.transfer_type}
-                            onChange={() => setSelectedTransferType(opt.transfer_type)}
-                            className="h-4 w-4 accent-coral"
+                            disabled={!opt.price}
+                            checked={selectedTransferType === opt.option.transfer_type}
+                            onChange={() => setSelectedTransferType(opt.option.transfer_type)}
+                            className="h-4 w-4 accent-coral disabled:cursor-not-allowed"
                           />
-                          <span className="text-ink">{opt.transfer_name ?? opt.transfer_type}</span>
+                          <span className="text-ink">{opt.option.transfer_name ?? opt.option.transfer_type}</span>
                         </span>
-                        <span className="font-mono text-xs font-semibold text-ink">
-                          {transferCurrency} {total.toLocaleString("ru-RU")}
-                        </span>
+                        {opt.price ? (
+                          <span className="font-mono text-xs font-semibold text-ink">
+                            {transferCurrency} {opt.price.total.toLocaleString("ru-RU")}
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-medium text-slate/50">
+                            {opt.priceError ?? "Цена недоступна"}
+                          </span>
+                        )}
                       </label>
                       <p className="pl-6 text-[11px] leading-relaxed text-slate/50">
                         {adults} {pluralAdults(adults)} × {transferCurrency}{" "}
-                        {opt.price_adult.toLocaleString("ru-RU")} = {transferCurrency}{" "}
+                        {opt.option.price_adult.toLocaleString("ru-RU")} = {transferCurrency}{" "}
                         {adultTotal.toLocaleString("ru-RU")}
                         {childrenCount > 0 && (
                           <>
                             <br />
                             {childrenCount} {pluralChildren(childrenCount)} × {transferCurrency}{" "}
-                            {opt.price_child.toLocaleString("ru-RU")} = {transferCurrency}{" "}
+                            {opt.option.price_child.toLocaleString("ru-RU")} = {transferCurrency}{" "}
                             {childTotal.toLocaleString("ru-RU")}
                           </>
                         )}
-                        {infants > 0 && opt.price_infant != null && (
+                        {infants > 0 && opt.option.price_infant != null && (
                           <>
                             <br />
                             {infants} {pluralInfants(infants)} × {transferCurrency}{" "}
-                            {opt.price_infant.toLocaleString("ru-RU")} = {transferCurrency}{" "}
+                            {opt.option.price_infant.toLocaleString("ru-RU")} = {transferCurrency}{" "}
                             {infantTotal.toLocaleString("ru-RU")}
                           </>
                         )}
@@ -1143,12 +1165,38 @@ function HotelSearch({ onBack }: HotelSearchProps) {
             contractId = undefined;
           }
 
-          let transferOptions: TransferOption[] = [];
+          let transferOptions: PricedTransferOption[] = [];
           if (contractId) {
             try {
-              transferOptions = await fetchJson<TransferOption[]>(
+              const rawOptions = await fetchJson<TransferOption[]>(
                 `/contract-engine/contracts/${contractId}/transfer-options/available`,
                 token
+              );
+              // Price each option via the discount-aware endpoint (applies
+              // any active SpecialOfferTransferDiscount, e.g. Kandima's
+              // KM26_03 50%/25% off) instead of the naive
+              // price_adult*adults+... multiplication this used to do
+              // client-side, which silently ignored those discounts.
+              transferOptions = await Promise.all(
+                rawOptions.map(async (option): Promise<PricedTransferOption> => {
+                  try {
+                    const priceQuery = new URLSearchParams({
+                      transfer_type: option.transfer_type,
+                      check_in: checkIn,
+                      check_out: checkOut,
+                      adults: String(occupancy.adults),
+                      children: String(occupancy.children),
+                      infants: String(occupancy.infants),
+                    });
+                    const price = await fetchJson<TransferPrice>(
+                      `/contract-engine/contracts/${contractId}/transfer-price?${priceQuery.toString()}`,
+                      token
+                    );
+                    return { option, price };
+                  } catch (err) {
+                    return { option, priceError: err instanceof Error ? err.message : "Цена недоступна" };
+                  }
+                })
               );
             } catch {
               transferOptions = [];

@@ -1445,6 +1445,132 @@ unstarted, same as Decision 029's Stages 3-5 for dates.
 
 ---
 
+# Decision 034
+
+Date: 2026-07-08
+
+Decision: Three related outcomes from one investigation, logged together
+since each step's finding drove the next: (1) implemented Green Tax as a
+general, reusable Contract Engine mechanism, not Kandima-specific; (2)
+found and fixed a real frontend bug where HotelSearch.tsx quoted transfer
+prices that didn't match what Booking Engine actually charges; (3)
+concluded the underlying KM26_03 transfer-discount test data itself
+should be left as-is, since it correctly exercises a mechanism that's
+now proven generically correct, even though its specific date-period
+values are unverified against a clean source.
+
+Part 1 -- Green Tax: added Contract.mandatory_tax_per_person_per_night
+(Float, nullable) and Contract.mandatory_tax_label (String, e.g. "Green
+Tax") -- general fields, not hardcoded to Kandima or Maldives, so any
+future hotel's own government tax (VAT, City Tax, GST) reuses the same
+mechanism with its own label. New service.get_mandatory_tax(db,
+contract_id, nights, adults, children), deliberately its own function
+rather than a step inside get_room_price -- same reasoning as
+get_transfer_price being separate: a flat per-person-per-night charge
+on adults+children (infants exempt, same 3-bucket convention
+get_room_price/get_transfer_price already use), added AFTER
+final_total's discounts/promotions, never itself discountable, since
+it's a pass-through government charge, not a hotel service. New GET
+/contracts/{id}/mandatory-tax endpoint. Booking gains its own
+mandatory_tax_total column (Float, nullable), same separate-column
+precedent as transfer_total -- never folded into total_amount, so
+Finance Engine can itemize room vs. transfer vs. tax revenue
+independently later. Wired into both create_booking and
+change_booking_dates (recomputed for the new nights count on a date
+change, same pattern transfer_total already follows). Migration: new
+columns needed explicit ALTER TABLE against the live dmc.db (same
+situation as every prior new-column-on-existing-table addition -- 022,
+017 -- since Base.metadata.create_all doesn't retrofit live tables).
+Kandima's contract set to 12.0 / "Green Tax" via the real
+update_contract service call. Verified in isolation:
+get_mandatory_tax(contract_id=2, nights=7, adults=2, children=1) ->
+3 chargeable guests x $12 x 7 nights = $252.00 exactly.
+
+Part 2 -- transfer-quote bug: investigating a project-owner-supplied
+real quote ($3,140.50 for Sky Studio/BB, 2 adults + 1 child age 8,
+18-25 March 2027, Domestic Comfort transfer) against the live system
+surfaced a real inconsistency, not a data problem. HotelSearch.tsx's
+RoomTypeCard computed the transfer total shown to the agent (both the
+per-option line and the grand total) client-side via naive
+price_adult*adults+price_child*children+... multiplication, sourced
+from GET /transfer-options/available -- a raw catalog endpoint that
+takes no check_in/nights parameters at all, so it structurally cannot
+reflect any date-scoped SpecialOfferTransferDiscount. Meanwhile
+create_booking (and the room-price side of the same search UI) both
+correctly call the discount-aware get_transfer_price/get_room_price.
+Net effect: the search UI quoted $1,128.00 (full price) for Domestic
+Comfort while an actual booking would have silently charged $564.00
+(50% KM26_03 discount) -- a one-directional quote-vs-charge mismatch
+(always overstates, never understates), invisible except when a
+transfer discount happens to be active. Fixed by making RoomTypeCard
+fetch each transfer option's real price from GET /transfer-price
+(mirroring the exact Promise.all pattern already used for meal-plan
+pricing) instead of computing it client-side; the naive multiplication
+is now used only for the still-accurate per-person base-rate line
+items, never for any total actually displayed. Verified: transfer-price
+for domestic_comfort (2 adults, 1 child, 2027-03-18 to 2027-03-25) ->
+$564.00; combined with Sky Studio/BB's room total ($1,760.50) ->
+$2,324.50 pre-tax, matching hand-calculation exactly. Test Beach
+Resort's contract has zero transfer options and no special offers
+configured at all, so its search card renders no Transfer section at
+all, both before and after this fix -- confirmed structurally
+unaffected, nothing to regress.
+
+Part 3 -- test-data validity, DECIDED, no code change: re-checking the
+original KM26_03 document's exact "SPECIAL TRANSFER RATES" clause
+("50% discount on Domestic transfers (Comfort Class ONLY!) and 25%
+discount on Seaplane transfer. Subject to minimum 4 nights stay ...
+DETERMINED BASED ON THE GUEST'S ARRIVAL DATE...") confirmed it's
+genuinely contract-wide (no room-type restriction, sits in a
+contract-wide rates table alongside undifferentiated MEAL PLAN
+DISCOUNT/ROOM UPGRADE rows) -- so SpecialOfferTransferDiscount's
+schema (no room_type_id column) is structurally correct, not a gap.
+18-25 March 2027 (7 nights) does fall inside one of the 4 stored
+"CONTRACTED OFFER" transfer-discount windows (2027-01-11 to
+2027-04-04) and clears the 4-night minimum, so per the clause AND per
+our stored data, the 50% discount legitimately applies -- meaning the
+system's $564.00 is correct given this data, and the project owner's
+$3,140.50 real-quote figure (implying a full-price, undiscounted
+transfer) must come from a different source/scenario than an
+KM26_03-eligible booking, not from a flaw in how the discount period
+was modeled. Since the exact real-world period boundaries were
+originally entered from an unverified PDF-text-extraction inference
+(not a confirmed clean source) rather than because the mechanism
+itself is wrong, the decision is to leave the existing test data
+active and unchanged: it correctly exercises period gating (inside
+vs. outside the window), minimum-nights gating (4-night threshold),
+and transfer-type scoping (comfort discounted, sapphire not,
+independently), all already verified in Decision 026's own
+verification pass and re-confirmed here. If/when the real KM26_03
+period boundaries are confirmed from a clean source, only the stored
+SpecialOfferTransferDiscount row values need correcting -- zero code
+changes, since the mechanism (percentage off a transfer_type, gated by
+period + min_nights, contract-wide) is proven generically correct and
+reusable for any future real transfer-discount offer, not just
+Kandima's.
+
+Reason: Separates two genuinely different classes of problem that
+surfaced in the same investigation -- a real code bug (frontend
+computing prices outside the single source of truth, Part 2, fixed
+immediately) vs. unverified test data exercising a correctly-built
+mechanism (Part 3, deliberately left alone, since correcting
+unconfirmed period boundaries now would just replace one unverified
+guess with another). Matches the project's standing principle of not
+changing business logic/data without owner confirmation.
+
+Approved By: Daler
+
+Status: Parts 1 and 2 implemented and verified (Green Tax feature
+complete end-to-end; HotelSearch.tsx transfer-quote fix compiles clean
+and matches direct backend verification). Part 3 is an explicit
+no-code-change decision -- special_offer_transfer_discounts rows left
+active and unchanged. Known follow-up, not yet scoped: if Kandima's
+real transfer-discount period boundaries are ever confirmed from a
+clean source (not PDF-text-extraction inference), only data needs
+updating, per Part 3's reasoning.
+
+---
+
 # Decision Template
 
 Decision Number:

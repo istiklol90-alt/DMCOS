@@ -57,6 +57,12 @@ class Booking(Base):
     # transfer revenue later without unpacking a merged number.
     transfer_type = Column(String(50), nullable=True)
     transfer_total = Column(Float, nullable=True)
+    # Frozen snapshot of Contract Engine's get_mandatory_tax at booking time
+    # (e.g. Kandima's Green Tax) -- same separate-column precedent as
+    # transfer_total, NOT folded into total_amount, so Finance Engine can
+    # itemize room vs. transfer vs. tax revenue independently. NULL when the
+    # contract has no mandatory_tax_per_person_per_night configured.
+    mandatory_tax_total = Column(Float, nullable=True)
     # 02_Logic_Rules.md #50 fields not in 03_Domain_Model.md #37's flat list.
     special_requests = Column(Text, nullable=True)
     arrival_flight_number = Column(String(50), nullable=True)

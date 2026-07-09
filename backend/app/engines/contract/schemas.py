@@ -42,6 +42,8 @@ class ContractCreate(BaseModel):
     minimum_markup_percent: Optional[float] = Field(None, ge=0, le=100)
     created_by: Optional[int] = None
     transfer_required: bool = False
+    mandatory_tax_per_person_per_night: Optional[float] = Field(None, ge=0)
+    mandatory_tax_label: Optional[str] = Field(None, max_length=50)
 
 
 class ContractUpdate(BaseModel):
@@ -56,6 +58,8 @@ class ContractUpdate(BaseModel):
     minimum_markup_percent: Optional[float] = Field(None, ge=0, le=100)
     contract_status: Optional[ContractStatus] = None
     transfer_required: Optional[bool] = None
+    mandatory_tax_per_person_per_night: Optional[float] = Field(None, ge=0)
+    mandatory_tax_label: Optional[str] = Field(None, max_length=50)
 
 
 class ContractResponse(BaseModel):
@@ -76,6 +80,8 @@ class ContractResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     transfer_required: bool
+    mandatory_tax_per_person_per_night: Optional[float] = None
+    mandatory_tax_label: Optional[str] = None
 
     class Config:
         from_attributes = True
