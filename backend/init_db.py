@@ -35,6 +35,12 @@ from app.engines.contract.models import (
     MinimumStayRule,
 )
 from app.engines.booking.models import Booking, Guest
+from app.engines.ai_core.models import (
+    ContractIngestionJob,
+    ExtractedField,
+    ModelProviderConfig,
+    HumanGateDecision,
+)
 
 def init_db():
     print("🔄 Создание таблиц...")

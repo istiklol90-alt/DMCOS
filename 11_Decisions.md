@@ -1789,6 +1789,69 @@ Status: TASK-000 complete. TASK-001 Status: READY FOR ANALYSIS.
 
 ---
 
+# Decision 038
+
+Date: 2026-07-12
+
+Decision: TASK-001/TASK-002 for AI Core Engine completed -- domain
+model designed and implemented. Four tables in
+backend/app/engines/ai_core/models.py, scoped strictly to Decision
+035's Phase 1 (Contract Ingestion) 12-step workflow, with Decision
+036's advanced components (Knowledge Base, Context Manager,
+Skills-as-plugins, Learning, Metrics) deliberately left as empty ai/
+skeleton files, not modeled:
+
+1. ContractIngestionJob -- one row per uploaded PDF, status moves
+   uploaded -> processing -> extracted -> under_review ->
+   approved/rejected/failed. hotel_id and contract_id are plain
+   Integers, not ForeignKeys, matching Contract/Booking Engine's
+   established cross-engine decoupling precedent -- contract_id stays
+   NULL until step 11 actually writes to Contract Engine.
+2. ExtractedField -- one row per extracted data point, scoped to a
+   job via a real intra-engine ForeignKey. entity_type is a plain
+   String, not a fixed enum column -- same "flexible core" precedent
+   RateSupplement.adjustment_type set in Contract Engine, confirmed
+   with the project owner before implementing: any future contract
+   entity type Decision 035's list doesn't yet name is just a new
+   string value here, never a schema change. field_data is a Text
+   column holding JSON-serialized content, since no native JSON
+   column type is used anywhere else in this project.
+   confidence_score is 0-100 (matching discount_percent's existing
+   percent convention, not a 0-1 float). original_text/
+   ai_interpretation/low_confidence_reason are nullable, populated
+   only for low-confidence fields per workflow step 6.
+3. ModelProviderConfig -- the concrete data behind the Model Router
+   abstraction (provider_name, is_active, config_key). Never stores
+   actual credentials -- config_key is only a reference (e.g. an env
+   var name), same "secrets live in env, never DB" precedent as
+   Authentication Engine's SECRET_KEY.
+4. HumanGateDecision -- one row per manager action (approve/edit/
+   reject) at the Level 2 Human Gate, satisfying workflow step 12's
+   audit-trail requirement.
+
+Migration: four new tables, additive-only via Base.metadata.create_all
+(no existing table touched) -- unlike several prior Contract/Booking
+Engine columns, this needed no ALTER TABLE since these are brand-new
+tables, not new columns on already-existing ones. Registered in both
+init_db.py copies (backend/init_db.py and backend/database/init_db.py),
+matching the established dual-file precedent. Verified via direct
+sqlite3 inspection: all 4 tables created with the exact columns/types
+designed, and the full 36-table list confirmed nothing else was
+touched.
+
+Reason: Turns Decision 035's workflow specification into the minimal
+concrete schema needed to implement it, without modeling any of
+Decision 036's gated advanced components speculatively ahead of proven
+need.
+
+Approved By: Daler
+
+Status: TASK-002 complete. Proceeding to TASK-003 (repository/service
+layer) next, following the same lifecycle every prior Engine went
+through.
+
+---
+
 # Decision Template
 
 Decision Number:
