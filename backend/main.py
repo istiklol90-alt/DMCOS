@@ -10,6 +10,8 @@ from app.engines.hotel.api import router as hotel_router
 from app.engines.contract.api import router as contract_router
 # TASK-002: Booking Engine domain model, schemas, repository, service, and API.
 from app.engines.booking.api import router as booking_router
+# TASK-004: AI Core Engine domain model, schemas, repository, service, and API.
+from app.engines.ai_core.api import router as ai_core_router
 
 app = FastAPI(title="DMC OS API")
 
@@ -42,6 +44,9 @@ app.include_router(contract_router)
 
 # Booking Engine API
 app.include_router(booking_router)
+
+# AI Core Engine API
+app.include_router(ai_core_router)
 
 
 @app.get("/")

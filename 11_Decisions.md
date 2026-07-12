@@ -1915,6 +1915,78 @@ Engine write) is implemented, per Decision 035's deliverable #10.
 
 ---
 
+# Decision 040
+
+Date: 2026-07-12
+
+Decision: TASK-004 for AI Core Engine completed -- schemas.py and
+api.py, exposing the reviewed TASK-003 workflow as 16 authenticated
+REST endpoints under /ai-core-engine, following after the foundation
+review (state machine, low-confidence explanation requirement,
+append-only Human Gate audit trail, zero provider/Contract Engine
+calls) was approved as-is.
+
+schemas.py: request/response models per entity. entity_type and
+provider_name stay plain str, never Literal -- a Literal would
+contradict Decision 035's provider-abstraction principle (adding a
+provider must be a config/data change, never a code change) and
+Decision 038's confirmed open-string precedent for entity_type.
+created_by/reviewer_id are absent from every request schema by
+design -- resolved from the authenticated user in api.py, never
+client-supplied, since spoofing who performed an audited Human Gate
+action would defeat its whole purpose (a stricter rule than
+BookingCreate's agent_id, which IS client-supplied since an admin can
+book on behalf of an agent -- no equivalent "on behalf of" case exists
+here).
+
+api.py: same JWT-duplication pattern as Hotel/Contract/Booking Engine
+(Decision 006, accepted as-is -- now the fourth Engine repeating it)
+and the same ValueError->400 _run helper. 16 endpoints across jobs
+(create/list/get + 4 status-transition actions), Human Gate
+(approve/reject/list-decisions), extracted fields
+(create/list/edit), and provider config (create/get-active/activate).
+No file-upload handling (multipart) -- file_reference is a plain
+string reference in the request body, since no real storage layer
+exists yet (05_Architecture.md's S3-compatible storage remains
+aspirational, per CLAUDE.md's reality-vs-docs gap); real upload
+handling is deferred alongside the Model Router/OCR work. Router
+mounted in main.py alongside Hotel/Contract/Booking Engine's.
+
+Verified via 19 real HTTP calls against the live server (not direct
+function calls) -- same rigor as Booking Engine's original
+verification, per the project owner's explicit request. Logged in as
+admin@dmcos.com (password reset to the documented CLAUDE.md value
+first, since the stored hash didn't match it -- a local dev-DB fix,
+not a business change). Full happy path uploaded -> processing ->
+extracted -> under_review -> approved via POST calls, confirming
+created_by/reviewer_id correctly resolved server-side from the JWT
+(not client input) at every step. Confidence-score validation
+confirmed at the HTTP layer: a low-confidence field without
+explanation fields returned 400 with the exact service.py message; the
+same field with all three explanation fields returned 201. Reject path
+confirmed: an empty-notes rejection was blocked at 422 by Pydantic's
+min_length before ever reaching service.py, a valid rejection
+succeeded and transitioned the job to "rejected". Out-of-order
+transition (uploaded -> under_review directly) blocked at 400 with the
+exact allowed-transitions message. Terminal-status transition
+(approved -> processing) blocked at 400. Provider config: created two
+providers, confirmed GET /providers/active correctly 404s with none
+active, activating one flips is_active and GET /providers/active
+reflects it. Unauthenticated request to GET /jobs correctly returned
+401. All 4 tables' test rows deleted afterward, database confirmed
+real-data-only.
+
+Approved By: Daler
+
+Status: TASK-004 complete and verified end-to-end via live HTTP. AI
+Core Engine's REST surface for the reviewed workflow is done. Next:
+Model Router / real provider integration and the Contract Engine write
+step are separate, not-yet-started tasks, per Decision 035's
+deliverable #9/#10 -- LOCK is not yet appropriate until those exist and
+are themselves reviewed.
+
+---
+
 # Decision Template
 
 Decision Number:
