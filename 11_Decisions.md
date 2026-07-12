@@ -1987,6 +1987,92 @@ are themselves reviewed.
 
 ---
 
+# Decision 041
+
+Date: 2026-07-12
+
+Decision: Model Router built (Decision 035's provider-abstraction
+piece) as backend/app/engines/ai_core/providers.py, plus a
+MockClaudeProvider standing in for the real Claude integration until
+the project owner is ready to pay for live API usage -- deliberately
+NOT making any real, billed Anthropic API call this session.
+
+providers.py is the only module in this Engine, or any other Engine,
+that imports a provider SDK -- ModelProvider is a Protocol (plain
+Python types only: str/list/dataclass, no SDK types leak into the
+interface) with one method, extract_contract_data(document_text,
+entity_types) -> list[ExtractionFieldResult]. ExtractionFieldResult's
+fields are shaped to match service.record_extracted_field's parameters
+exactly, so callers never need a translation layer.
+
+ClaudeProvider (built, not yet run for real): uses
+client.messages.parse() with a Pydantic output_format schema (the
+SDK's recommended structured-outputs path) against model
+"claude-opus-4-8", guaranteeing valid JSON instead of freeform-text
+parsing. The confidence-scoring rubric (100 = stated verbatim; 70-99 =
+clear but requires minor interpretation; below 70 = ambiguous/inferred,
+mandatorily paired with original_text/ai_interpretation/
+low_confidence_reason) lives entirely in the system prompt
+(ai/prompts.py) -- Claude has no built-in introspective confidence
+signal; this rubric is what makes confidence_score meaningful at all,
+a limitation surfaced to the project owner before building anything,
+not discovered after. Reads its API key from os.environ[config_key]
+(never hardcoded, never stored in the DB), matching the SECRET_KEY/SMTP
+"secrets live in env, never DB" precedent -- backend/.env still doesn't
+exist in this project, so this class has never actually been
+instantiated with a real key.
+
+MockClaudeProvider: same ModelProvider contract, zero API calls, zero
+cost. Returns a small canned-response table (currently just
+"hotel_name" -> "Kandima Maldives" at confidence 98) filtered to
+whatever entity_types are requested; document_text is accepted but
+ignored, since there's nothing to parse. get_provider(provider_name) is
+the Model Router itself -- the single place provider_name resolves to
+a concrete instance -- making a provider switch a set_active_provider
+data change (Decision 039), never a code change, exactly matching
+Decision 035's abstraction principle.
+
+Two real ModelProviderConfig rows persisted (not cleaned up --
+genuine system configuration, not test data): "mock" (active,
+config_key=NULL) and "claude" (inactive, config_key=
+"ANTHROPIC_API_KEY", ready to flip on via set_active_provider once a
+real key is added to backend/.env and the project owner chooses to
+start paying for usage).
+
+Verified via a live end-to-end run against the real dmc.db (not a
+mock DB) exercising every already-built TASK-003 service function with
+the mock provider standing in for the real one: create_ingestion_job
+-> start_processing -> get_active_provider resolves "mock" ->
+get_provider("mock") returns a MockClaudeProvider ->
+extract_contract_data returns the canned hotel_name result ->
+mark_extracted -> record_extracted_field persists it correctly
+(entity_type/field_data/confidence_score all verified by direct
+assertion) -> list_extracted_fields confirms it -> submit_for_review
+-> approve_job -> list_human_gate_decisions confirms the audit row.
+Job/field/decision rows deleted afterward (test artifacts from a
+fabricated document_text, not a real ingestion event); the two
+provider config rows were kept.
+
+Reason: Proves the entire pipeline built across TASK-000-004 actually
+works end-to-end with a real (if mocked) provider plugged in, without
+spending real money before the project is live -- and proves the
+provider-abstraction design itself works, since the exact same
+service.py call sequence would work unchanged with ClaudeProvider once
+a key exists. This was a deliberate scope change from the original
+plan (a real Claude API test call) after the project owner flagged
+that no API key should be provisioned yet.
+
+Approved By: Daler
+
+Status: Model Router and both providers implemented and verified.
+ClaudeProvider is built but has never made a real API call -- that
+remains gated behind backend/.env getting a real ANTHROPIC_API_KEY and
+an explicit decision to start paying for usage. No Contract Engine
+write step yet, per Decision 035's deliverable #10 -- still not
+appropriate to LOCK.
+
+---
+
 # Decision Template
 
 Decision Number:
