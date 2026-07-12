@@ -1852,6 +1852,69 @@ through.
 
 ---
 
+# Decision 039
+
+Date: 2026-07-12
+
+Decision: TASK-003 for AI Core Engine completed -- repository.py (thin
+CRUD per entity, same get_db/create/get/list/update pattern every other
+Engine uses, status changes kept separate from field updates) and
+service.py (workflow orchestration only, zero real provider calls).
+
+repository.py: create/get/list/update per entity across all four
+tables, plus update_contract_ingestion_job_status and
+update_model_provider_config_active as separate status-only functions
+(matching Contract/Booking Engine's update_X_status precedent).
+HumanGateDecision deliberately gets no update function -- an
+append-only audit trail, same "never mutate history" principle as
+Booking Engine's cancellation fields.
+
+service.py: implements Decision 035's 12-step workflow as an explicit
+forward-only state machine (VALID_TRANSITIONS: uploaded -> processing
+-> extracted -> under_review -> approved/rejected, with "failed"
+reachable from any non-terminal status for provider/extraction errors).
+Unlike Booking Engine's validate_status_transition (one narrow
+allotment-release boundary), this enforces the full sequence, since a
+job's status IS the workflow here, not an incidental field. Key
+functions: create_ingestion_job (step 1, validates hotel_id against
+Hotel Engine only if given), start_processing/mark_extracted/
+submit_for_review (steps 2-8's pure status transitions),
+record_extracted_field (steps 3-6, raises ValueError if
+confidence_score < LOW_CONFIDENCE_THRESHOLD=70 without all three of
+original_text/ai_interpretation/low_confidence_reason),
+approve_job/reject_job (the Level 2 Human Gate, steps 9-10's decision
+half -- both record a HumanGateDecision row; reject_job requires a
+non-empty reason, same precedent as Booking Engine's cancellation
+reason), and set_active_provider (enforces exactly one active provider
+at a time, making a provider switch a config change per Decision 035's
+abstraction principle, since repository's update_model_provider_config_active
+deliberately only touches the one row it's given).
+
+Exactly as scoped: approve_job's docstring explicitly marks where the
+real Contract Engine write (steps 10-11) will go once a later task
+adds it -- not implemented now, per Decision 035 deliverable #9/#10 and
+the project owner's explicit instruction this session. No Model Router
+dispatch, no OCR, no provider-specific code anywhere in this file.
+
+Verified via 19 live assertions against the real dmc.db (not a test
+DB): full happy path uploaded->approved with both a high-confidence and
+a low-confidence (with required explanation) field; low-confidence
+field rejected when explanation fields are missing; reject path with
+empty-reason rejection then a valid rejection; out-of-order transition
+(uploaded -> under_review) blocked; mark_failed from mid-pipeline;
+terminal-status transition blocked after approval; provider config
+creation, exactly-one-active enforcement across a switch, and duplicate
+provider_name rejection. All 4 new tables' test rows deleted afterward
+to keep the database real-data-only, same precedent as Decision 030.
+
+Approved By: Daler
+
+Status: TASK-003 complete. Next: architecture/foundation review before
+any production logic (Model Router, real provider calls, Contract
+Engine write) is implemented, per Decision 035's deliverable #10.
+
+---
+
 # Decision Template
 
 Decision Number:
