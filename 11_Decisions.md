@@ -1759,6 +1759,36 @@ governing the whole project.
 
 ---
 
+# Decision 037
+
+Date: 2026-07-12
+
+Decision: TASK-000 for AI Core Engine completed. Confirmed via code
+search: the AI Core Engine skeleton exists but is empty (14 top-level
+files + ai/ subfolder with 7 files, all 0 bytes; docs/, integrations/,
+tests/ are empty directories) -- same shape Decision 001 confirmed for
+Hotel Engine. One piece of pre-existing AI-labeled code exists
+elsewhere in the project: backend/services/ai_service.py, a rule-based
+(no LLM call, no OpenAI/Anthropic dependency) heuristic used by the
+agent-registration approval flow to compute a risk_score/recommendation
+from basic field checks (email format, phone length, company name
+length) -- already documented as a stand-in in CLAUDE.md. This is a
+different business domain than Phase 1's contract ingestion and touches
+no LLM provider at all, so per Decision 036's evolution rule, migrating
+or rewriting it now would be speculative ahead of proven need -- left
+in place, unmigrated, flagged here rather than silently ignored.
+
+Reason: Verify a clean starting point before beginning schema/domain
+design (TASK-001/TASK-002), per the one-Engine-at-a-time rule in
+CLAUDE.md and the exact verification precedent Decision 001 set for
+Hotel Engine.
+
+Approved By: Daler
+
+Status: TASK-000 complete. TASK-001 Status: READY FOR ANALYSIS.
+
+---
+
 # Decision Template
 
 Decision Number:
