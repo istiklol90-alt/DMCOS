@@ -1571,6 +1571,194 @@ updating, per Part 3's reasoning.
 
 ---
 
+# Decision 035
+
+Date: 2026-07-07
+
+Decision: AI Core Engine Foundation architecture is formally adopted, as
+specified below. This becomes the binding specification for AI Core
+Engine (#3 in the 22 Core Engines list), superseding informal AI
+discussion from earlier decisions (004, 029, 033) with this detailed,
+authoritative design.
+
+TASK -- AI Engine Foundation (Phase 1: Contract Ingestion)
+
+Goal:
+Design and implement the foundation of the AI Engine that will become
+the central intelligence layer of DMC OS. The first business capability
+is automatic hotel contract ingestion. AI must read hotel contracts
+(PDF), extract structured data, present the results for human
+verification, and only after approval save the contract into Contract
+Engine.
+
+Important architectural principle:
+The AI Engine must NEVER depend on a specific AI provider. Claude, GPT,
+Gemini or future local models are interchangeable providers. The AI
+Engine owns the business workflow; external LLMs are only inference
+providers.
+
+Architecture requirements:
+
+AI Engine responsibilities:
+- Model Router (provider abstraction)
+- Prompt Manager
+- Contract Parser
+- Validation layer
+- Confidence Scoring
+- Human Gate
+- AI Memory (future)
+- OCR integration (future)
+- Logging and audit trail
+
+External model responsibilities:
+- Read text
+- Extract structured information
+- Explain uncertain clauses
+- Return structured JSON only
+
+Contract Engine responsibilities:
+- Store approved contract data only
+- Never parse PDFs
+- Never communicate directly with Claude/GPT
+
+Workflow:
+
+1. User uploads a hotel contract PDF.
+2. AI Engine sends the document through the Model Router to the
+   configured provider (Claude/GPT).
+3. The model extracts:
+   - Hotel information
+   - Seasons
+   - Room types
+   - Meal plans
+   - Rates
+   - Occupancy
+   - Child policy
+   - Cancellation policy
+   - Transfers
+   - Supplements
+   - Special offers
+   - Blackout dates
+   - Minimum stay
+   - Other supported contract entities.
+4. AI Engine validates the returned structure.
+5. Every extracted field receives a confidence score.
+6. Low-confidence items must include:
+   - original contract text,
+   - AI interpretation,
+   - explanation of why confidence is low.
+7. Nothing is written into Contract Engine yet.
+8. Manager reviews every extracted section inside DMC OS.
+9. Manager approves or edits the extracted data.
+10. Only after explicit approval (Level 2 Human Gate) does AI Engine
+    send the final structured data into Contract Engine.
+11. Contract Engine stores the approved contract.
+12. Every step must be logged for audit.
+
+Autonomy Levels:
+- Parsing and extraction: Level 3 (Autonomous)
+- Validation and confidence scoring: Level 3
+- Saving into Contract Engine: Level 2 (Human Gate required)
+- No automatic publication of rates without approval.
+
+Provider abstraction:
+
+Create an interface so the rest of the system never knows whether the
+active provider is:
+- Claude
+- GPT
+- Gemini
+- Local LLM
+
+Changing providers must require changing configuration only, never
+business logic.
+
+Design requirements:
+- No duplicated AI logic inside other Engines.
+- Every Engine will call AI Engine when intelligence is required.
+- AI Engine is the only component allowed to communicate with LLM
+  providers.
+- Business rules remain inside their respective Engines.
+- AI Engine supplies intelligence, not business logic.
+
+Deliverables:
+1. Design the AI Engine architecture.
+2. Define module structure.
+3. Define provider abstraction interfaces.
+4. Define contract parsing pipeline.
+5. Define confidence scoring model.
+6. Define Human Gate workflow.
+7. Define communication contract between AI Engine and Contract Engine.
+8. Update architecture documentation.
+9. Do not implement OCR or provider-specific code yet unless required
+   by the architecture.
+10. Stop after the architecture and foundation are complete, present
+    the design for review before implementing production logic.
+
+Objective:
+Build an AI Engine that can grow into the central intelligence platform
+for the entire DMC OS, where hotel contract ingestion is only the first
+capability. Future capabilities (email understanding, booking
+verification, document analysis, pricing recommendations, autonomous
+workflows, etc.) must reuse the same AI infrastructure without
+architectural changes.
+
+Reason: This formalizes the AI-first architecture goal established at
+project inception into a concrete, implementable specification. Key
+principles: (1) AI Core Engine owns ALL LLM communication -- no other
+Engine may call Claude/GPT/Gemini directly, preventing duplicated AI
+logic across Engines; (2) provider-agnostic design via a Model Router
+abstraction; (3) mandatory confidence scoring with human-readable
+explanations for low-confidence extractions -- directly addressing the
+real transcription-ambiguity problem encountered today with KM26_03's
+transfer-discount periods; (4) Level 2 Human Gate strictly on the
+"save to Contract Engine" step; (5) this architecture must generalize
+to ALL future AI capabilities without requiring rework.
+
+Approved By: Daler
+
+Status: Logged as binding architectural specification. Implementation
+begins with TASK-000 for AI Core Engine, following the established
+one-Engine-at-a-time discipline.
+
+---
+
+# Decision 036
+
+Date: 2026-07-07
+
+Decision: "AI Core Evolution Rule" -- every new AI component (beyond
+the initial minimal MVP) must answer three questions before being
+implemented (not just scaffolded):
+
+1. What business problem does it solve?
+2. What existing AI capability already proved this component is
+   necessary?
+3. Can we temporarily do without it?
+
+This applies specifically to AI Core Engine's advanced components
+(Knowledge Base, Context Manager, full Skills-as-plugins system,
+Learning, Metrics) -- their structural skeleton is created now (per the
+full AI Core Foundation vision, Decision 035), but their real
+implementation is gated by this rule: build only once a real, working
+AI capability has demonstrated the need, not speculatively in advance.
+
+Reason: Prevents over-engineering AI Core with untested abstractions
+before we have even one proven AI capability (contract parsing) working
+end-to-end. Matches the project's established discipline of building on
+proven foundations (same principle applied to every other Engine:
+scaffold first, implement incrementally, verify before expanding) --
+but explicitly formalized for AI Core given its unusually large and
+ambitious full vision.
+
+Approved By: Daler
+
+Status: Logged as a binding development rule specifically for AI Core
+Engine's growth, alongside the one-Engine-at-a-time rule already
+governing the whole project.
+
+---
+
 # Decision Template
 
 Decision Number:
