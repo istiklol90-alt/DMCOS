@@ -2712,6 +2712,104 @@ identically before and after both fixes: final_total=2936.5, unchanged.
 
 ---
 
+# Decision 052
+
+Date: 2026-07-13
+
+Decision: Entered Siyam World Maldives as the second real hotel
+contract in LOCKED Hotel/Contract Engines, via the 8-step plan already
+confirmed (Hotel -> room types -> contract -> seasons -> meal plan ->
+rates -> supplements -> Early Bird promotions), using only the existing
+service-layer functions (no direct SQL, matching Kandima's own original
+entry process). Doubles as the generalization test Decision 051's fixes
+were built for -- proving the pricing engine correctly handles a second
+hotel with a genuinely different rate/supplement/promotion shape, not
+just Kandima's.
+
+Entered: hotel_id=13 (Siyam World, Noonu Atoll, Maldives); 15 room
+types (ids 21-35); contract_id=8 ("Siyam World Maldives Contract
+2026-27", USD, 2026-11-01 to 2027-10-31, mandatory_tax_per_person_per_
+night=12.00, mandatory_tax_label="Green Tax"); 5 season rows (Low
+appears twice, non-contiguous, same pattern Kandima's own "Peak"
+already used -- ids 15/19); 1 meal plan ("Premium AI" / "Premium
+All-Inclusive", meal_plan_id=15) using Option A of get_room_price's
+existing bifurcation (a direct Rate per meal plan, confirmed already
+fully supported, no code change needed); 75 Rate rows (15 room types x
+5 season rows); 150 RateSupplement rows (75 extra_person at $360/night
+using the existing Decision 017 mechanism, 75 single_occupancy at
+-$100/night using Decision 051 Fix A); 2 Promotion rows (Early Bird 30
+at 10%, Early Bird 60 at 15%, using Decision 051 Fix B's
+days_before_arrival mechanism -- the first real-contract use of either
+Promotion or days_before_arrival, previously only synthetic test data
+existed).
+
+Two assumptions made during entry, NOT sourced from the real contract
+text, flagged explicitly rather than silently treated as fact:
+1. `max_occupancy` per room type -- the source data gave only room
+   names and pricing, no occupancy figures. Derived from each name's
+   explicit bedroom count (no "Bedroom" mentioned = 4, "Two Bedroom" =
+   6, "Three Bedroom" = 8, "Four Bedroom" = 10), scaled from Kandima's
+   own real precedent (1BR rooms = 4, its 2BR Family Sky Suite = 8).
+   Needs the project owner's confirmation against the actual contract
+   before this is relied on for a real booking.
+2. No transfer data was provided, so `Contract.transfer_required`
+   stayed False and zero ContractTransferOption rows were created --
+   not fabricated. Same "known gap, not invented data" treatment as
+   assumption 1.
+
+Bug discovered and fixed during verification, not anticipated in the
+original plan: the initial data-entry script created only two
+RoomOccupancyOption rows per room type -- (1 adult, 0 children) and (2
+adults, 0 children) -- modeled loosely on "give it a couple of rows"
+rather than on Kandima's actual real convention. Decision 024's
+dominance check (`o.adults >= adults and o.children >= children`, only
+applied when Active rows exist) then silently rejected every
+occupancy of 3+ adults as "not a configured combination" -- which
+meant the very `extra_person` supplement this contract explicitly
+defines ($360/night for adults beyond base_occupancy=2) could never
+actually be triggered by any booking, regardless of how correctly it
+was priced once reached. Caught by the verification step itself
+(adults=3 unexpectedly 400'd) rather than being assumed to work.
+
+Checked Kandima's real rows before fixing rather than guessing a
+replacement: Kandima's actual convention is two rows per room type
+representing real configured combinations, not an arbitrary 1-adult/
+2-adult pair -- e.g. Sky Studio (max_occupancy=4): "2 adults + 2
+children" and "3 adults, 0 children"; the 2-bedroom Family Sky Suite
+(max_occupancy=8): "4 adults + 4 children" and "8 adults, 0 children".
+Since Siyam World's source data included no children pricing or age
+categories at all (unlike Kandima), the fix adds one row per room type
+at (max_occupancy adults, 0 children) -- e.g. Water Villa (max_occ=4):
+adds "4 adults, 0 children", which by the dominance check alone now
+also correctly covers 1-4 adults with 0 children, making the original
+two rows redundant but harmless. No children combination was invented
+for Siyam World since none exists in the source data.
+
+Approved By: Daler
+
+Status: Implemented and verified. All 5 season rows checked with one
+real `get_room_price` call per season (Water Villa, room_type_id=21,
+adults=2, 1 night), each hand-calculated against the exact per-night
+rate the project owner provided and the 15% Early Bird discount (every
+test date is 2026-07-13 + well over 60 days out, so the 60-day/15%
+tier applies automatically in every case -- confirmed as expected
+behavior, not a surprise): Low 1122 -> 953.70, Festive 1546 -> 1314.10,
+Peak 1227 -> 1042.95, Shoulder 935 -> 794.75, Low (second window) 1122
+-> 953.70 -- all five matched exactly (float noise only, e.g.
+953.6999999999999).
+
+Supplement and boundary checks (Peak season, Water Villa, 1 night):
+adults=1 (single_occupancy) -> base 1227, supplement -100, final
+957.95, correct. adults=3 (extra_person, after the occupancy-option
+fix) -> base 1227, supplement +360, final 1348.95, correct. adults=4
+(at Water Villa's max_occupancy) -> supplement +720 (2 persons beyond
+base_occupancy), final 1654.95, correct. adults=5 (exceeds
+max_occupancy=4) -> correctly still rejected by the coarse
+max_occupancy check, independent of the occupancy-option fix,
+confirming that boundary wasn't accidentally loosened.
+
+---
+
 # Decision Template
 
 Decision Number:
