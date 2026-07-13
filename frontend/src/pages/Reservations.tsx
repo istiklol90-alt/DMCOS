@@ -34,6 +34,8 @@ interface Booking {
   cancellation_fee: number | null;
   date_change_reason: string | null;
   dates_changed_at: string | null;
+  claimed_by: number | null;
+  claimed_at: string | null;
   created_at: string;
 }
 
@@ -114,6 +116,7 @@ export interface Permissions {
   canEditGuestDetails: boolean;
   canEditFlights: boolean;
   canCancel: boolean;
+  canClaim: boolean;
 }
 
 export type Scope = { type: "all" } | { type: "agent"; agentId: number };
@@ -216,6 +219,99 @@ function formatNumber(amount: number | null | undefined) {
 function formatDate(dateStr: string) {
   const d = new Date(dateStr);
   return d.toLocaleDateString("ru-RU");
+}
+
+interface Promotion {
+  id: number;
+  promotion_name: string;
+}
+
+// LPO (booking confirmation request) email text -- Decision 046, Level 3
+// per the AI Autonomy Levels framework (autonomous generation/display,
+// no model inference: a straightforward template fill from data already
+// fetched by BookingDetail's own cost-breakdown useEffect, never
+// re-derived). Every number here is read from roomBreakdown/
+// transferBreakdown/mandatoryTaxBreakdown -- the SAME objects the
+// on-screen cost breakdown already renders -- so this can never drift
+// from what the manager sees on screen. promotionNames only covers
+// generic Promotion-driven discounts (via get_room_price's
+// applied_promotions ids); SpecialOffer-driven discounts (e.g. a real
+// KM26_03-style offer) are NOT attributable per-booking -- get_room_price
+// never returns which SpecialOffer applied, so that case is silently
+// omitted rather than guessed at.
+function buildLpoEmailText(
+  booking: Booking,
+  hotelName: string,
+  roomTypeName: string,
+  mealPlanInfo: MealPlanInfo | undefined,
+  guests: Guest[] | null,
+  roomBreakdown: RoomPriceBreakdown | null,
+  transferBreakdown: TransferPriceBreakdown | null,
+  mandatoryTaxBreakdown: MandatoryTaxBreakdown | null,
+  promotionNames: string[],
+  managerName: string
+): string | null {
+  // Never generate from partial/unconfirmed numbers -- if the same
+  // breakdown data the on-screen cost display depends on hasn't loaded,
+  // there is nothing honest to show yet.
+  if (!roomBreakdown || !mandatoryTaxBreakdown) return null;
+
+  const guestNames = (guests ?? [])
+    .map((g) => `${g.first_name} ${g.last_name}${g.is_lead_guest ? " (Lead Guest)" : ""}`)
+    .join(", ") || "—";
+
+  const mealPlanLabel = mealPlanInfo?.meal_name || mealPlanInfo?.meal_code || "—";
+
+  const includesParts = [`room rate ${formatMoney(roomBreakdown.base_total, booking.currency)}`];
+  if (roomBreakdown.supplements_total > 0) {
+    includesParts.push(`supplements ${formatMoney(roomBreakdown.supplements_total, booking.currency)}`);
+  }
+  if (mandatoryTaxBreakdown.total > 0) {
+    const taxLabel = mandatoryTaxBreakdown.label || "mandatory tax";
+    includesParts.push(`${taxLabel} ${formatMoney(mandatoryTaxBreakdown.total, booking.currency)}`);
+  }
+  const lpoTotal = roomBreakdown.final_total + mandatoryTaxBreakdown.total;
+
+  const lines = [
+    `Subject: Booking Confirmation Request — ${booking.booking_number} — ${hotelName}`,
+    "",
+    `Dear ${hotelName} Team,`,
+    "",
+    "Greetings from DMC OS.",
+    "",
+    "We would like to ask you to confirm the below reservation as per the following details:",
+    "",
+    `Room Type: ${roomTypeName}`,
+    `Check-in — Check-out: ${formatDate(booking.arrival_date)} — ${formatDate(booking.departure_date)} (${booking.nights} nights)`,
+    `Meal Plan: ${mealPlanLabel}`,
+    `Guest Names: ${guestNames}`,
+    `Occupancy: ${booking.adults} Adults, ${booking.children} Children, ${booking.infants} Infants`,
+  ];
+
+  if (promotionNames.length > 0) {
+    lines.push(`Special Offer Code: ${promotionNames.join(", ")}`);
+  }
+
+  lines.push(
+    `Total Amount: ${formatMoney(lpoTotal, booking.currency)} (includes: ${includesParts.join(" + ")})`
+  );
+
+  if (booking.transfer_type && transferBreakdown) {
+    lines.push(
+      `Transfer: ${transferBreakdown.transfer_name}, for ${booking.adults} Adults + ${booking.children} Children — ${formatMoney(transferBreakdown.total, booking.currency)}`
+    );
+  }
+
+  lines.push(
+    `Flight Details: Arrival ${booking.arrival_flight_number || "to follow"}, Departure ${booking.departure_flight_number || "to follow"}`,
+    "",
+    "Please confirm this reservation exactly as per the above details.",
+    "",
+    "Best regards,",
+    managerName || "—"
+  );
+
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -662,6 +758,7 @@ function BookingDetail({
   onClose,
   onBookingUpdated,
   permissions,
+  claimerNames,
 }: {
   booking: Booking;
   hotelName: string;
@@ -670,6 +767,7 @@ function BookingDetail({
   onClose: () => void;
   onBookingUpdated: (updated: Booking) => void;
   permissions: Permissions;
+  claimerNames: Record<number, string>;
 }) {
   const [guests, setGuests] = useState<Guest[] | null>(null);
   const [guestsError, setGuestsError] = useState<string | null>(null);
@@ -678,6 +776,8 @@ function BookingDetail({
   const [mandatoryTaxBreakdown, setMandatoryTaxBreakdown] = useState<MandatoryTaxBreakdown | null>(null);
   const [breakdownError, setBreakdownError] = useState<string | null>(null);
   const [breakdownLoading, setBreakdownLoading] = useState(true);
+  const [promotionNames, setPromotionNames] = useState<string[]>([]);
+  const [lpoCopied, setLpoCopied] = useState(false);
 
   const [changeDatesOpen, setChangeDatesOpen] = useState(false);
   const [newCheckIn, setNewCheckIn] = useState(booking.arrival_date);
@@ -693,6 +793,25 @@ function BookingDetail({
   const [cancelFeePreview, setCancelFeePreview] = useState<{ fee: number | null; currency: string } | null>(null);
   const [cancelFeeLoading, setCancelFeeLoading] = useState(false);
   const [cancelFeeError, setCancelFeeError] = useState<string | null>(null);
+
+  const [claimSubmitting, setClaimSubmitting] = useState(false);
+  const [claimError, setClaimError] = useState<string | null>(null);
+
+  async function handleClaimSubmit() {
+    const token = localStorage.getItem("token") || "";
+    setClaimSubmitting(true);
+    setClaimError(null);
+    try {
+      const updated = await fetchJson<Booking>(`/booking-engine/bookings/${booking.id}/claim`, token, {
+        method: "POST",
+      });
+      onBookingUpdated(updated);
+    } catch (err: any) {
+      setClaimError(err.message || "Не удалось взять бронирование в работу");
+    } finally {
+      setClaimSubmitting(false);
+    }
+  }
 
   function openCancelPanel() {
     setChangeDatesOpen(false);
@@ -831,6 +950,53 @@ function BookingDetail({
     Promise.all(promises).finally(() => setBreakdownLoading(false));
   }, [booking, mealPlanInfo]);
 
+  // Resolve generic Promotion ids (get_room_price's applied_promotions)
+  // to real names for the LPO's optional "Special Offer Code" line --
+  // only fires when at least one actually applied to this booking's
+  // price. SpecialOffer (KM26_03-style) usage has no id trail to resolve
+  // at all -- see buildLpoEmailText's docstring.
+  useEffect(() => {
+    if (!roomBreakdown || roomBreakdown.applied_promotions.length === 0) {
+      setPromotionNames([]);
+      return;
+    }
+    const token = localStorage.getItem("token") || "";
+    Promise.all(
+      roomBreakdown.applied_promotions.map((id) =>
+        fetchJson<Promotion>(`/contract-engine/promotions/${id}`, token).catch(() => null)
+      )
+    ).then((results) => setPromotionNames(results.filter((p): p is Promotion => p !== null).map((p) => p.promotion_name)));
+  }, [roomBreakdown]);
+
+  const managerName = (() => {
+    try {
+      return JSON.parse(localStorage.getItem("user") || "{}").name || "";
+    } catch {
+      return "";
+    }
+  })();
+
+  const lpoText = buildLpoEmailText(
+    booking,
+    hotelName,
+    roomTypeName,
+    mealPlanInfo,
+    guests,
+    roomBreakdown,
+    transferBreakdown,
+    mandatoryTaxBreakdown,
+    promotionNames,
+    managerName
+  );
+
+  function handleCopyLpo() {
+    if (!lpoText) return;
+    navigator.clipboard.writeText(lpoText).then(() => {
+      setLpoCopied(true);
+      setTimeout(() => setLpoCopied(false), 2000);
+    });
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/40 px-4 py-10"
@@ -856,6 +1022,16 @@ function BookingDetail({
         <div className="mt-4 flex items-center justify-between gap-3">
           <StatusBadge status={booking.status} />
           <div className="flex items-center gap-2">
+            {permissions.canClaim && booking.status === "Pending" && booking.claimed_by === null && (
+              <button
+                type="button"
+                onClick={handleClaimSubmit}
+                disabled={claimSubmitting}
+                className="rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+              >
+                {claimSubmitting ? "Отправка..." : "Взять в работу"}
+              </button>
+            )}
             {permissions.canChangeDates && booking.status !== "Cancelled" && booking.status !== "Rejected" && !changeDatesOpen && !cancelOpen && (
               <button
                 type="button"
@@ -881,6 +1057,46 @@ function BookingDetail({
             )}
           </div>
         </div>
+
+        {claimError && (
+          <div className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{claimError}</div>
+        )}
+
+        {booking.status === "Pending" && booking.claimed_by !== null && (
+          <div className="mt-3 rounded-lg bg-ink/5 p-3 text-sm">
+            <p className="text-slate/70">
+              В работе: <strong className="text-ink">{claimerNames[booking.claimed_by] ?? `#${booking.claimed_by}`}</strong>
+              {booking.claimed_at && <> с {formatDate(booking.claimed_at)}</>}
+            </p>
+          </div>
+        )}
+
+        {booking.status === "Pending" && booking.claimed_by !== null && (
+          <div className="mt-3 rounded-lg border border-ink/10 bg-sand/30 p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
+                LPO — запрос на подтверждение отелю
+              </p>
+              <button
+                type="button"
+                onClick={handleCopyLpo}
+                disabled={!lpoText}
+                className="rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-ink/80 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {lpoCopied ? "Скопировано ✓" : "Копировать"}
+              </button>
+            </div>
+            {lpoText ? (
+              <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-lg bg-white p-3 font-mono text-xs text-ink">
+                {lpoText}
+              </pre>
+            ) : (
+              <p className="text-xs text-slate/50">
+                {breakdownLoading ? "Расчёт стоимости..." : "Не удалось сформировать письмо — проверьте расчёт стоимости выше."}
+              </p>
+            )}
+          </div>
+        )}
 
         {cancelOpen && (
           <div className="mt-3 space-y-3 rounded-lg border border-red-500/20 bg-red-50/40 p-4">
@@ -1402,11 +1618,26 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
             ) : (
               filteredSorted.map((b) => {
                 const net = netOf(b);
+                // "Взято в работу" overlay (independent of the status
+                // badge): only meaningful for Pending bookings -- a
+                // Cancelled/old booking doesn't need an "has anyone
+                // looked at this" signal. Unclaimed Pending gets a
+                // strong, unmistakable red highlight to demand
+                // attention; claimed Pending gets no overlay at all,
+                // back to the normal row appearance. hover: is
+                // overridden too (not just left as the default
+                // hover:bg-sand/40) so hovering never washes out the
+                // signal -- it intensifies it instead.
+                const needsAttention = b.status === "Pending" && b.claimed_by === null;
                 return (
                   <tr
                     key={b.id}
                     onClick={() => setSelectedBooking(b)}
-                    className="cursor-pointer border-b border-ink/5 last:border-b-0 hover:bg-sand/40"
+                    className={`cursor-pointer border-b border-ink/5 last:border-b-0 ${
+                      needsAttention
+                        ? "border-l-8 border-l-red-600 bg-red-500/20 hover:bg-red-500/30"
+                        : "hover:bg-sand/40"
+                    }`}
                   >
                     <td className="whitespace-nowrap px-4 py-3.5 text-slate/70">{formatDate(b.created_at)}</td>
                     <td className="whitespace-nowrap px-4 py-3.5 text-slate/70">
@@ -1420,6 +1651,11 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
                     <td className="px-4 py-3.5 font-medium text-ink">
                       <span className="inline-flex items-center gap-1.5">
                         {b.booking_number}
+                        {needsAttention && (
+                          <span className="rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                            Требует внимания
+                          </span>
+                        )}
                         {scope.type === "all" && isRecentlyChanged(b) && (
                           <span
                             className="rounded-full bg-coral/15 px-1.5 py-0.5 text-[10px] font-medium text-coral"
@@ -1476,6 +1712,7 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
             setSelectedBooking(updated);
           }}
           permissions={permissions}
+          claimerNames={agentNames}
         />
       )}
     </div>

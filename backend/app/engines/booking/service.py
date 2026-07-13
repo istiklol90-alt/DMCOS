@@ -358,6 +358,31 @@ def cancel_booking(db: Session, booking_id: int, data: BookingCancelRequest) -> 
     return repository.cancel_booking(db, booking, data.reason, cancellation_fee)
 
 
+def claim_booking(db: Session, booking_id: int, claimed_by: int) -> Booking:
+    """
+    "Взято в работу" (Decision 045) -- marks a booking as being actively
+    handled, independent of its business status. Restricted to
+    status == "Pending": claiming only means something for a booking
+    nobody has looked at yet, so any other status raises. Also raises if
+    already claimed, rather than silently overwriting who claimed it --
+    the caller should check claimed_by is None before offering this
+    action (the frontend does), but this re-validates independently
+    rather than trusting that check, same discipline as every other
+    write in this file.
+
+    claimed_by is a plain user id, not necessarily a human manager's --
+    see models.py's Booking.claimed_by docstring on why this is
+    deliberately generic enough for a future AI agent (Decision 029's
+    Stage 4/5) to claim bookings the identical way.
+    """
+    booking = _require_booking(db, booking_id)
+    if booking.status != "Pending":
+        raise ValueError(f"Cannot claim booking {booking_id}: status is '{booking.status}', not 'Pending'")
+    if booking.claimed_by is not None:
+        raise ValueError(f"Booking {booking_id} is already claimed (by user {booking.claimed_by})")
+    return repository.update_booking(db, booking, claimed_by=claimed_by, claimed_at=datetime.utcnow())
+
+
 def change_booking_dates(db: Session, booking_id: int, data: BookingDateChangeRequest) -> Booking:
     """
     Change a booking's arrival/departure dates (Decision 029, Stage 1 of

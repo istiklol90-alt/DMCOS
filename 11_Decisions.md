@@ -2270,6 +2270,138 @@ verification transcript recorded in this session's tool output.
 
 ---
 
+# Decision 045
+
+Date: 2026-07-13
+
+Decision: Added a "Взято в работу" (claimed/in-progress) tracking layer
+to LOCKED Booking Engine, orthogonal to the existing business `status`
+field. Two new nullable Booking columns, additive-only (same precedent
+as date_change_reason/cancellation_reason etc. added post-LOCK):
+claimed_by (plain Integer, no ForeignKey) and claimed_at (DateTime). New
+service.claim_booking(db, booking_id, claimed_by), restricted to
+status == "Pending" (raises otherwise) and to a not-yet-claimed booking
+(raises if claimed_by is already set, rather than silently overwriting
+who claimed it). New POST /booking-engine/bookings/{id}/claim, no
+request body -- claimed_by resolved server-side from current_user.id,
+same "never trust client input for identity" precedent as created_by/
+reviewer_id elsewhere.
+
+Design note on claimed_by's type: deliberately kept a plain Integer with
+no discriminator column, matching every other cross-boundary identity
+reference in this project (agent_id, created_by, reviewer_id). Per
+Decision 029's staged AI-autonomy roadmap, once AI Core Engine reaches
+Stage 4/5 (AI proposing/handling actions on a booking after manager
+approval), the identical claimed_by mechanism would represent "AI took
+this into its own queue," with the AI acting through a designated system
+User row -- zero schema change needed then. A claimed_by_type
+enum/discriminator was considered and deliberately NOT added now: no
+real AI-agent identity exists yet to test it against, and building it
+speculatively would repeat the exact mistake Decision 036 already warned
+against elsewhere in this project.
+
+Known, flagged authorization gap (explicitly documented, not silently
+skipped, same precedent as Decision 032's Admin-only exemption): the
+claim endpoint is deliberately NOT wrapped in _require_owner_or_admin --
+that check verifies an AGENT owns the booking they're editing, the
+opposite direction from claiming (a manager taking ownership of
+reviewing someone else's booking). Any authenticated user can currently
+call POST .../claim, not just an Admin/Manager role -- Manager isn't
+wired to a distinct role check anywhere in Booking Engine yet, so adding
+one here would be speculative rather than addressing a concrete need.
+Frontend exposure is restricted via a new Permissions.canClaim flag
+(true in AdminPanel.tsx, false in AgentDashboard_v2.tsx), but this is a
+UI-level restriction only, not a backend guarantee.
+
+Frontend (Reservations.tsx): the table row overlay is scoped to
+status === "Pending" only (a Cancelled/old booking doesn't need an "has
+anyone looked at this" signal) -- unclaimed Pending gets a red left
+border + tint; claimed Pending gets no overlay at all, reverting to the
+row's normal appearance (not a literal black background, which would
+read as an error/disabled state in this palette). BookingDetail gains a
+"Взять в работу" button (visible when canClaim && status === "Pending"
+&& claimed_by === null) and a "В работе: <name> с <date>" info panel
+once claimed, reusing the existing agentNames user-id-to-name map
+(already built from the full /users list in the admin scope) rather
+than adding a second lookup.
+
+Reason: Direct project-owner request -- managers need a scannable "has
+anyone started handling this new booking yet" signal, independent of
+business status, before Decision 029's later AI-autonomy stages can
+build on the same mechanism.
+
+Approved By: Daler
+
+Status: Implemented. Verified live: claiming a Pending booking switches
+its row from red to normal, claimed_by/claimed_at are correctly recorded
+and displayed with the claiming user's real name, and attempting to
+claim a non-Pending booking is cleanly rejected server-side with a
+descriptive ValueError (not a silent no-op or a generic 500).
+
+---
+
+# Decision 046
+
+Date: 2026-07-13
+
+Decision: Auto-generate an LPO (hotel booking-confirmation-request)
+email template, displayed in-app with a clipboard-copy button (not a
+mailto: link), whenever a Pending booking is claimed. Level 3 per the AI
+Autonomy Levels framework -- pure template fill from already-stored/
+already-fetched data, no model inference involved.
+
+Deliberately NO backend code, no new module: new frontend-only
+buildLpoEmailText(...) in Reservations.tsx, fed entirely by the exact
+same roomBreakdown/transferBreakdown/mandatoryTaxBreakdown objects
+BookingDetail's existing cost-breakdown useEffect already fetches (plus
+the already-fetched guests list). This was the only way to guarantee the
+LPO's numbers can never drift from what the manager already sees
+on-screen -- a second, backend-side re-derivation of the same pricing
+math was explicitly rejected per the project owner's own instruction.
+One new small conditional fetch: if get_room_price's applied_promotions
+is non-empty, resolves those Promotion ids to real promotion_name via
+the existing GET /promotions/{id} endpoint, for the LPO's optional
+"Special Offer Code" line.
+
+Confirmed live against a real booking (id=2, Kandima/Sky Studio) before
+implementing, not assumed: room-price/transfer-price/mandatory-tax
+breakdowns all reproduce booking.total_amount/transfer_total/
+mandatory_tax_total exactly (a first attempt using a guessed meal-plan
+code produced a wrong number -- corrected by looking up the booking's
+real meal_plan_id against the contract's actual meal plan list, "FB+"
+not "BB").
+
+Known, documented limitation on "Special Offer Code": get_room_price's
+applied_promotions only ever contains generic Promotion ids -- Contract
+Engine's richer SpecialOffer mechanism (the KM26_03-style, 4-sub-table
+kind) applies as a silent reduction to base_total/supplements_total with
+NO record anywhere of which offer produced it. There is no reliable way
+to attribute a SpecialOffer to a specific booking after the fact from
+currently-stored data -- the LPO line is correctly omitted rather than
+guessed at when this is the case, which it is for the verified test
+booking.
+
+"Total Amount" in the LPO is NOT literally booking.total_amount --
+it's total_amount + mandatory_tax_total (room rate + supplements + tax
+owed to the hotel), with Transfer kept as its own separate line, per the
+project owner's explicit "only what's owed to the hotel, not our
+markup" framing; the parenthetical breakdown lists base_total,
+supplements_total (only if > 0), and the tax using its real
+mandatory_tax_label, all read from the same already-on-screen numbers.
+
+The block is shown whenever status === "Pending" && claimed_by !== null
+(not a one-shot toast) -- so a manager can reopen an already-claimed
+booking later and re-copy the same email text, not just catch it once
+right after clicking the claim button.
+
+Approved By: Daler
+
+Status: Implemented and typecheck-clean. Live-verified the underlying
+data (room/transfer/mandatory-tax breakdowns, guest list, flight-number
+fallback to "to follow") against real booking 2 before wiring the UI.
+
+---
+
 # Decision Template
 
 Decision Number:

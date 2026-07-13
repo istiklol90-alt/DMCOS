@@ -159,6 +159,31 @@ def cancel_booking(
     return _run(lambda: service.cancel_booking(db, booking_id, data))
 
 
+@router.post("/bookings/{booking_id}/claim", response_model=BookingResponse)
+def claim_booking(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    "Взято в работу" (Decision 045). claimed_by is resolved server-side
+    from current_user.id, never accepted as client input -- same "never
+    trust client input for identity" precedent as created_by/reviewer_id
+    elsewhere in this project.
+
+    Deliberately NOT wrapped in _require_owner_or_admin: that check
+    verifies an AGENT owns the booking they're editing (change-dates,
+    cancel, update), the opposite direction from claiming -- a manager
+    taking ownership of reviewing someone else's booking. Known, flagged
+    gap (same precedent as Decision 032's Admin-only exemption): any
+    authenticated user can currently call this, not just an Admin/Manager
+    role -- Manager isn't wired to a distinct role check anywhere in
+    Booking Engine yet, so adding one here would be speculative rather
+    than addressing a concrete need.
+    """
+    return _run(lambda: service.claim_booking(db, booking_id, claimed_by=current_user.id))
+
+
 @router.post("/bookings/{booking_id}/change-dates", response_model=BookingResponse)
 def change_booking_dates(
     booking_id: int,

@@ -80,6 +80,17 @@ class Booking(Base):
     # has, since a booking can only be cancelled once anyway.
     date_change_reason = Column(Text, nullable=True)
     dates_changed_at = Column(DateTime, nullable=True)
+    # "Взято в работу" (Decision 045) -- tracks whether anyone has started
+    # handling a new booking, independent of business `status`. Plain
+    # Integer, not a ForeignKey, same cross-boundary-identity pattern as
+    # agent_id/created_by above -- deliberately NOT a User-only construct:
+    # per Decision 029's staged AI-autonomy roadmap, a future AI agent
+    # (Stage 4/5) would claim bookings the identical way, through a
+    # designated system User row, with zero schema change needed. No
+    # claimed_by_type discriminator column -- speculative until a real
+    # AI-agent identity actually exists to test against.
+    claimed_by = Column(Integer, nullable=True)
+    claimed_at = Column(DateTime, nullable=True)
     created_by = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
