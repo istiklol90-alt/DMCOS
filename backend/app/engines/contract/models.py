@@ -210,6 +210,17 @@ class Promotion(Base):
     # belongs in service.py/validators.py, not here.
     is_stackable = Column(Boolean, default=False)
     stacking_group = Column(String(50), nullable=True)
+    # Decision 051 (Fix B): a rolling "book at least N days before
+    # arrival" threshold (e.g. Siyam World's real 30-day/10% and
+    # 60-day/15% Early Bird tiers) -- distinct from booking_start/
+    # booking_end above, which are fixed calendar dates, not a threshold
+    # relative to each booking's own check_in. NULL means this promotion
+    # uses only the existing fixed-window filtering, unaffected by this
+    # field's addition. Multiple tiers are multiple Promotion rows (same
+    # "one row per tier" shape CancellationPolicy already uses); see
+    # get_room_price's selection logic for which tier wins when more than
+    # one is satisfied.
+    days_before_arrival = Column(Integer, nullable=True)
 
 
 class SpecialOffer(Base):

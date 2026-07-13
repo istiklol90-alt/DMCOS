@@ -2625,6 +2625,93 @@ and the edited body text exactly as entered.
 
 ---
 
+# Decision 051
+
+Date: 2026-07-13
+
+Decision: Fix A of preparing to onboard a real second hotel contract
+(Siyam World Maldives) -- wired up `"single_occupancy"` in LOCKED
+Contract Engine's `get_room_price`, which previously never queried that
+`RateSupplement.adjustment_type` at all (confirmed via grep before
+touching anything: the string appeared exactly once in the whole
+engine, in a comment; zero rows of this type had ever existed anywhere,
+real or test). This was NOT a sign-handling bug -- `RateSupplement.amount`
+already fully supported negative values at every layer (model comment,
+schema, validators) -- the type simply had no calculation branch at all,
+unlike `"extra_person"` (Decision 017) which already does.
+
+New branch, gated on `adults == 1` (matching `extra_person`'s own
+adults-only, base-occupancy-relative precedent), folded into
+`supplements_total` via the same `_calc_supplement_total` path every
+other supplement type uses. A negative `amount` (the real case: Siyam
+World's -$100/villa/night) naturally subtracts once added -- no special-
+casing for the sign, exactly as proposed. Mutually exclusive with
+`extra_person` by construction (adults == 1 can never also satisfy
+adults > base_occupancy).
+
+Corrected CLAUDE.md's Decision 016 note, which had gone stale twice
+over: it still claimed `"extra_person"` was unimplemented, even though
+Decision 017 already closed that gap; now accurately states
+`extra_person` (Decision 017) and `single_occupancy` (this decision) are
+both implemented, only `"extra_bed"` remains open (no real contract has
+needed it yet).
+
+Reason: Onboarding Siyam World Maldives as a second real hotel contract
+is also a deliberate generalization test -- proving the pricing
+formulas work for more than one hotel, not just Kandima. Checking Fix
+A's premise before implementing surfaced that this was a materially
+different problem (missing logic, not a missing minus sign) and a
+second, separate gap in `Promotion` (no "days before arrival" concept
+at all -- Fix B).
+
+Fix B: added `Promotion.days_before_arrival` (nullable Integer) -- a
+rolling "book at least N days before arrival" threshold, distinct from
+`booking_start`/`booking_end`'s fixed calendar dates, which cannot
+express Siyam World's real 30-day/10% and 60-day/15% Early Bird tiers.
+Multiple tiers are multiple `Promotion` rows, same "one row per tier"
+shape `CancellationPolicy` already uses. Selection in `get_room_price`:
+among tiers whose threshold is actually met
+(`(check_in - today).days >= days_before_arrival`), the one with the
+LARGEST `days_before_arrival` wins -- more advance notice deserves the
+better discount. Explicitly documented in code as the INVERSE of
+Booking Engine's `_resolve_cancellation_fee` (smallest threshold
+breached wins there, because cancellation penalties escalate as arrival
+nears -- the opposite direction from early-bird rewards). Every
+`Promotion` row without `days_before_arrival` set is completely
+unaffected -- flows through the exact same filtering as before this
+change. Known, documented simplification: tier selection is global
+across every `days_before_arrival` row on the contract, not grouped by
+promotion family -- correct for a single early-bird ladder (the only
+real case so far), would need real grouping only if a contract ever
+needs two independent day-based promotion families simultaneously.
+
+Approved By: Daler
+
+Status: Implemented. Both fixes verified in isolation with throwaway
+synthetic data (dedicated test hotels/contracts, not real business
+data), then regression-checked against the real Kandima booking to
+confirm zero behavior change for existing data.
+
+Fix A: adults=1 against a $500/night base rate with a -$100/night
+single_occupancy supplement produced final_total=1200.0 exactly
+(1500 - 300 over 3 nights); adults=2 against the identical rate produced
+final_total=1500.0 -- the deduction correctly did not apply.
+
+Fix B: a $1000/night rate with 30-day/10% and 60-day/15% tiers tested
+at 29/30/59/60/69/70 days before arrival. 29 days: no discount (neither
+tier met). 30-59 days: 10% (only the 30-day tier met). 60/69/70 days:
+15% (60-day tier met, correctly WINS over the still-satisfied 30-day
+tier rather than either double-applying or defaulting to the first
+match) -- the 69/70-day cases were the specific scenarios asked for to
+prove the "largest satisfied tier wins" selection, not just "a tier
+gets picked."
+
+Both fixes' test data deleted afterward. Kandima's real booking
+(adults=2, no days_before_arrival promotions involved) priced
+identically before and after both fixes: final_total=2936.5, unchanged.
+
+---
+
 # Decision Template
 
 Decision Number:

@@ -1647,6 +1647,23 @@ def get_room_price(
             if supplement.status == "Active":
                 extra_person_total += _calc_supplement_total(supplement, nights, rate.base_price, extra_adults)
 
+    # Decision 051 (Fix A): single-occupancy adjustment -- adults == 1 means
+    # the room is occupied by a single guest instead of rate.base_occupancy's
+    # assumed (typically double) occupancy. A negative RateSupplement.amount
+    # here -- the real-world case, e.g. Siyam World's -$100/villa/night --
+    # naturally SUBTRACTS once folded into supplements_total below, since
+    # RateSupplement.amount is already signed by design (see its own
+    # models.py comment: "negative values represent a discount"). No special-
+    # casing needed for the sign; what was actually missing before this fix
+    # was the adjustment_type never being queried at all, positive or
+    # negative. Mutually exclusive with extra_person by construction: adults
+    # == 1 can never also satisfy adults > base_occupancy.
+    single_occupancy_total = 0.0
+    if adults == 1:
+        for supplement in repository.list_rate_supplements(db, rate.id, adjustment_type="single_occupancy"):
+            if supplement.status == "Active":
+                single_occupancy_total += _calc_supplement_total(supplement, nights, rate.base_price, 1)
+
     # Decision 026, mechanism 1: room discount — reduces base_total, and
     # extra_person_total too if applies_to_extra_person is set. Never
     # touches age_category_total.
@@ -1680,13 +1697,38 @@ def get_room_price(
         {row.offer_id for row in (room_discount, meal_discount, family_rule) if row is not None}
     )
 
-    supplements_total = age_category_total + meal_plan_supplement_total + extra_person_total
+    supplements_total = age_category_total + meal_plan_supplement_total + extra_person_total + single_occupancy_total
     price_before_promotions = base_total + supplements_total
 
     today = date_type.today()
+    days_until_arrival = (check_in - today).days
+
+    # Decision 051 (Fix B): among Promotion rows using days_before_arrival
+    # (a rolling "book N+ days before arrival" tier -- e.g. Siyam World's
+    # real 30-day/10% and 60-day/15% Early Bird -- distinct from
+    # booking_start/booking_end's fixed calendar dates), only the SINGLE
+    # BEST tier actually satisfied applies: the largest days_before_arrival
+    # among those met, since more advance notice deserves the better
+    # discount. This is the INVERSE of Booking Engine's
+    # _resolve_cancellation_fee, where the SMALLEST threshold breached
+    # wins -- there the strictest/soonest-triggered tier wins because
+    # cancellation penalties escalate as arrival nears; here the most
+    # generous tier wins because early booking is rewarded, not penalized.
+    # Known simplification: this selection is global across every
+    # days_before_arrival row on the contract, not grouped by
+    # promotion_name/family -- correct for a single early-bird ladder (the
+    # only real case so far), would need real grouping if a contract ever
+    # needs two independent day-based promotion families at once.
+    all_promotions = repository.list_promotions(db, contract_id)
+    tiered_promotions = [p for p in all_promotions if p.days_before_arrival is not None]
+    untiered_promotions = [p for p in all_promotions if p.days_before_arrival is None]
+    met_tiers = [p for p in tiered_promotions if days_until_arrival >= p.days_before_arrival]
+    best_tier = max(met_tiers, key=lambda p: p.days_before_arrival) if met_tiers else None
+
+    promotion_candidates = untiered_promotions + ([best_tier] if best_tier else [])
     eligible_promotions = [
         p
-        for p in repository.list_promotions(db, contract_id)
+        for p in promotion_candidates
         if p.status == "Active"
         and (p.booking_start is None or p.booking_start <= today)
         and (p.booking_end is None or today <= p.booking_end)

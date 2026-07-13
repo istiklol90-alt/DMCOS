@@ -358,6 +358,7 @@ class PromotionCreate(BaseModel):
     priority: int = 0
     is_stackable: bool = False
     stacking_group: Optional[str] = None
+    days_before_arrival: Optional[int] = Field(None, ge=0)
 
 
 class PromotionUpdate(BaseModel):
@@ -373,6 +374,7 @@ class PromotionUpdate(BaseModel):
     is_stackable: Optional[bool] = None
     stacking_group: Optional[str] = None
     status: Optional[ChildStatus] = None
+    days_before_arrival: Optional[int] = Field(None, ge=0)
 
 
 class PromotionResponse(BaseModel):
@@ -390,6 +392,7 @@ class PromotionResponse(BaseModel):
     status: str
     is_stackable: bool
     stacking_group: Optional[str] = None
+    days_before_arrival: Optional[int] = None
 
     class Config:
         from_attributes = True
