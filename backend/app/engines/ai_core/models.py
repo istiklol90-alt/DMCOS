@@ -50,6 +50,16 @@ class ContractIngestionJob(Base):
     # letting it evaporate after the request -- previously this string was
     # only ever passed as a function argument and never stored anywhere.
     failure_reason = Column(Text, nullable=True)
+    # The PDF's actual extracted text (pdf_extraction.extract_text_from_pdf),
+    # populated synchronously at upload time via POST /jobs/upload-pdf.
+    # Separate from file_reference, which stays the human-readable filename
+    # shown in the UI -- this column is what run_extraction actually hands
+    # to a provider. Nullable: jobs created via the older JSON POST /jobs
+    # (no file, e.g. hotel_id-only or manual/test data entry) never get
+    # real text. No raw PDF bytes are stored anywhere (no blob/file-storage
+    # layer exists in this project -- CLAUDE.md's reality-vs-docs gap);
+    # only the extracted text survives past the upload request.
+    document_text = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

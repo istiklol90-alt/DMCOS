@@ -45,11 +45,15 @@ const LOW_CONFIDENCE_THRESHOLD = 70; // matches backend's service.LOW_CONFIDENCE
 // ---------------------------------------------------------------------------
 
 async function fetchJson<T>(path: string, token: string, init?: RequestInit): Promise<T> {
+  // FormData bodies (the PDF upload) must NOT get a manual Content-Type --
+  // the browser sets its own multipart boundary automatically, and
+  // overriding it here would corrupt the upload.
+  const isFormData = init?.body instanceof FormData;
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...(init?.body && !isFormData ? { "Content-Type": "application/json" } : {}),
       ...init?.headers,
     },
   });
@@ -310,12 +314,12 @@ const ContractsAI = () => {
     setUploadError(null);
     try {
       const token = localStorage.getItem("token") || "";
-      const job = await fetchJson<Job>("/ai-core-engine/jobs", token, {
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      if (selectedHotelId) formData.append("hotel_id", selectedHotelId);
+      const job = await fetchJson<Job>("/ai-core-engine/jobs/upload-pdf", token, {
         method: "POST",
-        body: JSON.stringify({
-          file_reference: selectedFile.name,
-          hotel_id: selectedHotelId ? Number(selectedHotelId) : null,
-        }),
+        body: formData,
       });
       setSelectedFile(null);
       setSelectedHotelId("");
@@ -463,8 +467,9 @@ const ContractsAI = () => {
       <div className="mx-auto mt-10 max-w-lg rounded-2xl border border-ink/10 bg-white p-8">
         <h3 className="font-display text-lg font-semibold text-ink">Загрузить контракт</h3>
         <p className="mt-2 text-xs text-slate/50">
-          Файл не отправляется на сервер — реального хранилища файлов в проекте пока нет (см.
-          CLAUDE.md). Используется только имя файла как ссылка (file_reference).
+          PDF отправляется на сервер, текст извлекается сразу при загрузке — сам файл нигде не
+          сохраняется (реального хранилища файлов в проекте пока нет, см. CLAUDE.md), сохраняется
+          только извлечённый текст.
         </p>
 
         <div className="mt-5 space-y-4">

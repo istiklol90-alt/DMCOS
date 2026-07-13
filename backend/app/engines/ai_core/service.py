@@ -65,21 +65,33 @@ def _validate_transition(current_status: str, new_status: str) -> None:
 
 
 def create_ingestion_job(
-    db: Session, file_reference: str, hotel_id: Optional[int] = None, created_by: Optional[int] = None
+    db: Session,
+    file_reference: str,
+    hotel_id: Optional[int] = None,
+    created_by: Optional[int] = None,
+    document_text: Optional[str] = None,
 ) -> ContractIngestionJob:
     """
     Workflow step 1: a manager uploads a hotel contract PDF. Creates the
     job in the model's default "uploaded" status. Validates hotel_id
     against Hotel Engine only if given — a job can legitimately exist
     before the hotel it belongs to is confirmed. Does NOT dispatch to any
-    provider (workflow step 2) — that's a later task's responsibility
-    once the Model Router is actually implemented, per Decision 035's
-    deliverable #9/#10.
+    provider (workflow step 2) — that's run_extraction's job, called
+    separately.
+
+    document_text is optional: api.py's POST /jobs/upload-pdf passes the
+    PDF's real extracted text (pdf_extraction.extract_text_from_pdf,
+    called before this function); the older JSON POST /jobs (no file,
+    e.g. hotel_id-only or manual/test data entry) leaves it None.
     """
     if hotel_id is not None:
         hotel_service.get_hotel(db, hotel_id)
     return repository.create_contract_ingestion_job(
-        db, file_reference=file_reference, hotel_id=hotel_id, created_by=created_by
+        db,
+        file_reference=file_reference,
+        hotel_id=hotel_id,
+        created_by=created_by,
+        document_text=document_text,
     )
 
 
@@ -148,12 +160,16 @@ def run_extraction(db: Session, job_id: int) -> ContractIngestionJob:
     see record_extracted_field/contract_writer for how a partial subset
     (e.g. no rates yet) is handled gracefully rather than requiring all 8.
 
-    document_text is currently just the job's file_reference string --
-    no real PDF-text extraction or file-storage layer exists yet
-    (CLAUDE.md's reality-vs-docs gap), so this function is explicitly a
-    stand-in pending that work, not a finished pipeline. MockClaudeProvider
-    ignores document_text entirely; a real provider given this placeholder
-    would not extract anything meaningful from it.
+    document_text is job.document_text -- the PDF's real extracted text
+    (pdf_extraction.extract_text_from_pdf, populated at upload time by
+    POST /jobs/upload-pdf). Jobs created via the older JSON POST /jobs
+    (no file -- hotel_id-only jobs, or the manual/test ExtractedField
+    entry used throughout this Engine's own development) have no
+    document_text; those pass an empty string through instead of
+    failing here, since MockClaudeProvider ignores document_text
+    entirely regardless (a real provider given an empty string would
+    simply extract nothing, same honest "no input" outcome as before --
+    just no longer a misleading filename standing in for real content).
     """
     job = _require_job(db, job_id)
     if job.status == "uploaded":
@@ -165,7 +181,7 @@ def run_extraction(db: Session, job_id: int) -> ContractIngestionJob:
 
     provider_instance = providers.get_provider(active.provider_name)
     results = provider_instance.extract_contract_data(
-        document_text=job.file_reference,
+        document_text=job.document_text or "",
         entity_types=PHASE_1_ENTITY_TYPES,
     )
     for r in results:

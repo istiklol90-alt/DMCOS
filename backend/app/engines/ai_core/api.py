@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -10,6 +10,7 @@ from app.engines.authentication.constants import ALGORITHM
 from app.engines.authentication.repository import get_user_by_email
 
 from app.engines.ai_core import service
+from app.engines.ai_core import pdf_extraction
 from app.engines.ai_core.repository import get_db
 from app.engines.ai_core.schemas import (
     ContractIngestionJobCreate,
@@ -76,10 +77,38 @@ def create_job(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Workflow step 1. created_by is resolved from the authenticated user, never accepted from the client — see schemas.py's module note."""
+    """Workflow step 1, no file attached (e.g. hotel_id-only jobs, or manual/test ExtractedField entry). created_by is resolved from the authenticated user, never accepted from the client — see schemas.py's module note. document_text stays NULL; see /jobs/upload-pdf for the real path."""
     return _run(
         lambda: service.create_ingestion_job(
             db, file_reference=data.file_reference, hotel_id=data.hotel_id, created_by=current_user.id
+        )
+    )
+
+
+@router.post("/jobs/upload-pdf", response_model=ContractIngestionJobResponse, status_code=status.HTTP_201_CREATED)
+async def upload_pdf_job(
+    file: UploadFile = File(...),
+    hotel_id: Optional[int] = Form(None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Workflow step 1, the real path: accepts an actual PDF upload, extracts
+    its text synchronously (pdf_extraction.extract_text_from_pdf), and
+    creates the job with that text already populated on document_text --
+    closing the gap where document_text was previously just the filename.
+    file_reference is set from the uploaded filename, matching create_job's
+    existing display convention. Raises 400 if the bytes aren't a valid
+    PDF or no text could be extracted (e.g. a scanned/image-only PDF).
+    """
+    file_bytes = await file.read()
+    return _run(
+        lambda: service.create_ingestion_job(
+            db,
+            file_reference=file.filename,
+            hotel_id=hotel_id,
+            created_by=current_user.id,
+            document_text=pdf_extraction.extract_text_from_pdf(file_bytes),
         )
     )
 

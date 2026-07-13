@@ -8,3 +8,5 @@ bcrypt==4.0.1  # pinned: passlib 1.7.4 reads bcrypt.__about__, removed in bcrypt
 python-jose==3.5.0
 python-dotenv==1.2.2
 anthropic==0.116.0
+pdfplumber==0.11.10
+python-multipart==0.0.32
