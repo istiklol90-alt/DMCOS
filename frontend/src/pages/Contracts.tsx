@@ -1,0 +1,526 @@
+import { useEffect, useState } from "react";
+import { API_URL } from "../config";
+
+// ---------------------------------------------------------------------------
+// Types (only the fields this screen actually reads) — mirror Contract
+// Engine's real response schemas field-for-field, no translation layer.
+// ---------------------------------------------------------------------------
+
+interface Contract {
+  id: number;
+  hotel_id: number;
+  contract_name: string;
+  contract_code: string | null;
+  currency: string;
+  start_date: string;
+  end_date: string;
+  payment_terms: string | null;
+  contract_status: string;
+  transfer_required: boolean;
+  mandatory_tax_per_person_per_night: number | null;
+  mandatory_tax_label: string | null;
+}
+
+interface ContractSeason {
+  id: number;
+  season_name: string;
+  start_date: string;
+  end_date: string;
+  priority: number;
+  status: string;
+}
+
+interface ContractMealPlan {
+  id: number;
+  meal_code: string;
+  meal_name: string | null;
+  description: string | null;
+}
+
+interface ContractTransferOption {
+  id: number;
+  transfer_type: string;
+  transfer_name: string | null;
+  price_adult: number;
+  price_child: number;
+  price_infant: number | null;
+  status: string;
+}
+
+interface ContractAgeCategory {
+  id: number;
+  category_name: string;
+  min_age: number | null;
+  max_age: number | null;
+}
+
+interface Rate {
+  id: number;
+  season_id: number;
+  room_type_id: number;
+  meal_plan_id: number;
+  currency: string;
+  base_price: number;
+  base_occupancy: number;
+  minimum_stay: number | null;
+  maximum_stay: number | null;
+  status: string;
+}
+
+interface RateSupplement {
+  id: number;
+  rate_id: number;
+  adjustment_type: string;
+  age_category_id: number | null;
+  meal_plan_id: number | null;
+  calculation_basis: string;
+  amount: number;
+  status: string;
+}
+
+interface Hotel {
+  id: number;
+  hotel_name: string;
+}
+
+interface RoomType {
+  id: number;
+  room_name: string;
+}
+
+interface ContractCoverage {
+  seasonCount: number;
+  roomTypeCount: number;
+}
+
+type Mode = "list" | "detail";
+
+// ---------------------------------------------------------------------------
+// Fetch helper — same pattern as ContractsAI.tsx/HotelSearch.tsx's fetchJson
+// ---------------------------------------------------------------------------
+
+async function fetchJson<T>(path: string, token: string): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    let detail = `Ошибка запроса (${response.status})`;
+    try {
+      const body = await response.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      // response body wasn't JSON — keep the generic message
+    }
+    throw new Error(detail);
+  }
+  return response.json() as Promise<T>;
+}
+
+function formatDate(dateStr: string) {
+  return new Date(dateStr).toLocaleDateString("ru-RU");
+}
+
+const CONTRACT_STATUS_LABELS: Record<string, string> = {
+  Draft: "Черновик",
+  "Waiting Approval": "На согласовании",
+  Active: "Активен",
+  Expired: "Истёк",
+  Cancelled: "Отменён",
+  Archived: "В архиве",
+};
+
+const CONTRACT_STATUS_CLASSES: Record<string, string> = {
+  Draft: "bg-slate/10 text-slate",
+  "Waiting Approval": "bg-coral/15 text-coral",
+  Active: "bg-teal/15 text-teal",
+  Expired: "bg-slate/10 text-slate",
+  Cancelled: "bg-red-500/15 text-red-600",
+  Archived: "bg-slate/10 text-slate",
+};
+
+const ADJUSTMENT_TYPE_LABELS: Record<string, string> = {
+  age_category_price: "Доплата за категорию возраста",
+  meal_plan_supplement: "Доплата за тип питания",
+  extra_bed: "Доп. кровать",
+  single_occupancy: "Одноместное размещение",
+  extra_person: "Доп. человек",
+};
+
+const CALCULATION_BASIS_LABELS: Record<string, string> = {
+  per_person_per_night: "за чел./ночь",
+  per_stay: "за проживание",
+  percentage_of_rate: "% от тарифа",
+};
+
+function ContractStatusBadge({ status }: { status: string }) {
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
+        CONTRACT_STATUS_CLASSES[status] ?? "bg-slate/10 text-slate"
+      }`}
+    >
+      {CONTRACT_STATUS_LABELS[status] ?? status}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main screen
+// ---------------------------------------------------------------------------
+
+const Contracts = () => {
+  const [mode, setMode] = useState<Mode>("list");
+
+  const [contracts, setContracts] = useState<Contract[]>([]);
+  const [hotels, setHotels] = useState<Record<number, string>>({});
+  // null (distinct from "not loaded yet", which is simply absent from the
+  // map) means the per-contract coverage fetch failed -- never collapsed
+  // into a false "0 · 0", which would misrepresent a real error as a
+  // confirmed empty contract.
+  const [coverage, setCoverage] = useState<Record<number, ContractCoverage | null>>({});
+  const [listLoading, setListLoading] = useState(true);
+  const [listError, setListError] = useState<string | null>(null);
+
+  const [detailContract, setDetailContract] = useState<Contract | null>(null);
+  const [detailSeasons, setDetailSeasons] = useState<ContractSeason[]>([]);
+  const [detailMealPlans, setDetailMealPlans] = useState<ContractMealPlan[]>([]);
+  const [detailTransferOptions, setDetailTransferOptions] = useState<ContractTransferOption[]>([]);
+  const [detailAgeCategories, setDetailAgeCategories] = useState<ContractAgeCategory[]>([]);
+  const [detailRates, setDetailRates] = useState<Rate[]>([]);
+  const [detailSupplementsByRate, setDetailSupplementsByRate] = useState<Record<number, RateSupplement[]>>({});
+  const [detailRoomTypes, setDetailRoomTypes] = useState<Record<number, string>>({});
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  async function loadList() {
+    const token = localStorage.getItem("token") || "";
+    try {
+      setListLoading(true);
+      setListError(null);
+      const [contractsData, hotelsData] = await Promise.all([
+        fetchJson<Contract[]>("/contract-engine/contracts?skip=0&limit=100", token),
+        fetchJson<Hotel[]>("/hotel-engine/hotels", token),
+      ]);
+      setContracts(contractsData);
+      const hotelMap: Record<number, string> = {};
+      hotelsData.forEach((h) => (hotelMap[h.id] = h.hotel_name));
+      setHotels(hotelMap);
+
+      // Coverage ("N сезонов · M типов номеров") isn't returned by
+      // list_contracts itself -- derived client-side per contract from its
+      // seasons and rates, same accepted N+1 pattern HotelSearch.tsx
+      // already uses for hotel -> room-types.
+      const coverageEntries = await Promise.all(
+        contractsData.map(async (c): Promise<[number, ContractCoverage | null]> => {
+          try {
+            const [seasons, rates] = await Promise.all([
+              fetchJson<ContractSeason[]>(`/contract-engine/contracts/${c.id}/seasons`, token),
+              fetchJson<Rate[]>(`/contract-engine/contracts/${c.id}/rates`, token),
+            ]);
+            const roomTypeCount = new Set(rates.map((r) => r.room_type_id)).size;
+            return [c.id, { seasonCount: seasons.length, roomTypeCount }];
+          } catch (err: any) {
+            console.error(`Coverage fetch failed for contract ${c.id}:`, err);
+            return [c.id, null];
+          }
+        })
+      );
+      setCoverage(Object.fromEntries(coverageEntries));
+    } catch (err: any) {
+      setListError(err.message || "Ошибка загрузки списка контрактов");
+    } finally {
+      setListLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (mode === "list") loadList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+
+  async function openDetail(contractId: number) {
+    setMode("detail");
+    setDetailError(null);
+    setDetailLoading(true);
+    setDetailContract(null);
+    setDetailSeasons([]);
+    setDetailMealPlans([]);
+    setDetailTransferOptions([]);
+    setDetailAgeCategories([]);
+    setDetailRates([]);
+    setDetailSupplementsByRate({});
+    setDetailRoomTypes({});
+    const token = localStorage.getItem("token") || "";
+    try {
+      const [contract, seasons, mealPlans, transferOptions, ageCategories, rates] = await Promise.all([
+        fetchJson<Contract>(`/contract-engine/contracts/${contractId}`, token),
+        fetchJson<ContractSeason[]>(`/contract-engine/contracts/${contractId}/seasons`, token),
+        fetchJson<ContractMealPlan[]>(`/contract-engine/contracts/${contractId}/meal-plans`, token),
+        fetchJson<ContractTransferOption[]>(`/contract-engine/contracts/${contractId}/transfer-options`, token),
+        fetchJson<ContractAgeCategory[]>(`/contract-engine/contracts/${contractId}/age-categories`, token),
+        fetchJson<Rate[]>(`/contract-engine/contracts/${contractId}/rates`, token),
+      ]);
+      setDetailContract(contract);
+      setDetailSeasons(seasons);
+      setDetailMealPlans(mealPlans);
+      setDetailTransferOptions(transferOptions);
+      setDetailAgeCategories(ageCategories);
+      setDetailRates(rates);
+
+      const [roomTypesData, supplementsEntries] = await Promise.all([
+        fetchJson<RoomType[]>(`/hotel-engine/hotels/${contract.hotel_id}/room-types`, token),
+        Promise.all(
+          rates.map(async (r): Promise<[number, RateSupplement[]]> => {
+            try {
+              const supplements = await fetchJson<RateSupplement[]>(
+                `/contract-engine/rates/${r.id}/supplements`,
+                token
+              );
+              return [r.id, supplements];
+            } catch {
+              return [r.id, []];
+            }
+          })
+        ),
+      ]);
+      const roomTypeMap: Record<number, string> = {};
+      roomTypesData.forEach((rt) => (roomTypeMap[rt.id] = rt.room_name));
+      setDetailRoomTypes(roomTypeMap);
+      setDetailSupplementsByRate(Object.fromEntries(supplementsEntries));
+    } catch (err: any) {
+      setDetailError(err.message || "Не удалось загрузить детали контракта");
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  function seasonName(seasonId: number) {
+    return detailSeasons.find((s) => s.id === seasonId)?.season_name ?? `#${seasonId}`;
+  }
+
+  function mealPlanCode(mealPlanId: number) {
+    return detailMealPlans.find((m) => m.id === mealPlanId)?.meal_code ?? `#${mealPlanId}`;
+  }
+
+  function ageCategoryName(ageCategoryId: number) {
+    return detailAgeCategories.find((a) => a.id === ageCategoryId)?.category_name ?? `#${ageCategoryId}`;
+  }
+
+  // ===== List =====
+
+  if (mode === "list") {
+    return (
+      <div>
+        <p className="mt-6 text-sm text-slate/60">
+          Все контракты из Contract Engine — созданные вручную, через API или через AI Core Engine,
+          без отдельной регистрации: список всегда читает реальную таблицу контрактов напрямую.
+        </p>
+
+        {listLoading && <p className="mt-10 text-center text-sm text-slate/60">Загрузка...</p>}
+        {listError && <p className="mt-10 text-center text-sm text-red-600">Ошибка: {listError}</p>}
+
+        {!listLoading && !listError && (
+          <div className="mt-4 overflow-x-auto rounded-2xl border border-ink/10 bg-white">
+            <table className="w-full min-w-[880px] border-collapse text-left text-sm">
+              <thead>
+                <tr className="border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50">
+                  <th className="px-4 py-3 font-medium">Название</th>
+                  <th className="px-4 py-3 font-medium">Отель</th>
+                  <th className="px-4 py-3 font-medium">Период</th>
+                  <th className="px-4 py-3 font-medium">Валюта</th>
+                  <th className="px-4 py-3 font-medium">Статус</th>
+                  <th className="px-4 py-3 font-medium">Охват</th>
+                </tr>
+              </thead>
+              <tbody>
+                {contracts.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-10 text-center text-sm text-slate/50">
+                      Контракты не найдены
+                    </td>
+                  </tr>
+                ) : (
+                  contracts.map((c) => {
+                    const cov = coverage[c.id];
+                    return (
+                      <tr
+                        key={c.id}
+                        onClick={() => openDetail(c.id)}
+                        className="cursor-pointer border-b border-ink/5 last:border-b-0 hover:bg-sand/40"
+                      >
+                        <td className="px-4 py-3.5 font-medium text-ink">{c.contract_name}</td>
+                        <td className="px-4 py-3.5 text-slate/80">{hotels[c.hotel_id] ?? `#${c.hotel_id}`}</td>
+                        <td className="whitespace-nowrap px-4 py-3.5 text-slate/70">
+                          {formatDate(c.start_date)} → {formatDate(c.end_date)}
+                        </td>
+                        <td className="px-4 py-3.5 text-slate/70">{c.currency}</td>
+                        <td className="px-4 py-3.5">
+                          <ContractStatusBadge status={c.contract_status} />
+                        </td>
+                        <td className="px-4 py-3.5 text-slate/70">
+                          {cov === undefined && "—"}
+                          {cov === null && <span className="text-red-600">Ошибка загрузки</span>}
+                          {cov && `${cov.seasonCount} сезона(ов) · ${cov.roomTypeCount} тип(ов) номеров`}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ===== Detail =====
+
+  return (
+    <div className="pb-10">
+      <button
+        type="button"
+        onClick={() => setMode("list")}
+        className="mt-6 text-sm font-medium text-slate/60 hover:text-ink"
+      >
+        ← Назад к списку
+      </button>
+
+      {detailLoading && <p className="mt-10 text-center text-sm text-slate/60">Загрузка...</p>}
+      {detailError && <p className="mt-10 text-center text-sm text-red-600">Ошибка: {detailError}</p>}
+
+      {!detailLoading && detailContract && (
+        <>
+          <div className="mt-4 rounded-2xl border border-ink/10 bg-white p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="font-display text-xl font-semibold text-ink">{detailContract.contract_name}</h3>
+                <p className="mt-1 text-sm text-slate/70">
+                  {hotels[detailContract.hotel_id] ?? `#${detailContract.hotel_id}`}
+                  {" · "}
+                  {formatDate(detailContract.start_date)} → {formatDate(detailContract.end_date)}
+                  {" · "}
+                  {detailContract.currency}
+                </p>
+              </div>
+              <ContractStatusBadge status={detailContract.contract_status} />
+            </div>
+            <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate/60">
+              {detailContract.contract_code && <span>Код: {detailContract.contract_code}</span>}
+              <span>Трансфер обязателен: {detailContract.transfer_required ? "да" : "нет"}</span>
+              {detailContract.mandatory_tax_per_person_per_night != null && (
+                <span>
+                  {detailContract.mandatory_tax_label ?? "Налог"}: {detailContract.mandatory_tax_per_person_per_night}{" "}
+                  {detailContract.currency} / чел. / ночь
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* ===== Сезоны ===== */}
+          <h4 className="mb-2 mt-6 font-display text-base font-semibold text-ink">
+            Сезоны ({detailSeasons.length})
+          </h4>
+          {detailSeasons.length === 0 ? (
+            <p className="text-sm text-slate/50">Сезоны не заданы.</p>
+          ) : (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {detailSeasons.map((s) => (
+                <div key={s.id} className="rounded-xl border border-ink/10 bg-white p-3.5">
+                  <p className="font-medium text-ink">{s.season_name}</p>
+                  <p className="mt-1 text-xs text-slate/60">
+                    {formatDate(s.start_date)} → {formatDate(s.end_date)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ===== Типы питания ===== */}
+          <h4 className="mb-2 mt-6 font-display text-base font-semibold text-ink">
+            Типы питания ({detailMealPlans.length})
+          </h4>
+          {detailMealPlans.length === 0 ? (
+            <p className="text-sm text-slate/50">Типы питания не заданы.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {detailMealPlans.map((m) => (
+                <span
+                  key={m.id}
+                  className="rounded-full border border-ink/10 bg-white px-3 py-1.5 text-sm text-ink"
+                >
+                  {m.meal_code}
+                  {m.meal_name ? ` — ${m.meal_name}` : ""}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* ===== Трансферы ===== */}
+          <h4 className="mb-2 mt-6 font-display text-base font-semibold text-ink">
+            Трансферы ({detailTransferOptions.length})
+          </h4>
+          {detailTransferOptions.length === 0 ? (
+            <p className="text-sm text-slate/50">Трансферы не заданы.</p>
+          ) : (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {detailTransferOptions.map((t) => (
+                <div key={t.id} className="rounded-xl border border-ink/10 bg-white p-3.5">
+                  <p className="font-medium text-ink">{t.transfer_name ?? t.transfer_type}</p>
+                  <p className="mt-1 text-xs text-slate/60">
+                    Взрослый: {t.price_adult} · Ребёнок: {t.price_child}
+                    {t.price_infant != null ? ` · Младенец: ${t.price_infant}` : ""}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ===== Тарифы ===== */}
+          <h4 className="mb-2 mt-6 font-display text-base font-semibold text-ink">
+            Тарифы ({detailRates.length})
+          </h4>
+          {detailRates.length === 0 ? (
+            <p className="text-sm text-slate/50">Тарифы не заданы.</p>
+          ) : (
+            <div className="space-y-3">
+              {detailRates.map((r) => {
+                const supplements = detailSupplementsByRate[r.id] ?? [];
+                return (
+                  <div key={r.id} className="rounded-2xl border border-ink/10 bg-white p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-medium text-ink">
+                        {detailRoomTypes[r.room_type_id] ?? `#${r.room_type_id}`}
+                      </span>
+                      <span className="text-sm text-slate/70">
+                        {seasonName(r.season_id)} · {mealPlanCode(r.meal_plan_id)}
+                      </span>
+                    </div>
+                    <p className="mt-1.5 text-sm text-slate/70">
+                      {r.base_price} {r.currency} / ночь (на {r.base_occupancy} взр.)
+                      {r.minimum_stay ? ` · мин. ${r.minimum_stay} ноч.` : ""}
+                    </p>
+                    {supplements.length > 0 && (
+                      <div className="mt-2.5 space-y-1 border-t border-ink/5 pt-2.5">
+                        {supplements.map((s) => (
+                          <p key={s.id} className="text-xs text-slate/60">
+                            {ADJUSTMENT_TYPE_LABELS[s.adjustment_type] ?? s.adjustment_type}
+                            {s.age_category_id != null ? ` (${ageCategoryName(s.age_category_id)})` : ""}
+                            {s.meal_plan_id != null ? ` (${mealPlanCode(s.meal_plan_id)})` : ""}: {s.amount}{" "}
+                            {r.currency} {CALCULATION_BASIS_LABELS[s.calculation_basis] ?? s.calculation_basis}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
+export default Contracts;

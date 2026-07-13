@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
 import { API_URL } from "../config";
 import BookingsList from "./Reservations";
+import Contracts from "./Contracts";
 import ContractsAI from "./ContractsAI";
 
 type StatKey = "all" | "agent" | "admin" | "active" | "never_logged" | "inactive";
 type RegStatus = "pending" | "approved" | "rejected";
-type AdminTab = "users" | "reservations" | "contracts-ai";
+type AdminTab = "users" | "reservations" | "contracts" | "contracts-ai";
 
 const statusBadgeClasses: Record<RegStatus, string> = {
   pending: "bg-coral/15 text-coral",
@@ -175,6 +176,16 @@ const AdminPanel = () => {
             Бронирования
           </button>
           <button
+            onClick={() => setActiveTab("contracts")}
+            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+              activeTab === "contracts"
+                ? "border-coral text-ink"
+                : "border-transparent text-slate/60 hover:text-ink"
+            }`}
+          >
+            Контракты
+          </button>
+          <button
             onClick={() => setActiveTab("contracts-ai")}
             className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
               activeTab === "contracts-ai"
@@ -194,6 +205,8 @@ const AdminPanel = () => {
             />
           </div>
         )}
+
+        {activeTab === "contracts" && <Contracts />}
 
         {activeTab === "contracts-ai" && <ContractsAI />}
 
