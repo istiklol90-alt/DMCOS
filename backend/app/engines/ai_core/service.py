@@ -3,6 +3,8 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.engines.ai_core import repository
+from app.engines.ai_core import providers
+from app.engines.ai_core import contract_writer
 from app.engines.ai_core.models import ContractIngestionJob, ExtractedField, ModelProviderConfig
 from app.engines.hotel import service as hotel_service
 
@@ -108,6 +110,78 @@ def mark_extracted(db: Session, job_id: int, provider: str) -> ContractIngestion
     return repository.update_contract_ingestion_job_status(db, job, "extracted")
 
 
+# Decision 043's Phase 1 taxonomy (full shape spec lives in
+# ai/prompts.py): the 3 simple hotel-identity fields plus the 8
+# structured contract entities contract_writer.py knows how to write.
+# Deliberately excludes Promotion/SpecialOffer/BlackoutDate/
+# CancellationPolicy -- see Decision 043 for why those are a future
+# Phase 2, not this list.
+PHASE_1_ENTITY_TYPES = [
+    "hotel_name",
+    "country",
+    "city",
+    "contract",
+    "room_type",
+    "season",
+    "age_category",
+    "meal_plan",
+    "transfer_option",
+    "rate",
+    "rate_supplement",
+]
+
+
+def run_extraction(db: Session, job_id: int) -> ContractIngestionJob:
+    """
+    Orchestrates workflow steps 2-4 in one call: transitions
+    uploaded -> processing (if not already there), resolves the
+    currently-active ModelProviderConfig, calls that provider's
+    extract_contract_data via the Model Router (Decision 041's
+    get_provider), persists one ExtractedField row per result via
+    record_extracted_field, then transitions processing -> extracted.
+
+    entity_types is PHASE_1_ENTITY_TYPES (Decision 043) -- every entity
+    type contract_writer.write_approved_fields_to_contract_engine knows
+    how to write. MockClaudeProvider currently returns results for all of
+    them (a full Kandima-derived test contract); a real provider given
+    real contract text would extract whatever subset it actually finds --
+    see record_extracted_field/contract_writer for how a partial subset
+    (e.g. no rates yet) is handled gracefully rather than requiring all 8.
+
+    document_text is currently just the job's file_reference string --
+    no real PDF-text extraction or file-storage layer exists yet
+    (CLAUDE.md's reality-vs-docs gap), so this function is explicitly a
+    stand-in pending that work, not a finished pipeline. MockClaudeProvider
+    ignores document_text entirely; a real provider given this placeholder
+    would not extract anything meaningful from it.
+    """
+    job = _require_job(db, job_id)
+    if job.status == "uploaded":
+        job = start_processing(db, job_id)
+
+    active = get_active_provider(db)
+    if active is None:
+        raise ValueError("No AI provider is currently active -- configure one first")
+
+    provider_instance = providers.get_provider(active.provider_name)
+    results = provider_instance.extract_contract_data(
+        document_text=job.file_reference,
+        entity_types=PHASE_1_ENTITY_TYPES,
+    )
+    for r in results:
+        record_extracted_field(
+            db,
+            job_id,
+            entity_type=r.entity_type,
+            field_data=r.field_data,
+            confidence_score=r.confidence_score,
+            original_text=r.original_text,
+            ai_interpretation=r.ai_interpretation,
+            low_confidence_reason=r.low_confidence_reason,
+        )
+    return mark_extracted(db, job_id, provider=active.provider_name)
+
+
 def submit_for_review(db: Session, job_id: int) -> ContractIngestionJob:
     """Workflow steps 7-8: extracted -> under_review. Nothing has been written to Contract Engine at this point, and won't be until a manager acts at the Level 2 Human Gate."""
     job = _require_job(db, job_id)
@@ -118,19 +192,21 @@ def submit_for_review(db: Session, job_id: int) -> ContractIngestionJob:
 def mark_failed(db: Session, job_id: int, reason: str) -> ContractIngestionJob:
     """
     Transition to "failed" from any non-terminal status (a provider
-    error, an unrecoverable extraction problem). Deliberately NOT a Human
-    Gate action — this is a system-detected failure, not a manager
-    decision, so it records no HumanGateDecision row. reason is required
-    for the same audit-trail reason Booking Engine requires a
-    cancellation reason, even though it isn't persisted as a column yet
-    (no failure_reason field exists on ContractIngestionJob — logging
-    it is Audit & Log Engine's job per events.py's forward-looking
-    convention, Decision 003).
+    error, an unrecoverable extraction problem, or -- since Decision 042
+    -- a Contract Engine write-through failure at approve_job). Deliberately
+    NOT a Human Gate action — this is a system-detected failure, not a
+    manager decision, so it records no HumanGateDecision row. reason is
+    persisted to failure_reason (Decision 042) so the UI can show the
+    caller what actually went wrong instead of nothing — full structured
+    audit logging is still Audit & Log Engine's future job per events.py's
+    forward-looking convention, Decision 003, but a human-readable reason
+    is worth keeping on the row itself in the meantime.
     """
     if not reason or len(reason.strip()) < 2:
         raise ValueError("A failure reason is required")
     job = _require_job(db, job_id)
     _validate_transition(job.status, "failed")
+    repository.update_contract_ingestion_job(db, job, failure_reason=reason)
     return repository.update_contract_ingestion_job_status(db, job, "failed")
 
 
@@ -207,19 +283,45 @@ def edit_extracted_field(
 def approve_job(db: Session, job_id: int, reviewer_id: int, notes: Optional[str] = None) -> ContractIngestionJob:
     """
     Level 2 Human Gate approval (workflow step 9-10's approval half).
-    Transitions under_review -> approved and records the
-    HumanGateDecision. Deliberately does NOT write the approved data into
-    Contract Engine — per Decision 035's deliverable #9/#10, that
-    production step (step 10-11) is scoped to a later task once this
-    foundation is reviewed and locked, exactly as with the Model Router
-    dispatch. A future task adds that call here, after this function's
-    status transition and before it returns.
+    Records the HumanGateDecision first -- a human's "approve" judgment
+    happened regardless of what the system does next -- then attempts
+    the actual write into Contract Engine (step 10-11) via
+    contract_writer.write_approved_fields_to_contract_engine.
+
+    If that write fails partway through (e.g. a ref that doesn't resolve,
+    or a required field missing), the job transitions to "failed" instead
+    of "approved" -- a reviewer's approval of incomplete/inconsistent data
+    does not silently become a live contract. Per contract_writer's module
+    docstring, anything already created before the failure is NOT rolled
+    back (Contract Engine has no delete_* functions for most of these
+    entities, and it's LOCKED); the ValueError's message -- which lists
+    every entity actually created, with real ids -- is persisted verbatim
+    into failure_reason (Decision 042) so a partial write is never a
+    silent mystery.
+
+    On success, contract_writer returns (hotel_id, contract_id) -- either
+    can be None (contract_id stays None if the job never had a "contract"
+    entity extracted, i.e. Decision 042's original hotel-only path).
+    hotel_id/contract_id are only written onto the job if it didn't
+    already carry that id (never overwrite a hotel_id picked manually at
+    upload time).
     """
     job = _require_job(db, job_id)
     _validate_transition(job.status, "approved")
     repository.create_human_gate_decision(
         db, job_id=job_id, reviewer_id=reviewer_id, action="approved", notes=notes
     )
+    try:
+        hotel_id, contract_id = contract_writer.write_approved_fields_to_contract_engine(db, job)
+    except ValueError as e:
+        return mark_failed(db, job_id, reason=f"Contract Engine write failed: {e}")
+    updates = {}
+    if job.hotel_id is None and hotel_id is not None:
+        updates["hotel_id"] = hotel_id
+    if job.contract_id is None and contract_id is not None:
+        updates["contract_id"] = contract_id
+    if updates:
+        job = repository.update_contract_ingestion_job(db, job, **updates)
     return repository.update_contract_ingestion_job_status(db, job, "approved")
 
 

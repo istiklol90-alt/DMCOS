@@ -117,6 +117,12 @@ def mark_extracted(
     return _run(lambda: service.mark_extracted(db, job_id, provider=data.provider))
 
 
+@router.post("/jobs/{job_id}/run-extraction", response_model=ContractIngestionJobResponse)
+def run_extraction(job_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Runs the active provider (Decision 041's Model Router) end-to-end: uploaded/processing -> extracted, persisting one ExtractedField row per result. See service.run_extraction's docstring for the current entity_types/document_text limitations."""
+    return _run(lambda: service.run_extraction(db, job_id))
+
+
 @router.post("/jobs/{job_id}/submit-for-review", response_model=ContractIngestionJobResponse)
 def submit_for_review(job_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     """Workflow steps 7-8: extracted -> under_review. Nothing is written to Contract Engine yet."""
@@ -145,7 +151,7 @@ def approve_job(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Level 2 Human Gate approval. reviewer_id is resolved from the authenticated user — see schemas.py's module note. Does NOT write to Contract Engine yet, per Decision 035's deliverable #9/#10."""
+    """Level 2 Human Gate approval. reviewer_id is resolved from the authenticated user — see schemas.py's module note. Writes the approved fields into Contract Engine (currently just a Hotel row via Hotel Engine) per Decision 035's step 10-11 — see service.approve_job/contract_writer.py's docstrings. Job transitions to "failed" instead of "approved" if that write fails."""
     return _run(
         lambda: service.approve_job(db, job_id, reviewer_id=current_user.id, notes=data.notes)
     )

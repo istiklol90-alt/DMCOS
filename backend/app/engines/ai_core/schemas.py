@@ -29,6 +29,7 @@ class ContractIngestionJobResponse(BaseModel):
     status: str
     contract_id: Optional[int] = None
     created_by: Optional[int] = None
+    failure_reason: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

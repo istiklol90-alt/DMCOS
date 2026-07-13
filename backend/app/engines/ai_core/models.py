@@ -44,6 +44,12 @@ class ContractIngestionJob(Base):
     # Plain Integer, not a ForeignKey — validated against models.user.User
     # directly, same pattern Booking.created_by uses.
     created_by = Column(Integer, nullable=True)
+    # Populated only when status is "failed" (set by service.mark_failed).
+    # Added in Decision 042 once the Contract Engine write-through gave
+    # mark_failed a real, caller-facing reason worth persisting instead of
+    # letting it evaporate after the request -- previously this string was
+    # only ever passed as a function argument and never stored anywhere.
+    failure_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
