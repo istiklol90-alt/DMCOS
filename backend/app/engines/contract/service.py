@@ -26,6 +26,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from app.engines.contract import config
 from app.engines.contract import repository
 from app.engines.contract.models import (
     Contract,
@@ -998,11 +999,20 @@ def check_allotment(
     db: Session, contract_id: int, room_type_id: int, check_in: date_type, check_out: date_type
 ) -> bool:
     """
-    Return True only if every night of [check_in, check_out) has an
-    allotment row with available_rooms > 0 AND no Stop Sale blocks that
-    night for this room type (or the whole hotel). Returns False if any
-    single night fails either check, or if a night has no allotment row
-    at all (no row = not confirmed available, not an error).
+    Return True only if every night of [check_in, check_out) has capacity
+    AND no Stop Sale blocks that night for this room type (or the whole
+    hotel). Returns False if any single night fails either check.
+
+    A night with NO allotment row at all is governed by
+    config.is_allotment_strict_mode() (Decision 044, post-LOCK): strict
+    (True) treats a missing row as unavailable, the original LOCKED
+    behavior; permissive (False, the current default) treats it as
+    available, since real per-day inventory data doesn't exist yet for
+    almost every room type. This ONLY covers the absence of a row -- a
+    row that exists but is inactive or has available_rooms <= 0 still
+    returns False unconditionally, strict mode or not; same for an active
+    Stop Sale. Permissive mode never overrides a real "no" signal, only
+    fills in where there's no data at all.
     """
     night_count = (check_out - check_in).days
     if night_count <= 0:
@@ -1023,7 +1033,11 @@ def check_allotment(
         if night in blocked_dates:
             return False
         allotment = repository.get_allotment_by_date(db, contract_id, room_type_id, night)
-        if allotment is None or allotment.status != "Active" or allotment.available_rooms is None:
+        if allotment is None:
+            if config.is_allotment_strict_mode():
+                return False
+            continue
+        if allotment.status != "Active" or allotment.available_rooms is None:
             return False
         if allotment.available_rooms <= 0:
             return False
@@ -1046,12 +1060,20 @@ def reserve_allotment(
     writing any changes, so a failure partway through a multi-night stay
     never leaves some nights incremented and others not.
 
-    Raises ValueError if any night lacks an allotment row, is stop-sold,
-    or has no available_rooms — same failure conditions check_allotment
-    checks for, but as a write instead of a read. Callers should normally
-    call check_allotment first and only reserve if it returns True, but
-    this function re-validates independently rather than trusting a
-    caller's earlier check.
+    Raises ValueError if any night is stop-sold or has no available_rooms
+    — same failure conditions check_allotment checks for, but as a write
+    instead of a read. Callers should normally call check_allotment first
+    and only reserve if it returns True, but this function re-validates
+    independently rather than trusting a caller's earlier check.
+
+    A night with NO allotment row at all follows check_allotment's same
+    config.is_allotment_strict_mode() gate (Decision 044): strict raises,
+    matching the original LOCKED behavior; permissive (default) simply
+    skips that night — there's no allocated_rooms ceiling to decrement
+    against when no row exists, so nothing is written for it, same as
+    release_allotment already does unconditionally for a missing row. A
+    row that exists but is inactive or exhausted still raises
+    unconditionally either way — this only fills the no-data gap.
     """
     night_count = (check_out - check_in).days
     if night_count <= 0:
@@ -1073,7 +1095,11 @@ def reserve_allotment(
         if night in blocked_dates:
             raise ValueError(f"Room type {room_type_id} is stop-sold on {night}")
         allotment = repository.get_allotment_by_date(db, contract_id, room_type_id, night)
-        if allotment is None or allotment.status != "Active":
+        if allotment is None:
+            if config.is_allotment_strict_mode():
+                raise ValueError(f"No active allotment for room type {room_type_id} on {night}")
+            continue
+        if allotment.status != "Active":
             raise ValueError(f"No active allotment for room type {room_type_id} on {night}")
         if allotment.available_rooms is None or allotment.available_rooms <= 0:
             raise ValueError(f"No rooms available for room type {room_type_id} on {night}")

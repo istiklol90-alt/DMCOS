@@ -2216,6 +2216,60 @@ Status: Scope decision, no code change.
 
 ---
 
+# Decision 044
+
+Date: 2026-07-13
+
+Decision: Contract Engine's LOCKED check_allotment/reserve_allotment now
+treat a *missing* Allotment row (no row at all for a given room
+type/date, as opposed to a row that exists but is inactive or has zero
+available_rooms) as permissive ("assume available") by default, instead
+of the original blocking ("assume unavailable") behavior. Governed by a
+new config.is_allotment_strict_mode() (backend/app/engines/contract/
+config.py, previously empty scaffolding) reading ALLOTMENT_STRICT_MODE
+from the environment, defaulting to false (permissive) since
+backend/.env doesn't currently set it. release_allotment needed no
+change -- it already treats a missing row as "nothing to release,"
+unconditionally, by original design.
+
+This ONLY changes the missing-row case. An Allotment row that exists but
+is inactive or has available_rooms <= 0, or an active Stop Sale blocking
+a night, still returns False / raises unconditionally in both functions,
+strict mode or not -- permissive mode fills the "no data exists" gap, it
+never overrides a real "no" signal.
+
+Reason: A live booking against room_type_id=3 (Sky Studio, contract 2)
+was rejected with "Room type 3 is not available for 2027-05-20 to
+2027-05-27." Traced directly (not assumed): zero Allotment rows exist
+for room_type_id=3 for any date, ever -- confirmed via direct DB query.
+Across the entire project, only 2 of 12 room types across every contract
+have any Allotment data at all. This is a project-maturity gap (no real
+per-day hotel inventory feed exists yet, per Decision 019's long-term
+vision being unbuilt), not a per-contract data-quality difference, so a
+global env-driven flag was chosen over a per-contract schema addition --
+matches the existing SECRET_KEY/EMAIL_*/ANTHROPIC_API_KEY env-var
+precedent already established in this project, requires no migration,
+and needs zero code changes to reverse.
+
+Revert path: set ALLOTMENT_STRICT_MODE=true in backend/.env to restore
+the original LOCKED behavior byte-for-byte -- verified live (see
+Status). No code change needed to flip back once real per-day inventory
+data starts flowing in (manual entry, AI Core Engine extraction, or a
+future direct hotel integration).
+
+Approved By: Daler
+
+Status: Implemented and verified live in all 3 planned scenarios: (1)
+the room_type_id=3 booking that failed now succeeds with the flag
+unset/false: (2) temporarily setting ALLOTMENT_STRICT_MODE=true
+reproduces the exact original failure message, proving strict mode is a
+byte-for-byte restore, not a different code path; (3) room_type_id=2
+(which has real Allotment data) is unaffected either way -- its explicit
+capacity signals still enforce correctly regardless of the flag. Exact
+verification transcript recorded in this session's tool output.
+
+---
+
 # Decision Template
 
 Decision Number:
