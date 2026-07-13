@@ -76,6 +76,19 @@ interface UserRecord {
   name: string;
 }
 
+interface BookingCorrespondenceRow {
+  id: number;
+  booking_id: number;
+  direction: string;
+  subject: string | null;
+  body: string;
+  status: string;
+  sent_at: string | null;
+  received_at: string | null;
+  created_by: number | null;
+  created_at: string;
+}
+
 interface CancellationPolicy {
   id: number;
   contract_id: number;
@@ -291,7 +304,7 @@ function buildLpoEmailText(
   promotionNames: string[],
   specialOfferName: string | null,
   managerName: string
-): string | null {
+): { subject: string; body: string } | null {
   // Never generate from partial/unconfirmed numbers -- if the same
   // breakdown data the on-screen cost display depends on hasn't loaded,
   // there is nothing honest to show yet.
@@ -357,9 +370,9 @@ function buildLpoEmailText(
     ]
   );
 
-  const lines = [
-    `Subject: Booking Confirmation Request — ${booking.booking_number} — ${hotelName}`,
-    "",
+  const subject = `Booking Confirmation Request — ${booking.booking_number} — ${hotelName}`;
+
+  const bodyLines = [
     `Dear ${hotelName} Team,`,
     "",
     "Greetings from DMC OS.",
@@ -374,7 +387,7 @@ function buildLpoEmailText(
     managerName || "—",
   ];
 
-  return lines.join("\n");
+  return { subject, body: bodyLines.join("\n") };
 }
 
 // ---------------------------------------------------------------------------
@@ -887,6 +900,15 @@ function BookingDetail({
   const [promotionNames, setPromotionNames] = useState<string[]>([]);
   const [specialOfferName, setSpecialOfferName] = useState<string | null>(null);
   const [lpoCopied, setLpoCopied] = useState(false);
+  const [sendSubmitting, setSendSubmitting] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+
+  const [correspondence, setCorrespondence] = useState<BookingCorrespondenceRow[] | null>(null);
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replySubject, setReplySubject] = useState("");
+  const [replyBody, setReplyBody] = useState("");
+  const [replySubmitting, setReplySubmitting] = useState(false);
+  const [replyError, setReplyError] = useState<string | null>(null);
 
   const [changeDatesOpen, setChangeDatesOpen] = useState(false);
   const [newCheckIn, setNewCheckIn] = useState(booking.arrival_date);
@@ -997,6 +1019,16 @@ function BookingDetail({
       .catch((err) => setGuestsError(err.message));
   }, [booking.id]);
 
+  // Correspondence thread (Decision 049) -- fetched independently of
+  // status/claim state so history stays visible even after a booking
+  // moves past Pending.
+  useEffect(() => {
+    const token = localStorage.getItem("token") || "";
+    fetchJson<BookingCorrespondenceRow[]>(`/booking-engine/bookings/${booking.id}/correspondence`, token)
+      .then(setCorrespondence)
+      .catch(() => setCorrespondence([]));
+  }, [booking.id]);
+
   useEffect(() => {
     const token = localStorage.getItem("token") || "";
     if (!mealPlanInfo) {
@@ -1099,7 +1131,7 @@ function BookingDetail({
     }
   })();
 
-  const lpoText = buildLpoEmailText(
+  const lpo = buildLpoEmailText(
     booking,
     hotelName,
     roomTypeName,
@@ -1112,13 +1144,68 @@ function BookingDetail({
     specialOfferName,
     managerName
   );
+  const lpoFullText = lpo ? `Subject: ${lpo.subject}\n\n${lpo.body}` : null;
 
   function handleCopyLpo() {
-    if (!lpoText) return;
-    navigator.clipboard.writeText(lpoText).then(() => {
+    if (!lpoFullText) return;
+    navigator.clipboard.writeText(lpoFullText).then(() => {
       setLpoCopied(true);
       setTimeout(() => setLpoCopied(false), 2000);
     });
+  }
+
+  async function handleSendCorrespondence() {
+    if (!lpo) return;
+    const token = localStorage.getItem("token") || "";
+    setSendSubmitting(true);
+    setSendError(null);
+    try {
+      const created = await fetchJson<BookingCorrespondenceRow>(
+        `/booking-engine/bookings/${booking.id}/correspondence/send`,
+        token,
+        { method: "POST", body: JSON.stringify({ subject: lpo.subject, body: lpo.body }) }
+      );
+      setCorrespondence((prev) => [...(prev ?? []), created]);
+    } catch (err: any) {
+      setSendError(err.message || "Не удалось отправить письмо");
+    } finally {
+      setSendSubmitting(false);
+    }
+  }
+
+  async function handleAddReply() {
+    if (replyBody.trim().length < 1) {
+      setReplyError("Введите текст ответа отеля");
+      return;
+    }
+    const token = localStorage.getItem("token") || "";
+    setReplySubmitting(true);
+    setReplyError(null);
+    try {
+      await fetchJson<BookingCorrespondenceRow>(
+        `/booking-engine/bookings/${booking.id}/correspondence/reply`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({ subject: replySubject.trim() || null, body: replyBody.trim() }),
+        }
+      );
+      // The reply may have flipped an earlier outbound row's status to
+      // "replied" server-side -- refetch the whole thread rather than
+      // just appending, so that resolved state shows correctly too.
+      const thread = await fetchJson<BookingCorrespondenceRow[]>(
+        `/booking-engine/bookings/${booking.id}/correspondence`,
+        token
+      );
+      setCorrespondence(thread);
+      setReplyOpen(false);
+      setReplySubject("");
+      setReplyBody("");
+    } catch (err: any) {
+      setReplyError(err.message || "Не удалось добавить ответ");
+    } finally {
+      setReplySubmitting(false);
+    }
   }
 
   return (
@@ -1201,26 +1288,134 @@ function BookingDetail({
               <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
                 LPO — запрос на подтверждение отелю
               </p>
-              <button
-                type="button"
-                onClick={handleCopyLpo}
-                disabled={!lpoText}
-                className="rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-ink/80 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {lpoCopied ? "Скопировано ✓" : "Копировать"}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleCopyLpo}
+                  disabled={!lpoFullText}
+                  className="rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-ink/80 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {lpoCopied ? "Скопировано ✓" : "Копировать"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSendCorrespondence}
+                  disabled={!lpo || sendSubmitting}
+                  className="rounded-lg bg-coral px-3 py-1.5 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                >
+                  {sendSubmitting ? "Отправка..." : "Отправить"}
+                </button>
+              </div>
             </div>
-            {lpoText ? (
+            {lpoFullText ? (
               <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-lg bg-white p-3 font-mono text-xs text-ink">
-                {lpoText}
+                {lpoFullText}
               </pre>
             ) : (
               <p className="text-xs text-slate/50">
                 {breakdownLoading ? "Расчёт стоимости..." : "Не удалось сформировать письмо — проверьте расчёт стоимости выше."}
               </p>
             )}
+            {sendError && (
+              <div className="mt-2 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{sendError}</div>
+            )}
           </div>
         )}
+
+        {/* ===== Переписка с отелем (Decision 049) ===== */}
+        <div className="mt-3 rounded-lg border border-ink/10 bg-white p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Переписка с отелем</p>
+            {!replyOpen && (
+              <button
+                type="button"
+                onClick={() => {
+                  setReplyError(null);
+                  setReplySubject("");
+                  setReplyBody("");
+                  setReplyOpen(true);
+                }}
+                className="rounded-lg border border-ink/15 bg-white px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:bg-sand"
+              >
+                Добавить ответ отеля вручную
+              </button>
+            )}
+          </div>
+
+          {correspondence === null ? (
+            <p className="text-xs text-slate/50">Загрузка переписки...</p>
+          ) : correspondence.length === 0 ? (
+            <p className="text-xs text-slate/50">Переписка пока пуста.</p>
+          ) : (
+            <div className="space-y-2">
+              {correspondence.map((msg) => {
+                const outbound = msg.direction === "outbound";
+                const timestamp = msg.sent_at ?? msg.received_at ?? msg.created_at;
+                return (
+                  <div
+                    key={msg.id}
+                    className={`rounded-lg p-3 text-sm ${
+                      outbound ? "ml-6 bg-coral/10" : "mr-6 bg-ink/5"
+                    }`}
+                  >
+                    <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-slate/50">
+                      <span className="font-semibold uppercase tracking-wide">
+                        {outbound ? "DMC OS → Отель" : "Отель → DMC OS"}
+                      </span>
+                      <span>{formatDate(timestamp)}</span>
+                    </div>
+                    {msg.subject && <p className="font-medium text-ink">{msg.subject}</p>}
+                    <pre className="mt-1 whitespace-pre-wrap font-sans text-xs text-ink">{msg.body}</pre>
+                    <p className="mt-1 text-[11px] text-slate/40">
+                      {msg.status === "sent" && "Отправлено, ожидаем ответ отеля"}
+                      {msg.status === "replied" && "Отвечено"}
+                      {msg.status === "draft" && "Черновик"}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {replyOpen && (
+            <div className="mt-3 space-y-2 rounded-lg border border-ink/10 bg-sand/30 p-3">
+              <input
+                placeholder="Тема (опционально)"
+                value={replySubject}
+                onChange={(e) => setReplySubject(e.target.value)}
+                className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+              />
+              <textarea
+                placeholder="Текст ответа отеля *"
+                value={replyBody}
+                onChange={(e) => setReplyBody(e.target.value)}
+                rows={4}
+                className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+              />
+              {replyError && (
+                <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{replyError}</div>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleAddReply}
+                  disabled={replySubmitting}
+                  className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                >
+                  {replySubmitting ? "Сохранение..." : "Сохранить ответ"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReplyOpen(false)}
+                  disabled={replySubmitting}
+                  className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Отмена
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
 
         {cancelOpen && (
           <div className="mt-3 space-y-3 rounded-lg border border-red-500/20 bg-red-50/40 p-4">

@@ -135,3 +135,39 @@ class Guest(Base):
     # (02_Logic_Rules.md #50) instead of a nullable FK on Booking that
     # would need setting after a Guest row already exists.
     is_lead_guest = Column(Boolean, default=False)
+
+
+class BookingCorrespondence(Base):
+    """
+    Decision 049: the permanent, booking-linked hotel email thread.
+    Deliberately built with NO real SMTP/IMAP integration -- "sent" means
+    "recorded as sent" (the manager still emails the text through their
+    own client, per Decision 046's original LPO design), and inbound rows
+    are logged manually until a real business mailbox exists (Decision
+    029 Stage 3+). Lives inside Booking Engine, not a new Engine, since
+    this is a booking-scoped child entity with no independent lifecycle
+    of its own -- same precedent as Guest above, not a fresh TASK-000.
+    """
+
+    __tablename__ = "booking_correspondence"
+
+    id = Column(Integer, primary_key=True, index=True)
+    booking_id = Column(Integer, ForeignKey("bookings.id"), nullable=False)
+    # "outbound" (DMC -> hotel) / "inbound" (hotel -> DMC, logged manually).
+    direction = Column(String(20), nullable=False)
+    subject = Column(String(300), nullable=True)
+    body = Column(Text, nullable=False)
+    # "draft" (column exists, no writer yet -- no save-draft flow built) /
+    # "sent" (outbound, written by send_correspondence) / "awaiting_reply"
+    # (never stored -- a computed UI label: latest row is outbound with
+    # status="sent" and no inbound row followed it) / "replied" (written
+    # directly on inbound rows, and back-applied to the outbound row they
+    # answer).
+    status = Column(String(20), default="draft")
+    sent_at = Column(DateTime, nullable=True)
+    received_at = Column(DateTime, nullable=True)
+    # Plain Integer, not a ForeignKey -- same cross-boundary-identity
+    # pattern as Booking.created_by/claimed_by (validated against
+    # models.user.User directly, not wrapped behind an Engine boundary).
+    created_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

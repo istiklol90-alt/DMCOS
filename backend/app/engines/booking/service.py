@@ -43,7 +43,7 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.engines.booking import repository
-from app.engines.booking.models import Booking, Guest
+from app.engines.booking.models import Booking, Guest, BookingCorrespondence
 from app.engines.booking.schemas import (
     BookingCreate,
     BookingUpdate,
@@ -550,3 +550,58 @@ def update_guest(db: Session, guest_id: int, **fields) -> Guest:
     """Update an existing guest's fields."""
     guest = _require_guest(db, guest_id)
     return repository.update_guest(db, guest, **fields)
+
+
+# ---------------------------------------------------------------------------
+# Booking Correspondence (Decision 049)
+# ---------------------------------------------------------------------------
+# Deliberately no real SMTP/IMAP integration -- "sent" means "recorded as
+# sent" (the manager still emails the text through their own client);
+# inbound rows are logged manually until a real business mailbox exists
+# (Decision 029 Stage 3+). See models.py's BookingCorrespondence docstring
+# for the full status-semantics reasoning.
+
+
+def send_correspondence(
+    db: Session, booking_id: int, subject: Optional[str], body: str, created_by: Optional[int]
+) -> BookingCorrespondence:
+    """Record an outbound message (typically the Decision 046 LPO text) against a booking's thread. status="sent" -- "awaiting_reply" is a computed UI label (latest row is outbound/sent with no inbound row after it), never written here."""
+    _require_booking(db, booking_id)
+    return repository.create_booking_correspondence(
+        db,
+        booking_id=booking_id,
+        direction="outbound",
+        subject=subject,
+        body=body,
+        status="sent",
+        sent_at=datetime.utcnow(),
+        created_by=created_by,
+    )
+
+
+def add_correspondence_reply(
+    db: Session, booking_id: int, subject: Optional[str], body: str, created_by: Optional[int]
+) -> BookingCorrespondence:
+    """Manually log a hotel's reply (received via the manager's own email client, no real IMAP integration yet). Also resolves the most recent unanswered outbound message (status="sent") to "replied", so the thread's own data -- not just this new row -- reflects that the exchange is answered."""
+    _require_booking(db, booking_id)
+    thread = repository.list_booking_correspondence(db, booking_id)
+    for row in reversed(thread):
+        if row.direction == "outbound" and row.status == "sent":
+            repository.update_booking_correspondence_status(db, row, "replied")
+            break
+    return repository.create_booking_correspondence(
+        db,
+        booking_id=booking_id,
+        direction="inbound",
+        subject=subject,
+        body=body,
+        status="replied",
+        received_at=datetime.utcnow(),
+        created_by=created_by,
+    )
+
+
+def list_correspondence(db: Session, booking_id: int) -> list[BookingCorrespondence]:
+    """Return a booking's full correspondence thread, oldest first."""
+    _require_booking(db, booking_id)
+    return repository.list_booking_correspondence(db, booking_id)

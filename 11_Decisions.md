@@ -2521,6 +2521,65 @@ booking 2's LPO table and confirmed the row reads exactly
 
 ---
 
+# Decision 049
+
+Date: 2026-07-13
+
+Decision: Built the technical foundation for hotel email correspondence,
+tied to each booking, with deliberately NO real SMTP/IMAP integration --
+that's a separate future task (Decision 029 Stage 3+), once a real
+business mailbox exists. New BookingCorrespondence entity: booking_id,
+direction ("outbound"/"inbound"), subject, body, status
+("draft"/"sent"/"awaiting_reply"/"replied"), sent_at, received_at,
+created_by, created_at.
+
+Lives inside Booking Engine (LOCKED), not a new Engine -- same
+child-entity precedent as Guest: booking-scoped, no independent
+lifecycle, added as an additive extension the same way every other
+Decision this session has extended a LOCKED engine. 01_Modules_List.md's
+separate "Notifications"/"CRM" modules are the eventual home for real
+email infrastructure later, not this booking-linked thread record now.
+
+Status semantics: "sent" and "replied" are the only values actually
+written by code. "awaiting_reply" is deliberately never stored -- it's a
+computed UI label (latest row is outbound with status="sent" and no
+inbound row has followed it), since nothing real happens between "sent"
+and "awaiting a reply" that deserves its own write. "draft" exists as a
+valid column value with no writer yet -- no save-draft flow was
+requested, so none was built ahead of need.
+
+Three endpoints, same file organization as Guest's: GET
+/bookings/{id}/correspondence (the thread, oldest first), POST
+.../correspondence/send (records an outbound message -- typically the
+Decision 046 LPO's subject/body directly, no re-parsing of the rendered
+text needed since buildLpoEmailText's return type changed from a flat
+string to {subject, body}), POST .../correspondence/reply (manually
+logs a hotel's reply, and back-resolves the most recent unanswered
+outbound row to "replied" so stored data reflects the exchange being
+answered, not just the new inbound row). Same flagged-not-fixed
+authorization gap as Decision 045's claim_booking: not wrapped in
+_require_owner_or_admin (a manager acting on a booking, not the owning
+agent), same precedent, same reasoning.
+
+Frontend: a "Переписка с отелем" section in BookingDetail, chat-style
+(outbound right-aligned/coral-tinted, inbound left-aligned/ink-tinted),
+fetched independently of booking status/claim state so history stays
+visible even after a booking moves past Pending. "Отправить" button
+sits next to the existing "Копировать" button on the LPO block.
+"Добавить ответ отеля вручную" opens a subject+body form for logging a
+hotel's reply.
+
+Approved By: Daler
+
+Status: Implemented, typecheck-clean, new table created. Verified live
+against the real Kandima booking: generated the LPO, sent it (outbound
+row created with status="sent"), manually logged a hotel reply (inbound
+row created with status="replied", AND the earlier outbound row flipped
+from "sent" to "replied" automatically), and confirmed both messages
+render in correct chronological order in the thread.
+
+---
+
 # Decision Template
 
 Decision Number:

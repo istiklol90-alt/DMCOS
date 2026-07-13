@@ -169,3 +169,38 @@ class GuestResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ---------------------------------------------------------------------------
+# Booking Correspondence (Decision 049)
+# ---------------------------------------------------------------------------
+# created_by is never accepted from the client -- resolved from
+# current_user.id in api.py, same reasoning every other identity field in
+# this project follows (a client should never be able to claim an action
+# was taken by someone else).
+
+
+class BookingCorrespondenceSendRequest(BaseModel):
+    subject: Optional[str] = Field(None, max_length=300)
+    body: str = Field(..., min_length=1)
+
+
+class BookingCorrespondenceReplyRequest(BaseModel):
+    subject: Optional[str] = Field(None, max_length=300)
+    body: str = Field(..., min_length=1)
+
+
+class BookingCorrespondenceResponse(BaseModel):
+    id: int
+    booking_id: int
+    direction: str
+    subject: Optional[str] = None
+    body: str
+    status: str
+    sent_at: Optional[datetime] = None
+    received_at: Optional[datetime] = None
+    created_by: Optional[int] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True

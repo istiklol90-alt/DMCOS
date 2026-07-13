@@ -4,7 +4,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from database.db import SessionLocal
-from app.engines.booking.models import Booking, Guest
+from app.engines.booking.models import Booking, Guest, BookingCorrespondence
 
 
 def get_db():
@@ -117,3 +117,35 @@ def update_guest(db: Session, guest: Guest, **fields) -> Guest:
     db.commit()
     db.refresh(guest)
     return guest
+
+
+# ---------------------------------------------------------------------------
+# Booking Correspondence (Decision 049)
+# ---------------------------------------------------------------------------
+
+
+def create_booking_correspondence(db: Session, **fields) -> BookingCorrespondence:
+    """Insert a new correspondence row (must include booking_id, direction, body) and return it with its generated id."""
+    row = BookingCorrespondence(**fields)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_booking_correspondence(db: Session, booking_id: int) -> list[BookingCorrespondence]:
+    """Return every correspondence row for one booking, oldest first -- the thread, in reading order."""
+    return (
+        db.query(BookingCorrespondence)
+        .filter(BookingCorrespondence.booking_id == booking_id)
+        .order_by(BookingCorrespondence.created_at)
+        .all()
+    )
+
+
+def update_booking_correspondence_status(db: Session, row: BookingCorrespondence, status: str) -> BookingCorrespondence:
+    """Change only a correspondence row's status (e.g. the outbound message an inbound reply answers, sent -> replied) without touching any other field."""
+    row.status = status
+    db.commit()
+    db.refresh(row)
+    return row

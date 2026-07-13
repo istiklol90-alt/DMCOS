@@ -18,6 +18,9 @@ from app.engines.booking.schemas import (
     GuestCreate,
     GuestUpdate,
     GuestResponse,
+    BookingCorrespondenceSendRequest,
+    BookingCorrespondenceReplyRequest,
+    BookingCorrespondenceResponse,
 )
 
 router = APIRouter(prefix="/booking-engine", tags=["Booking Engine"])
@@ -233,3 +236,57 @@ def update_guest(
     _require_owner_or_admin(current_user, booking)
     fields = data.model_dump(exclude_unset=True)
     return _run(lambda: service.update_guest(db, guest_id, **fields))
+
+
+# ---------------------------------------------------------------------------
+# Booking Correspondence (Decision 049)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/bookings/{booking_id}/correspondence", response_model=list[BookingCorrespondenceResponse])
+def list_correspondence(
+    booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    return _run(lambda: service.list_correspondence(db, booking_id))
+
+
+@router.post(
+    "/bookings/{booking_id}/correspondence/send",
+    response_model=BookingCorrespondenceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def send_correspondence(
+    booking_id: int,
+    data: BookingCorrespondenceSendRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Records an outbound message (typically the Decision 046 LPO text) --
+    no real email is sent. Deliberately NOT wrapped in
+    _require_owner_or_admin: same reasoning as Decision 045's
+    claim_booking -- this is a manager acting on a booking, not the
+    owning agent editing their own, so that check's semantics don't fit.
+    Known, flagged gap, same precedent as Decision 032/045: any
+    authenticated user can currently call this.
+    """
+    return _run(
+        lambda: service.send_correspondence(db, booking_id, data.subject, data.body, current_user.id)
+    )
+
+
+@router.post(
+    "/bookings/{booking_id}/correspondence/reply",
+    response_model=BookingCorrespondenceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_correspondence_reply(
+    booking_id: int,
+    data: BookingCorrespondenceReplyRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Manually log a hotel's reply -- no real IMAP integration yet (Decision 029 Stage 3+). Same authorization note as send_correspondence above."""
+    return _run(
+        lambda: service.add_correspondence_reply(db, booking_id, data.subject, data.body, current_user.id)
+    )
