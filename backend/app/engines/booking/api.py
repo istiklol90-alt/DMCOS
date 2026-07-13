@@ -271,7 +271,15 @@ def send_correspondence(
     authenticated user can currently call this.
     """
     return _run(
-        lambda: service.send_correspondence(db, booking_id, data.subject, data.body, current_user.id)
+        lambda: service.send_correspondence(
+            db,
+            booking_id,
+            data.subject,
+            data.body,
+            data.recipient_email,
+            data.recipient_email_secondary,
+            current_user.id,
+        )
     )
 
 

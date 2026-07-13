@@ -2580,6 +2580,51 @@ render in correct chronological order in the thread.
 
 ---
 
+# Decision 050
+
+Date: 2026-07-13
+
+Decision: Two refinements to Decision 049's correspondence feature,
+checked against real data before implementing rather than assumed: (1)
+recipient email fields on send, (2) an editable LPO body before
+sending.
+
+Checked directly: Hotel.email already exists on LOCKED Hotel Engine (no
+schema change needed there) -- but every hotel row in the live DB,
+including the real Kandima hotel, has email=NULL. This is a data gap,
+not a schema gap: no plausible-looking email was fabricated to fill it;
+the "To" field simply defaults to empty until a real one is entered via
+Hotel Engine's existing update endpoint. Contract has no contact-email
+field at all, and doesn't need one -- Hotel.email already serves that
+purpose.
+
+Recipient addresses are captured per-send on BookingCorrespondence
+itself (recipient_email, recipient_email_secondary), not as a new
+permanent Hotel/Contract field -- who an outbound message was actually
+addressed to can legitimately differ send to send (a general
+reservations inbox once, a specific manager's personal email another
+time), so this is send-time data, not a hotel attribute. Defaults from
+Hotel.email in the UI when populated, always editable, recorded as
+whatever the manager actually used regardless of the default.
+
+The LPO's body, previously a read-only <pre>, is now an editable
+<textarea> seeded once from buildLpoEmailText's generated text and held
+in its own state -- never silently reverting to the auto-generated
+original if the manager edits it. Both "Копировать" and "Отправить" use
+the current edited text, not the original.
+
+Approved By: Daler
+
+Status: Implemented, typecheck-clean, table migrated (preserving the 5
+real correspondence rows already in the table, including 3 the project
+owner sent live between sessions). Live-verified: confirmed Kandima's
+hotel_id=2 has no stored email (empty "To" by design, not a fabricated
+default), added a second recipient email, edited the LPO body text,
+sent, and confirmed the resulting row captured both recipient emails
+and the edited body text exactly as entered.
+
+---
+
 # Decision Template
 
 Decision Number:

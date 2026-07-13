@@ -183,6 +183,11 @@ class GuestResponse(BaseModel):
 class BookingCorrespondenceSendRequest(BaseModel):
     subject: Optional[str] = Field(None, max_length=300)
     body: str = Field(..., min_length=1)
+    # Decision 050: not required -- this is still record-only (no real
+    # sending happens), so an empty "To" isn't a hard error, matching
+    # Hotel.email currently being unpopulated for every real hotel.
+    recipient_email: Optional[str] = Field(None, max_length=255)
+    recipient_email_secondary: Optional[str] = Field(None, max_length=255)
 
 
 class BookingCorrespondenceReplyRequest(BaseModel):
@@ -199,6 +204,8 @@ class BookingCorrespondenceResponse(BaseModel):
     status: str
     sent_at: Optional[datetime] = None
     received_at: Optional[datetime] = None
+    recipient_email: Optional[str] = None
+    recipient_email_secondary: Optional[str] = None
     created_by: Optional[int] = None
     created_at: datetime
 

@@ -59,6 +59,7 @@ interface Guest {
 interface Hotel {
   id: number;
   hotel_name: string;
+  email?: string | null;
 }
 
 interface RoomType {
@@ -85,6 +86,8 @@ interface BookingCorrespondenceRow {
   status: string;
   sent_at: string | null;
   received_at: string | null;
+  recipient_email: string | null;
+  recipient_email_secondary: string | null;
   created_by: number | null;
   created_at: string;
 }
@@ -902,6 +905,13 @@ function BookingDetail({
   const [lpoCopied, setLpoCopied] = useState(false);
   const [sendSubmitting, setSendSubmitting] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  // Decision 050: hotel's stored email (Hotel.email -- the field already
+  // existed on LOCKED Hotel Engine, just unpopulated for every hotel
+  // today) seeds the "To" field once, but stays independently editable.
+  const [hotelEmail, setHotelEmail] = useState<string | null>(null);
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [recipientEmailSecondary, setRecipientEmailSecondary] = useState("");
+  const [editableLpoBody, setEditableLpoBody] = useState("");
 
   const [correspondence, setCorrespondence] = useState<BookingCorrespondenceRow[] | null>(null);
   const [replyOpen, setReplyOpen] = useState(false);
@@ -1029,6 +1039,20 @@ function BookingDetail({
       .catch(() => setCorrespondence([]));
   }, [booking.id]);
 
+  // Decision 050: the hotel's stored email, to default the "To" field.
+  useEffect(() => {
+    const token = localStorage.getItem("token") || "";
+    fetchJson<Hotel>(`/hotel-engine/hotels/${booking.hotel_id}`, token)
+      .then((hotel) => setHotelEmail(hotel.email ?? null))
+      .catch(() => setHotelEmail(null));
+  }, [booking.hotel_id]);
+
+  // Seed "To" from the hotel's stored email exactly once, when it first
+  // arrives -- never overwrites a value the manager already typed.
+  useEffect(() => {
+    if (hotelEmail && !recipientEmail) setRecipientEmail(hotelEmail);
+  }, [hotelEmail]);
+
   useEffect(() => {
     const token = localStorage.getItem("token") || "";
     if (!mealPlanInfo) {
@@ -1144,7 +1168,14 @@ function BookingDetail({
     specialOfferName,
     managerName
   );
-  const lpoFullText = lpo ? `Subject: ${lpo.subject}\n\n${lpo.body}` : null;
+  // Seed the editable body exactly once, when the auto-generated LPO
+  // first becomes available -- never overwrites text the manager has
+  // already started editing, even if breakdown data re-fetches later.
+  useEffect(() => {
+    if (lpo && !editableLpoBody) setEditableLpoBody(lpo.body);
+  }, [lpo?.body]);
+
+  const lpoFullText = lpo ? `Subject: ${lpo.subject}\n\n${editableLpoBody || lpo.body}` : null;
 
   function handleCopyLpo() {
     if (!lpoFullText) return;
@@ -1163,7 +1194,15 @@ function BookingDetail({
       const created = await fetchJson<BookingCorrespondenceRow>(
         `/booking-engine/bookings/${booking.id}/correspondence/send`,
         token,
-        { method: "POST", body: JSON.stringify({ subject: lpo.subject, body: lpo.body }) }
+        {
+          method: "POST",
+          body: JSON.stringify({
+            subject: lpo.subject,
+            body: editableLpoBody || lpo.body,
+            recipient_email: recipientEmail.trim() || null,
+            recipient_email_secondary: recipientEmailSecondary.trim() || null,
+          }),
+        }
       );
       setCorrespondence((prev) => [...(prev ?? []), created]);
     } catch (err: any) {
@@ -1307,10 +1346,37 @@ function BookingDetail({
                 </button>
               </div>
             </div>
-            {lpoFullText ? (
-              <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-lg bg-white p-3 font-mono text-xs text-ink">
-                {lpoFullText}
-              </pre>
+            {lpo ? (
+              <>
+                <div className="mb-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <input
+                    type="email"
+                    placeholder="Кому (email отеля)"
+                    value={recipientEmail}
+                    onChange={(e) => setRecipientEmail(e.target.value)}
+                    className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                  />
+                  <input
+                    type="email"
+                    placeholder="Второй email (опционально)"
+                    value={recipientEmailSecondary}
+                    onChange={(e) => setRecipientEmailSecondary(e.target.value)}
+                    className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                  />
+                </div>
+                {!hotelEmail && (
+                  <p className="mb-2 text-[11px] text-slate/40">
+                    У отеля не указан email в системе — заполните вручную.
+                  </p>
+                )}
+                <p className="mb-1 text-[11px] font-medium text-slate/50">Тема: {lpo.subject}</p>
+                <textarea
+                  value={editableLpoBody || lpo.body}
+                  onChange={(e) => setEditableLpoBody(e.target.value)}
+                  rows={14}
+                  className="w-full rounded-lg border border-ink/15 bg-white p-3 font-mono text-xs text-ink focus:border-coral focus:outline-none"
+                />
+              </>
             ) : (
               <p className="text-xs text-slate/50">
                 {breakdownLoading ? "Расчёт стоимости..." : "Не удалось сформировать письмо — проверьте расчёт стоимости выше."}
@@ -1364,6 +1430,11 @@ function BookingDetail({
                       </span>
                       <span>{formatDate(timestamp)}</span>
                     </div>
+                    {outbound && (msg.recipient_email || msg.recipient_email_secondary) && (
+                      <p className="text-[11px] text-slate/50">
+                        Кому: {[msg.recipient_email, msg.recipient_email_secondary].filter(Boolean).join(", ")}
+                      </p>
+                    )}
                     {msg.subject && <p className="font-medium text-ink">{msg.subject}</p>}
                     <pre className="mt-1 whitespace-pre-wrap font-sans text-xs text-ink">{msg.body}</pre>
                     <p className="mt-1 text-[11px] text-slate/40">

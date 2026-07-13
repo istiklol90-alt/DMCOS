@@ -166,6 +166,15 @@ class BookingCorrespondence(Base):
     status = Column(String(20), default="draft")
     sent_at = Column(DateTime, nullable=True)
     received_at = Column(DateTime, nullable=True)
+    # Decision 050: captured per-send, not a permanent Hotel/Contract
+    # field -- who a given outbound message was actually addressed to can
+    # legitimately differ send to send (e.g. a general reservations inbox
+    # the first time, a specific manager's personal email later). Defaults
+    # to Hotel.email in the UI when populated (that field already existed
+    # on LOCKED Hotel Engine; no schema change needed there), but stays
+    # editable and is recorded as whatever the manager actually used.
+    recipient_email = Column(String(255), nullable=True)
+    recipient_email_secondary = Column(String(255), nullable=True)
     # Plain Integer, not a ForeignKey -- same cross-boundary-identity
     # pattern as Booking.created_by/claimed_by (validated against
     # models.user.User directly, not wrapped behind an Engine boundary).

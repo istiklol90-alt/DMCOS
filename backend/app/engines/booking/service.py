@@ -563,9 +563,15 @@ def update_guest(db: Session, guest_id: int, **fields) -> Guest:
 
 
 def send_correspondence(
-    db: Session, booking_id: int, subject: Optional[str], body: str, created_by: Optional[int]
+    db: Session,
+    booking_id: int,
+    subject: Optional[str],
+    body: str,
+    recipient_email: Optional[str],
+    recipient_email_secondary: Optional[str],
+    created_by: Optional[int],
 ) -> BookingCorrespondence:
-    """Record an outbound message (typically the Decision 046 LPO text) against a booking's thread. status="sent" -- "awaiting_reply" is a computed UI label (latest row is outbound/sent with no inbound row after it), never written here."""
+    """Record an outbound message (typically the Decision 046 LPO text, possibly edited by the manager before sending) against a booking's thread. status="sent" -- "awaiting_reply" is a computed UI label (latest row is outbound/sent with no inbound row after it), never written here. recipient_email/recipient_email_secondary (Decision 050) are recorded as given -- not required, since this is still record-only, no real send happens."""
     _require_booking(db, booking_id)
     return repository.create_booking_correspondence(
         db,
@@ -575,6 +581,8 @@ def send_correspondence(
         body=body,
         status="sent",
         sent_at=datetime.utcnow(),
+        recipient_email=recipient_email,
+        recipient_email_secondary=recipient_email_secondary,
         created_by=created_by,
     )
 
