@@ -2402,6 +2402,63 @@ fallback to "to follow") against real booking 2 before wiring the UI.
 
 ---
 
+# Decision 047
+
+Date: 2026-07-13
+
+Decision: Added separate flight date/time fields to LOCKED Booking
+Engine, distinct from arrival_date/departure_date (the room's
+check-in/check-out): arrival_flight_date, arrival_flight_time,
+departure_flight_date, departure_flight_time -- all nullable, additive
+columns. Time stored as an "HH:MM" String(5), same convention as
+Hotel.checkin_time/checkout_time, not a SQL Time column. Editable
+through the existing generic BookingUpdate/PUT /bookings/{id} path
+(fields added to both BookingUpdate and BookingResponse) -- no new
+service function or endpoint needed, since these are plain field edits
+with no pricing/inventory impact, same category as the existing flight
+NUMBER fields they sit alongside.
+
+Reason: A room's check-in date and a guest's actual flight arrival date
+can legitimately differ (e.g. a flight landing the morning after
+check-in) -- previously only a flight NUMBER was stored, with no
+date/time at all, so this distinction had no way to be recorded or
+communicated to the hotel.
+
+Frontend: FlightNumbersEdit ("Изменить рейсы") gained date+time inputs
+alongside the existing number inputs, with an explicit on-screen note
+that these can differ from the room dates.
+
+Second, coupled change: restructured the Decision 046 LPO email from
+prose paragraphs into a plain-text Markdown-style table
+(renderTextTable) -- chosen over manually-padded fixed-width columns
+because LPO values vary too much in length (a one-word meal-plan code
+next to a full price-breakdown sentence) for uniform padding to look
+right, and a pipe table stays unambiguous as raw plain text even
+wherever it isn't rendered as an actual table (the LPO is pasted into a
+plain-text email compose box, not an HTML surface, per Decision 046's
+own design). "Room Check-in — Check-out" and "Flight Arrival"/"Flight
+Departure" are always separate, explicitly-labeled rows -- the entire
+point of this decision -- so a hotel reading the table can never
+conflate "when the room is booked" with "when the guest's plane
+actually lands". formatFlightDetail is honest about partial data: a
+flight number on file with no date (the state of every booking created
+before these columns existed) is surfaced as "to follow (flight number
+on file: X)", not silently dropped.
+
+Approved By: Daler
+
+Status: Implemented, typecheck-clean, DB migrated. Live-verified end to
+end against real booking 2: set arrival_flight_date one day after the
+room's arrival_date (2027-03-16 vs. room check-in 2027-03-15,
+08:45, flight AB123) via the same PUT endpoint the edit form uses,
+regenerated the LPO table, and confirmed both dates render as two
+distinct, correctly-labeled rows -- byte-for-byte confirmed via direct
+UTF-8 file read (a Windows console display artifact made the em-dash
+look corrupted when printed to this terminal directly; the underlying
+data was always correct).
+
+---
+
 # Decision Template
 
 Decision Number:

@@ -62,6 +62,10 @@ class BookingUpdate(BaseModel):
     special_requests: Optional[str] = None
     arrival_flight_number: Optional[str] = None
     departure_flight_number: Optional[str] = None
+    arrival_flight_date: Optional[date] = None
+    arrival_flight_time: Optional[str] = Field(None, max_length=5)
+    departure_flight_date: Optional[date] = None
+    departure_flight_time: Optional[str] = Field(None, max_length=5)
     status: Optional[BookingUpdatableStatus] = None
 
 
@@ -100,6 +104,10 @@ class BookingResponse(BaseModel):
     special_requests: Optional[str] = None
     arrival_flight_number: Optional[str] = None
     departure_flight_number: Optional[str] = None
+    arrival_flight_date: Optional[date] = None
+    arrival_flight_time: Optional[str] = None
+    departure_flight_date: Optional[date] = None
+    departure_flight_time: Optional[str] = None
     cancellation_reason: Optional[str] = None
     cancelled_at: Optional[datetime] = None
     cancellation_fee: Optional[float] = None

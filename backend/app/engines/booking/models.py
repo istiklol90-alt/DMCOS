@@ -67,6 +67,16 @@ class Booking(Base):
     special_requests = Column(Text, nullable=True)
     arrival_flight_number = Column(String(50), nullable=True)
     departure_flight_number = Column(String(50), nullable=True)
+    # Decision 047: the guest's REAL flight date/time, deliberately
+    # separate from arrival_date/departure_date (the room's check-in/
+    # check-out) -- these can legitimately differ (e.g. a flight landing
+    # the morning after check-in). arrival_flight_time/departure_flight_time
+    # are "HH:MM" strings, same convention as Hotel.checkin_time/
+    # checkout_time, not a SQL Time column.
+    arrival_flight_date = Column(Date, nullable=True)
+    arrival_flight_time = Column(String(5), nullable=True)
+    departure_flight_date = Column(Date, nullable=True)
+    departure_flight_time = Column(String(5), nullable=True)
     # Cancellation fields — the calculated penalty lives here (snapshot at
     # cancellation time via Contract Engine's get_cancellation_policy); the
     # actual refund transaction is Payment Engine's table, not this one.

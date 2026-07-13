@@ -29,6 +29,10 @@ interface Booking {
   special_requests: string | null;
   arrival_flight_number: string | null;
   departure_flight_number: string | null;
+  arrival_flight_date: string | null;
+  arrival_flight_time: string | null;
+  departure_flight_date: string | null;
+  departure_flight_time: string | null;
   cancellation_reason: string | null;
   cancelled_at: string | null;
   cancellation_fee: number | null;
@@ -226,6 +230,35 @@ interface Promotion {
   promotion_name: string;
 }
 
+// Plain-text Markdown-style table -- chosen over manually-padded fixed-
+// width columns because LPO values vary wildly in length (a one-word
+// meal plan code next to a full price-breakdown sentence); a Markdown
+// pipe table stays unambiguous and self-labeled as raw plain text even
+// where nothing renders it as an actual table, which matters since this
+// is pasted into a plain-text email compose box, not an HTML surface.
+function renderTextTable(rows: [string, string][]): string {
+  const lines = ["| Field | Details |", "|---|---|"];
+  for (const [label, value] of rows) {
+    lines.push(`| ${label} | ${value.replace(/\|/g, "\\|")} |`);
+  }
+  return lines.join("\n");
+}
+
+// Decision 047: the guest's real flight date/time is a genuinely
+// separate fact from the room's check-in/check-out date -- a flight can
+// land the morning after check-in. Never conflates the two, and is
+// honest about partial data: a flight NUMBER on file with no date (the
+// state of every booking created before these fields existed) is still
+// surfaced, not silently dropped, while making clear the date itself
+// isn't confirmed.
+function formatFlightDetail(date: string | null, time: string | null, flightNumber: string | null): string {
+  if (!date) {
+    return flightNumber ? `to follow (flight number on file: ${flightNumber})` : "to follow";
+  }
+  const dateTime = time ? `${formatDate(date)} ${time}` : formatDate(date);
+  return flightNumber ? `${dateTime} (Flight ${flightNumber})` : `${dateTime} (flight number: to follow)`;
+}
+
 // LPO (booking confirmation request) email text -- Decision 046, Level 3
 // per the AI Autonomy Levels framework (autonomous generation/display,
 // no model inference: a straightforward template fill from data already
@@ -272,6 +305,49 @@ function buildLpoEmailText(
   }
   const lpoTotal = roomBreakdown.final_total + mandatoryTaxBreakdown.total;
 
+  const rows: [string, string][] = [
+    ["Room Type", roomTypeName],
+    [
+      "Room Check-in — Check-out",
+      `${formatDate(booking.arrival_date)} — ${formatDate(booking.departure_date)} (${booking.nights} nights)`,
+    ],
+    ["Meal Plan", mealPlanLabel],
+    ["Guest Names", guestNames],
+    ["Occupancy", `${booking.adults} Adults, ${booking.children} Children, ${booking.infants} Infants`],
+  ];
+
+  if (promotionNames.length > 0) {
+    rows.push(["Special Offer Code", promotionNames.join(", ")]);
+  }
+
+  rows.push(["Total Amount", `${formatMoney(lpoTotal, booking.currency)} (includes: ${includesParts.join(" + ")})`]);
+
+  if (booking.transfer_type && transferBreakdown) {
+    rows.push([
+      "Transfer",
+      `${transferBreakdown.transfer_name}, for ${booking.adults} Adults + ${booking.children} Children — ${formatMoney(transferBreakdown.total, booking.currency)}`,
+    ]);
+  }
+
+  // Deliberately separate rows from "Room Check-in — Check-out" above --
+  // the whole point of Decision 047 is that these can legitimately be
+  // different dates, and a hotel reading this must never have to guess
+  // which one it's looking at.
+  rows.push(
+    [
+      "Flight Arrival",
+      formatFlightDetail(booking.arrival_flight_date, booking.arrival_flight_time, booking.arrival_flight_number),
+    ],
+    [
+      "Flight Departure",
+      formatFlightDetail(
+        booking.departure_flight_date,
+        booking.departure_flight_time,
+        booking.departure_flight_number
+      ),
+    ]
+  );
+
   const lines = [
     `Subject: Booking Confirmation Request — ${booking.booking_number} — ${hotelName}`,
     "",
@@ -281,35 +357,13 @@ function buildLpoEmailText(
     "",
     "We would like to ask you to confirm the below reservation as per the following details:",
     "",
-    `Room Type: ${roomTypeName}`,
-    `Check-in — Check-out: ${formatDate(booking.arrival_date)} — ${formatDate(booking.departure_date)} (${booking.nights} nights)`,
-    `Meal Plan: ${mealPlanLabel}`,
-    `Guest Names: ${guestNames}`,
-    `Occupancy: ${booking.adults} Adults, ${booking.children} Children, ${booking.infants} Infants`,
-  ];
-
-  if (promotionNames.length > 0) {
-    lines.push(`Special Offer Code: ${promotionNames.join(", ")}`);
-  }
-
-  lines.push(
-    `Total Amount: ${formatMoney(lpoTotal, booking.currency)} (includes: ${includesParts.join(" + ")})`
-  );
-
-  if (booking.transfer_type && transferBreakdown) {
-    lines.push(
-      `Transfer: ${transferBreakdown.transfer_name}, for ${booking.adults} Adults + ${booking.children} Children — ${formatMoney(transferBreakdown.total, booking.currency)}`
-    );
-  }
-
-  lines.push(
-    `Flight Details: Arrival ${booking.arrival_flight_number || "to follow"}, Departure ${booking.departure_flight_number || "to follow"}`,
+    renderTextTable(rows),
     "",
     "Please confirm this reservation exactly as per the above details.",
     "",
     "Best regards,",
-    managerName || "—"
-  );
+    managerName || "—",
+  ];
 
   return lines.join("\n");
 }
@@ -666,6 +720,10 @@ function FlightNumbersEdit({
   const [editing, setEditing] = useState(false);
   const [arrivalFlight, setArrivalFlight] = useState(booking.arrival_flight_number ?? "");
   const [departureFlight, setDepartureFlight] = useState(booking.departure_flight_number ?? "");
+  const [arrivalFlightDate, setArrivalFlightDate] = useState(booking.arrival_flight_date ?? "");
+  const [arrivalFlightTime, setArrivalFlightTime] = useState(booking.arrival_flight_time ?? "");
+  const [departureFlightDate, setDepartureFlightDate] = useState(booking.departure_flight_date ?? "");
+  const [departureFlightTime, setDepartureFlightTime] = useState(booking.departure_flight_time ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -679,12 +737,16 @@ function FlightNumbersEdit({
         body: JSON.stringify({
           arrival_flight_number: arrivalFlight.trim() || null,
           departure_flight_number: departureFlight.trim() || null,
+          arrival_flight_date: arrivalFlightDate || null,
+          arrival_flight_time: arrivalFlightTime || null,
+          departure_flight_date: departureFlightDate || null,
+          departure_flight_time: departureFlightTime || null,
         }),
       });
       onUpdated(updated);
       setEditing(false);
     } catch (err: any) {
-      setError(err.message || "Не удалось сохранить номера рейсов");
+      setError(err.message || "Не удалось сохранить данные рейсов");
     } finally {
       setSubmitting(false);
     }
@@ -720,6 +782,43 @@ function FlightNumbersEdit({
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
         />
       </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-1.5">
+          <input
+            type="date"
+            title="Дата прилёта (может отличаться от даты заезда)"
+            value={arrivalFlightDate}
+            onChange={(e) => setArrivalFlightDate(e.target.value)}
+            className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+          />
+          <input
+            type="time"
+            title="Время прилёта"
+            value={arrivalFlightTime}
+            onChange={(e) => setArrivalFlightTime(e.target.value)}
+            className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-1.5">
+          <input
+            type="date"
+            title="Дата вылета (может отличаться от даты выезда)"
+            value={departureFlightDate}
+            onChange={(e) => setDepartureFlightDate(e.target.value)}
+            className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+          />
+          <input
+            type="time"
+            title="Время вылета"
+            value={departureFlightTime}
+            onChange={(e) => setDepartureFlightTime(e.target.value)}
+            className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+          />
+        </div>
+      </div>
+      <p className="text-[11px] text-slate/50">
+        Дата/время рейса могут отличаться от дат заезда/выезда (например, поздний прилёт на следующее утро).
+      </p>
       {error && (
         <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{error}</div>
       )}
