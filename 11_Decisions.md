@@ -2459,6 +2459,68 @@ data was always correct).
 
 ---
 
+# Decision 048
+
+Date: 2026-07-13
+
+Decision: Close a real gap the project owner confirmed: a booking priced
+under a Contract Engine SpecialOffer (e.g. KM26_03) had no way to record
+which offer applied, unlike Promotion (already tracked via
+get_room_price's applied_promotions). New Booking.applied_special_offer_id
+(plain Integer, deliberately NOT a SQLAlchemy ForeignKey -- same
+cross-engine decoupling as hotel_id/contract_id/rate_id/room_type_id/
+meal_plan_id, all of which are plain Integers into Contract/Hotel
+Engine's own tables for the identical reason).
+
+Zero new matching logic: get_room_price (LOCKED Contract Engine)
+already computes exactly which SpecialOffer mechanism rows apply, via
+three existing matcher functions
+(_find_active_special_offer_room_discount/_meal_plan_discount/
+_family_rule), each returning a row carrying a real offer_id -- these
+were previously used only to apply the discount and then discarded. Now
+collected into a new response field, applied_special_offer_ids: a LIST
+(mirroring applied_promotions' own list shape), not a single value --
+honestly represents "zero, one, or more offers touched this price"
+rather than guessing when more than one legitimately did.
+create_booking (LOCKED Booking Engine) reads this list and only writes
+Booking.applied_special_offer_id when it contains exactly one id; both
+"no offer applied" and "more than one offer's mechanisms applied" stay
+NULL rather than picking one arbitrarily.
+
+Frontend: BookingDetail resolves applied_special_offer_id to the real
+SpecialOffer.offer_name and combines it with any generic Promotion
+names for the LPO's "Special Offer Code" row -- both sources can appear
+together if a booking legitimately used both mechanisms.
+
+Backfill for booking 2 (the real KM26_03 booking the gap was found
+against): determined with certainty, not guessed -- re-ran the exact
+same three matcher functions against booking 2's real original
+parameters (contract 2, room type 3, check-in 2027-03-15, 2 adults).
+This is safe because the matchers filter by "today" against each
+offer's booking_start/booking_end (a booking-window check, not tied to
+the stay dates), today's date hasn't materially changed since booking 2
+was created earlier this same session, and KM26_03's booking_end
+(2026-07-31) is still open -- confirmed by also re-checking
+final_total still matched booking.total_amount exactly (2936.5),
+proving the re-run used identical state. Result: exactly one offer
+(id=1, "KM26_03") -- backfilled directly.
+
+Approved By: Daler
+
+Status: Implemented, typecheck-clean, DB migrated, backfilled. Verified
+three ways: (1) booking 2's API response now returns
+applied_special_offer_id=1, resolving to offer_name "KM26_03"; (2) a
+brand-new test booking created through the real POST /bookings endpoint
+(not a backfill) automatically got applied_special_offer_id=1 set by
+create_booking itself, proving the mechanism works going forward, not
+just for the one backfilled row -- that test booking was immediately
+cancelled through the real cancel flow (releasing its allotment
+reservation) since it was scaffolding, not real data; (3) regenerated
+booking 2's LPO table and confirmed the row reads exactly
+"| Special Offer Code | KM26_03 |".
+
+---
+
 # Decision Template
 
 Decision Number:

@@ -14,6 +14,7 @@ interface Booking {
   contract_id: number;
   room_type_id: number;
   meal_plan_id: number;
+  applied_special_offer_id: number | null;
   arrival_date: string;
   departure_date: string;
   nights: number;
@@ -230,6 +231,11 @@ interface Promotion {
   promotion_name: string;
 }
 
+interface SpecialOffer {
+  id: number;
+  offer_name: string;
+}
+
 // Plain-text Markdown-style table -- chosen over manually-padded fixed-
 // width columns because LPO values vary wildly in length (a one-word
 // meal plan code next to a full price-breakdown sentence); a Markdown
@@ -266,12 +272,13 @@ function formatFlightDetail(date: string | null, time: string | null, flightNumb
 // re-derived). Every number here is read from roomBreakdown/
 // transferBreakdown/mandatoryTaxBreakdown -- the SAME objects the
 // on-screen cost breakdown already renders -- so this can never drift
-// from what the manager sees on screen. promotionNames only covers
-// generic Promotion-driven discounts (via get_room_price's
-// applied_promotions ids); SpecialOffer-driven discounts (e.g. a real
-// KM26_03-style offer) are NOT attributable per-booking -- get_room_price
-// never returns which SpecialOffer applied, so that case is silently
-// omitted rather than guessed at.
+// from what the manager sees on screen. Special Offer Code combines two
+// distinct, honestly-separate sources (Decision 048): promotionNames
+// (generic Promotion ids from get_room_price's applied_promotions) and
+// specialOfferName (booking.applied_special_offer_id, set at
+// create_booking time from get_room_price's applied_special_offer_ids --
+// only when exactly one offer applied, never guessed when zero or
+// multiple did).
 function buildLpoEmailText(
   booking: Booking,
   hotelName: string,
@@ -282,6 +289,7 @@ function buildLpoEmailText(
   transferBreakdown: TransferPriceBreakdown | null,
   mandatoryTaxBreakdown: MandatoryTaxBreakdown | null,
   promotionNames: string[],
+  specialOfferName: string | null,
   managerName: string
 ): string | null {
   // Never generate from partial/unconfirmed numbers -- if the same
@@ -316,8 +324,9 @@ function buildLpoEmailText(
     ["Occupancy", `${booking.adults} Adults, ${booking.children} Children, ${booking.infants} Infants`],
   ];
 
-  if (promotionNames.length > 0) {
-    rows.push(["Special Offer Code", promotionNames.join(", ")]);
+  const offerLabels = [...promotionNames, ...(specialOfferName ? [specialOfferName] : [])];
+  if (offerLabels.length > 0) {
+    rows.push(["Special Offer Code", offerLabels.join(", ")]);
   }
 
   rows.push(["Total Amount", `${formatMoney(lpoTotal, booking.currency)} (includes: ${includesParts.join(" + ")})`]);
@@ -876,6 +885,7 @@ function BookingDetail({
   const [breakdownError, setBreakdownError] = useState<string | null>(null);
   const [breakdownLoading, setBreakdownLoading] = useState(true);
   const [promotionNames, setPromotionNames] = useState<string[]>([]);
+  const [specialOfferName, setSpecialOfferName] = useState<string | null>(null);
   const [lpoCopied, setLpoCopied] = useState(false);
 
   const [changeDatesOpen, setChangeDatesOpen] = useState(false);
@@ -1052,8 +1062,7 @@ function BookingDetail({
   // Resolve generic Promotion ids (get_room_price's applied_promotions)
   // to real names for the LPO's optional "Special Offer Code" line --
   // only fires when at least one actually applied to this booking's
-  // price. SpecialOffer (KM26_03-style) usage has no id trail to resolve
-  // at all -- see buildLpoEmailText's docstring.
+  // price.
   useEffect(() => {
     if (!roomBreakdown || roomBreakdown.applied_promotions.length === 0) {
       setPromotionNames([]);
@@ -1066,6 +1075,21 @@ function BookingDetail({
       )
     ).then((results) => setPromotionNames(results.filter((p): p is Promotion => p !== null).map((p) => p.promotion_name)));
   }, [roomBreakdown]);
+
+  // Resolve booking.applied_special_offer_id (Decision 048, set by
+  // create_booking from get_room_price's applied_special_offer_ids) to
+  // the real SpecialOffer.offer_name -- e.g. "KM26_03" -- for the same
+  // "Special Offer Code" line, alongside any generic Promotion names.
+  useEffect(() => {
+    if (booking.applied_special_offer_id === null) {
+      setSpecialOfferName(null);
+      return;
+    }
+    const token = localStorage.getItem("token") || "";
+    fetchJson<SpecialOffer>(`/contract-engine/special-offers/${booking.applied_special_offer_id}`, token)
+      .then((offer) => setSpecialOfferName(offer.offer_name))
+      .catch(() => setSpecialOfferName(null));
+  }, [booking.applied_special_offer_id]);
 
   const managerName = (() => {
     try {
@@ -1085,6 +1109,7 @@ function BookingDetail({
     transferBreakdown,
     mandatoryTaxBreakdown,
     promotionNames,
+    specialOfferName,
     managerName
   );
 

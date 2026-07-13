@@ -1662,12 +1662,23 @@ def get_room_price(
     # discount percentage. Only relevant when a meal_plan_supplement was
     # actually used (direct-rate meal plans like BB have nothing to
     # discount here).
+    meal_discount = None
     if needs_meal_plan_supplement:
         meal_discount = _find_active_special_offer_meal_plan_discount(
             db, contract_id, target_meal_plan_id, check_in
         )
         if meal_discount is not None:
             meal_plan_supplement_total *= 1 - (meal_discount.discount_percent / 100)
+
+    # Decision 048: which SpecialOffer(s) actually touched this price --
+    # reuses the offer_id already sitting on whichever mechanism rows
+    # matched above, never re-derived. A set, not a single value: in
+    # properly-modeled data every mechanism belongs to the same bundled
+    # offer, but nothing enforces that, so this stays honest about the
+    # rare case where two different offers' mechanisms both applied.
+    applied_special_offer_ids = sorted(
+        {row.offer_id for row in (room_discount, meal_discount, family_rule) if row is not None}
+    )
 
     supplements_total = age_category_total + meal_plan_supplement_total + extra_person_total
     price_before_promotions = base_total + supplements_total
@@ -1699,5 +1710,6 @@ def get_room_price(
         "supplements_total": supplements_total,
         "price_before_promotions": price_before_promotions,
         "applied_promotions": [p.id for p in eligible_promotions],
+        "applied_special_offer_ids": applied_special_offer_ids,
         "final_total": final_total,
     }

@@ -219,6 +219,12 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
         db, contract.id, nights, data.adults, data.children
     )["total"]
 
+    # Decision 048: reuses get_room_price's own applied_special_offer_ids
+    # (never re-derived) -- only recorded when exactly one offer applied;
+    # zero or multiple both stay NULL rather than guessing.
+    special_offer_ids = price.get("applied_special_offer_ids", [])
+    applied_special_offer_id = special_offer_ids[0] if len(special_offer_ids) == 1 else None
+
     contract_service.reserve_allotment(
         db, contract.id, data.room_type_id, data.arrival_date, data.departure_date
     )
@@ -242,6 +248,7 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
             room_type_id=data.room_type_id,
             meal_plan_id=price["meal_plan_id"],
             market_id=data.market_id,
+            applied_special_offer_id=applied_special_offer_id,
             arrival_date=data.arrival_date,
             departure_date=data.departure_date,
             nights=nights,

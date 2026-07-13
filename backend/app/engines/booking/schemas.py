@@ -89,6 +89,7 @@ class BookingResponse(BaseModel):
     room_type_id: int
     meal_plan_id: int
     market_id: Optional[int] = None
+    applied_special_offer_id: Optional[int] = None
     arrival_date: date
     departure_date: date
     nights: int

@@ -36,6 +36,15 @@ class Booking(Base):
     room_type_id = Column(Integer, nullable=False)
     meal_plan_id = Column(Integer, nullable=False)
     market_id = Column(Integer, nullable=True)
+    # Decision 048: which Contract Engine SpecialOffer (if any) was active
+    # when this booking was priced -- plain Integer, not a ForeignKey, same
+    # cross-engine decoupling as hotel_id/contract_id/rate_id/room_type_id/
+    # meal_plan_id above (SpecialOffer lives in Contract Engine's own
+    # tables). Set by create_booking from get_room_price's
+    # applied_special_offer_ids ONLY when exactly one id was returned --
+    # left NULL both when no offer applied and when the price genuinely
+    # involved more than one offer's mechanisms (ambiguous, never guessed).
+    applied_special_offer_id = Column(Integer, nullable=True)
     arrival_date = Column(Date, nullable=False)
     departure_date = Column(Date, nullable=False)
     nights = Column(Integer, nullable=False)
