@@ -32,7 +32,7 @@ The numbered root-level docs are the project's spec and are treated as the sourc
 
 Backend (FastAPI, from `backend/`, using the committed `.venv`):
 ```
-./.venv/Scripts/python.exe -m uvicorn main:app --reload --port 8001   # dev server on :8001 (see Decision 014 — port 8000 has an unkillable phantom listener)
+./.venv/Scripts/python.exe -m uvicorn main:app --reload --port 8001   # dev server on :8001 (Decision 014 — port 8000 has an unkillable phantom listener). NOTE: on Windows, `taskkill /PID <n> /F` alone does NOT kill uvicorn --reload's orphaned multiprocessing worker child — it survives holding the socket, looking exactly like an unkillable phantom. Find it via `Get-CimInstance Win32_Process | Where-Object {$_.CommandLine -match "multiprocessing"}` (its ParentProcessId is the reloader PID you tried to kill) and kill that child PID too, or use `taskkill /PID <n> /F /T` up front (Decision 042).
 ./.venv/Scripts/python.exe -m database.init_db            # create tables from models (also backend/init_db.py, duplicate); must be run as a module — `python database/init_db.py` fails with ModuleNotFoundError since backend/ never lands on sys.path that way
 ./.venv/Scripts/python.exe create_admin.py                 # create admin@dmcos.com / Admin@2026
 ./.venv/Scripts/python.exe check_db.py                     # inspect dmc.db tables/columns via sqlite3
@@ -93,7 +93,7 @@ No test suite exists in either backend or frontend.
 ## Frontend architecture
 
 - Entry (`main.tsx`) mounts `router.tsx` (`react-router-dom`), which routes `/`, `/register`, `/login`, `/dashboard`, `/admin-panel`, `/agent-dashboard` to page components — but `App.tsx` (rendered at `/`) *also* implements its own internal page switcher via `useState<Page>` and renders `Home`/`Register`/`Login`/`AdminPanel`/`AgentDashboard_v2`/`ManagerDashboard` conditionally instead of delegating to the router's child routes. In practice nearly all in-app navigation happens through `App.tsx`'s local state (and `localStorage.getItem("role")` on mount), not through the router paths — the router-defined child routes are largely dead paths. Be aware of this split when adding a new page/screen: decide which mechanism it should join rather than assuming the router config is authoritative. See "Known issues" below for the concrete failure modes this causes.
-- `config.ts` hardcodes `API_URL = "http://127.0.0.1:8001"` (see Decision 014 — port 8000 is avoided due to an unkillable phantom listener).
+- `config.ts` hardcodes `API_URL = "http://127.0.0.1:8001"` (Decision 014 — port 8000 is avoided due to an unkillable phantom listener; see Decision 042 for a Windows `taskkill`/orphaned-reload-worker gotcha that can make 8001 look phantom-blocked too when it isn't).
 - `pages/` — one component per screen (Home, Register/AgentRegistration, Login, ChangePassword, Dashboard, AdminPanel, AgentDashboard, AgentDashboard_v2, ManagerDashboard, CounteragentDashboard). `AgentDashboard.tsx` (v1) is no longer rendered anywhere — `App.tsx` renders `AgentDashboard_v2.tsx` for the agent role instead — but v1 hasn't been deleted.
 - `components/` grouped by feature area (`dashboard/`, `counteragents/`, `layout/`, `ui/`).
 - Role handling is string-based and inconsistently cased across the stack (backend stores/returns roles like `"Admin"`/`"agent"`; frontend checks both `"Admin"`/`"admin"` etc.) — check exact casing when touching role logic instead of assuming one convention.

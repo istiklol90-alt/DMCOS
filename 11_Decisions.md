@@ -2073,6 +2073,149 @@ appropriate to LOCK.
 
 ---
 
+# Decision 042
+
+Date: 2026-07-12
+
+Decision: Implemented Decision 035's workflow step 10-11 -- AI Core
+Engine's first real write into another Engine's data. New module
+backend/app/engines/ai_core/contract_writer.py holds
+write_approved_fields_to_contract_engine(db, job), called from
+service.approve_job after the HumanGateDecision("approved") row is
+recorded but before the job's status is set. It reads a job's approved
+ExtractedField rows, maps hotel_name/country/city to Hotel Engine's
+real HotelCreate schema, and calls Hotel Engine's own service.create_hotel
+unchanged -- no validation or business logic duplicated inside AI Core
+Engine. If job.hotel_id was already set (an existing hotel picked at
+upload time), no new Hotel is created; the existing id is reused as-is.
+
+Scope deliberately stays at "one Hotel row," not a full Contract with
+seasons/rates -- MockClaudeProvider still only produces 3 entity types.
+job.contract_id stays NULL; only job.hotel_id gets set. If
+write_approved_fields_to_contract_engine raises ValueError (required
+fields missing), service.approve_job routes the job to mark_failed
+instead of "approved" -- verified live: approving a job with only
+hotel_name (no country/city) correctly ends in status "failed" with zero
+Hotel rows created, while the HumanGateDecision("approved") audit row
+still persists, matching the "the human's approval happened regardless
+of system outcome" framing. A single create_hotel call is one INSERT, so
+this is naturally atomic today; a future version writing a full
+multi-entity Contract will need Decision 012's compensating-action
+discipline -- not needed yet for one row.
+
+MockClaudeProvider's canned-response table expanded from just
+"hotel_name" to also return "country" -> "Maldives" and "city" ->
+"Dhaalu Atoll" (real Kandima facts, not invented placeholders) so the
+success path is actually reachable through the Mock provider, not just
+provable on the failure path. run_extraction's hardcoded entity_types
+list grew from ["hotel_name"] to ["hotel_name", "country", "city"] to
+match. ContractsAI.tsx's ENTITY_TYPE_LABELS gained "country" -> "Страна"
+and "city" -> "Город".
+
+Reason: Direct user request, scoped deliberately to what MockClaudeProvider
+can actually produce today rather than attempting a full contract write
+the current pipeline has no data for.
+
+Verified live end-to-end: created a fresh job, ran it through
+run-extraction (now returning all 3 fields) -> submit-for-review ->
+approve. Confirmed via Hotel Engine's own /hotel-engine/hotels/{id}
+endpoint that a real Hotel row was created (hotel_name="Kandima
+Maldives", country="Maldives", city="Dhaalu Atoll", status="Draft" --
+create_hotel's own default, never settable by the caller), and that
+job.hotel_id was set to that hotel's real id while job.contract_id
+stayed null. Confirmed the new hotel appears in
+GET /hotel-engine/hotels (the same unfiltered endpoint HotelSearch.tsx
+calls -- neither Hotel Engine's list_hotels nor HotelSearch.tsx filter
+by status, so Draft-status AI-created hotels are searchable immediately,
+just with no room types/prices yet since none were extracted) and that
+its /room-types endpoint returns a clean empty list rather than an
+error, which HotelSearch.tsx's existing "no active contract" fallback
+already handles gracefully.
+
+Also verified the failure path against 3 pre-existing under_review jobs
+that only had hotel_name extracted (from before this session's mock
+expansion) -- approving one correctly produced status "failed" with no
+Hotel row created and no change to the hotel count.
+
+Unrelated infrastructure finding surfaced during verification, corrected
+within this same session: port 8001 initially appeared to have
+independently developed Decision 014's exact "orphaned/phantom socket,
+unkillable via taskkill/Get-Process" symptom -- a literal socket bind
+failed with WinError 10048 despite no process visibly owning the port.
+Frontend/CLAUDE.md were briefly (and, it turned out, incorrectly) moved
+to port 8002 to work around this. Root-caused before finalizing: on
+Windows, `taskkill /PID <n> /F` (no `/T`) only kills the named process,
+not its children -- and uvicorn --reload spawns its actual worker via
+Python's `multiprocessing` (`spawn_main`), a separate child process
+whose ParentProcessId is the reloader PID. Killing only the reloader
+leaves this child alive, still bound to the listening socket, invisible
+under the PID anyone would think to kill -- looking exactly like an
+unkillable phantom. Confirmed via `Get-CimInstance Win32_Process |
+Where-Object {$_.CommandLine -match "multiprocessing"}`: ports 8000,
+8001, and briefly 8002 each had exactly one such orphaned child (from
+this session's own earlier taskkills, including the original Decision
+014 incident's PID). Killing all three orphaned children freed all
+three ports immediately -- no phantom, no reboot needed. Reverted
+frontend/src/config.ts and CLAUDE.md back to port 8001, matching
+Decision 014's existing standard; CLAUDE.md's Commands section now
+documents the correct kill procedure (`Get-CimInstance` to find the
+orphaned multiprocessing child, or `taskkill /PID <n> /F /T` up front)
+so this doesn't get misdiagnosed as a phantom again.
+
+Approved By: Daler
+
+Status: Implemented. contract_writer.py, service.py's approve_job,
+providers.py's MockClaudeProvider, and ContractsAI.tsx's
+ENTITY_TYPE_LABELS all updated. Live-verified both the success path
+(real Hotel row created, hotel_id set, searchable) and the failure path
+(job correctly marked "failed", zero partial writes). CLAUDE.md's
+Booking Engine/AI Core section should be updated to reflect this new
+capability in a follow-up pass.
+
+---
+
+# Decision 043
+
+Date: 2026-07-13
+
+Decision: Scoped AI Core Engine's full-contract extraction (the
+expansion beyond the single-Hotel write-through of Decision 042) to
+Phase 1 = the "standard" contract structure only: room_type (with
+occupancy options), season, age_category, meal_plan, transfer_option,
+rate, rate_supplement (covering extra_person/age_category_price/
+meal_plan_supplement), plus contract-level mandatory_tax_*. Explicitly
+deferred to a future Phase 2, not built now: Promotion, SpecialOffer
+(and its 4 sub-mechanism tables: room discounts, meal-plan discounts,
+family rules, transfer discounts), BlackoutDate, CancellationPolicy.
+
+Reason: Not because these are unimportant -- Contract Engine's own
+SpecialOffer design (Decision 026, the real KM26_03 offer) needed 4
+independent mechanism tables to represent one real promotional package,
+each with its own eligibility rules (min_adults, min_nights,
+combinability, stacking groups). Extracting that reliably from
+unstructured contract text is a materially different, harder problem
+than extracting a rate grid, and deserves its own dedicated design pass
+-- prompt schema, ref-resolution strategy, and human-review UI --
+rather than being bolted onto Phase 1's entity taxonomy under time
+pressure. Matches Decision 036's "build only once a proven need exists"
+discipline: Phase 1's 8-entity taxonomy already fully exercises the
+ref-resolution/write-through mechanism end-to-end; adding 4 more
+complex, interdependent entity types now would validate the same
+mechanism twice while multiplying design risk.
+
+Consequence: A contract with promotions/special offers/blackout
+dates/cancellation policies will have those clauses silently
+un-extracted in Phase 1 -- the human reviewer sees and approves only
+the standard-structure fields Phase 1 asks for. This is consistent with
+the existing "only extract entity types explicitly requested" prompt
+instruction, not a new gap it introduces.
+
+Approved By: Daler
+
+Status: Scope decision, no code change.
+
+---
+
 # Decision Template
 
 Decision Number:
