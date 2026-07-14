@@ -3671,6 +3671,146 @@ both.
 
 ---
 
+# Decision 061
+
+Date: 2026-07-14
+
+Decision: The SpecialOffer extraction module (AI Core Engine Phase 2,
+explicitly deferred by Decision 043) must be designed and built as a
+continuously-evolving system, not a one-time build -- Decision 036's
+"AI Core Evolution Rule" applied iteratively as real-world offers
+reveal new patterns over time, not only at initial build.
+
+Reason: With only 2 real hotels contracted so far (Kandima's KM26_03,
+Siyam World's SWJ26), and those two alone already needing genuinely
+different fields on the same mechanisms this session (Decision 056's
+`combinable_with_promotions`, Decision 059's `applies_to_children`,
+Decision 057's contract-scoped vs. offer-scoped family rule) -- the
+current 5-table SpecialOffer shape (SpecialOffer + room discount, meal
+plan discount, family rule, transfer discount) is demonstrably not a
+closed, final taxonomy. Future hotels will introduce offer structures
+none of these 5 tables can express yet (e.g. a quantity-based "book 3
+rooms, 4th free" mechanic has no analog in any of them today). Building
+speculative extra flexibility into the schema now, before a single real
+offer has proven the need, would repeat exactly what Decision 036
+already warned against for AI Core's advanced components -- so this
+rule extends that same discipline to the extraction schema/prompt
+itself, on an ongoing basis, not just at TASK-002's initial design.
+
+Concrete workflow this establishes: when the extraction model encounters
+an offer-shaped clause it cannot confidently map to one of the current
+mechanism shapes, it must flag this clearly as a **first-class,
+expected outcome** -- never guess a best-fit mechanism, never silently
+drop the clause. The manager handles that specific clause manually for
+now (same Level 2 Human Gate every other low-confidence field already
+goes through). An accumulation of these flagged, unmapped clauses over
+time becomes the evidence base for a future, deliberate schema
+extension -- a new sub-mechanism table, a new field on an existing one,
+or (rarely) a genuinely new top-level entity -- decided only once a
+real pattern has actually recurred, never speculatively in advance.
+
+Design consequence: the extraction prompt/schema must be built for
+low-friction extensibility from the start -- new mechanism types
+addable as new entity_type values without restructuring any existing
+ones (the same flat entity_type + JSON-text field_data shape Phase 1
+already established, no schema change needed to add a 6th mechanism
+type later), and a dedicated "I don't recognize this clause" entity
+type must exist as designed-for functionality, not an implicit edge
+case that falls out of missing prompt coverage.
+
+Approved By: Daler
+
+Status: Logged as a binding development rule specifically for
+SpecialOffer/Phase 2 extraction, alongside Decision 036's original AI
+Core Evolution Rule (which this directly extends) and the one-Engine-
+at-a-time rule governing the whole project.
+
+Implemented and verified in the same session, after the design proposal
+below was confirmed:
+
+`ai/prompts.py`: added 6 new entity type shape blocks (special_offer,
+special_offer_room_discount, special_offer_meal_plan_discount,
+special_offer_family_rule, special_offer_transfer_discount,
+unmapped_offer_clause) to CONTRACT_EXTRACTION_SYSTEM_PROMPT, following
+the exact ref/*_ref cross-referencing convention Phase 1 already
+established -- zero restructuring of the existing 8 entity types.
+unmapped_offer_clause's instructions explicitly require confidence < 70
+and all three low-confidence explanation fields, always, by design.
+
+`service.py`: new PHASE_2_ENTITY_TYPES constant (the 6 types above),
+requested alongside PHASE_1_ENTITY_TYPES in run_extraction -- Phase 2 is
+now live, not just designed.
+
+`contract_writer.py`: 5 new writer functions
+(_write_special_offers/_write_special_offer_room_discounts/
+_write_special_offer_meal_plan_discounts/_write_special_offer_family_rules/
+_write_special_offer_transfer_discounts), wired into
+write_approved_fields_to_contract_engine's dependency chain after
+rate_supplement. room_type_ref/meal_plan_ref resolved via the existing
+_resolve_ref(..., required=False) with zero new resolver logic --
+confirming the "extensible without restructuring" design goal held up
+in practice, not just in theory. unmapped_offer_clause has no writer
+function at all, by design -- confirmed in the verification below that
+this produces exactly zero real Contract Engine rows, not a silent
+partial write.
+
+`providers.py`'s MockClaudeProvider: extended with real, already-
+verified SWJ26 numbers (2 of its real 4 offers -- Value Season's 30%
+room discount across 3 real travel windows, Seaplane Transfer's real
+100%/50% tiers with applies_to_children=False) as template data on this
+mock's own synthetic Kandima-themed contract, plus one deliberately-
+fabricated unmapped_offer_clause (a "book 3 villas, 4th free"
+quantity-based clause, honestly flagged in-code as the one entry in the
+whole table that isn't sourced from a real contract) specifically to
+prove the low-confidence flagging mechanism fires end-to-end, not just
+the happy path. special_offer_meal_plan_discount and
+special_offer_family_rule deliberately absent from this scenario --
+SWJ26 genuinely doesn't use either mechanism, so nothing was fabricated
+to complete the set artificially.
+
+Verified end-to-end against the real, live dmc.db (not a test DB), same
+methodology as Decisions 041/042: created a job, ran the full mock
+pipeline (uploaded -> processing -> extracted -> under_review ->
+approved), confirmed all 8 Phase 2 ExtractedField rows persisted
+correctly (2 special_offer, 3 special_offer_room_discount, 2
+special_offer_transfer_discount, 1 unmapped_offer_clause with
+confidence=35 and all three low-confidence fields populated), and
+confirmed approve_job's real Contract Engine write-through produced
+exactly 2 real SpecialOffer rows with the exact expected
+combinable_with_other_offers=True/combinable_with_promotions=False
+values, 3 real SpecialOfferRoomDiscount rows with room_type_id=None
+(flat, all room types) and discount_percent=30.0, and 2 real
+SpecialOfferTransferDiscount rows with the exact {7: 100.0, 4: 50.0}
+tier structure and applies_to_children=False. Directly confirmed
+special_offer_meal_plan_discount and special_offer_family_rule produced
+zero rows (nothing extracted this run, nothing fabricated), and --
+critically -- confirmed exactly 2 SpecialOffer rows exist total, not 3:
+the unmapped_offer_clause was correctly never written anywhere in
+Contract Engine, proving the "flag, don't guess, don't write" behavior
+holds under a real write-through, not just in the prompt's own
+instructions. All job/field/audit/hotel/contract test rows deleted
+afterward (throwaway verification data, not real business data, same
+precedent as every prior AI Core Engine verification run). Regression-
+checked Kandima's real KM26_03 pricing afterward (base_total=251.5,
+unchanged) and confirmed via the live Contracts endpoint that only the
+2 real contracts (Kandima, Siyam World) remain -- Contract Engine's own
+code was never touched by this decision, only AI Core Engine's.
+
+Two unrelated documentation gaps surfaced while grounding this decision
+in the real current state, flagged here rather than silently fixed
+mid-task (out of scope for this decision, noted for a future pass):
+(1) commit `5e7a1e6` ("Close pre-paid-API gap: real PDF text
+extraction, not a filename," introducing `pdf_extraction.py` and
+`ContractIngestionJob.document_text`) was never logged as its own
+numbered Decision entry, despite being a real, shipped capability
+change. (2) `CLAUDE.md` has zero mentions of AI Core Engine anywhere,
+despite roughly 20 decisions' worth of real, working code already
+built (models, repository, service, schemas, api, providers,
+contract_writer, pdf_extraction) -- the backend architecture section
+is missing an entire Engine's documentation.
+
+---
+
 # Decision Template
 
 Decision Number:

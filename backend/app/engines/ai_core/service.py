@@ -142,6 +142,23 @@ PHASE_1_ENTITY_TYPES = [
     "rate_supplement",
 ]
 
+# Decision 061's Phase 2 taxonomy: SpecialOffer and its 4 sub-mechanism
+# entity types, plus unmapped_offer_clause -- the first-class "I don't
+# recognize this clause" signal Decision 061 requires. Still explicitly
+# excludes Promotion/BlackoutDate/CancellationPolicy/ContractFamilyRule
+# (Decision 057's contract-scoped sibling to special_offer_family_rule)
+# -- those remain a future pass, not silently folded in here.
+# unmapped_offer_clause is deliberately never written by contract_writer
+# -- it exists purely to surface at the Human Gate for manual handling.
+PHASE_2_ENTITY_TYPES = [
+    "special_offer",
+    "special_offer_room_discount",
+    "special_offer_meal_plan_discount",
+    "special_offer_family_rule",
+    "special_offer_transfer_discount",
+    "unmapped_offer_clause",
+]
+
 
 def run_extraction(db: Session, job_id: int) -> ContractIngestionJob:
     """
@@ -152,13 +169,16 @@ def run_extraction(db: Session, job_id: int) -> ContractIngestionJob:
     get_provider), persists one ExtractedField row per result via
     record_extracted_field, then transitions processing -> extracted.
 
-    entity_types is PHASE_1_ENTITY_TYPES (Decision 043) -- every entity
-    type contract_writer.write_approved_fields_to_contract_engine knows
-    how to write. MockClaudeProvider currently returns results for all of
-    them (a full Kandima-derived test contract); a real provider given
-    real contract text would extract whatever subset it actually finds --
-    see record_extracted_field/contract_writer for how a partial subset
-    (e.g. no rates yet) is handled gracefully rather than requiring all 8.
+    entity_types is PHASE_1_ENTITY_TYPES + PHASE_2_ENTITY_TYPES (Decisions
+    043/061) -- every entity type contract_writer.py knows how to write,
+    plus unmapped_offer_clause (which it deliberately never writes -- see
+    that constant's comment). MockClaudeProvider currently returns
+    results for all of Phase 1 plus a realistic Phase 2 subset (real
+    SWJ26 numbers); a real provider given real contract text would
+    extract whatever subset it actually finds -- see
+    record_extracted_field/contract_writer for how a partial subset
+    (e.g. no rates yet) is handled gracefully rather than requiring all
+    of them.
 
     document_text is job.document_text -- the PDF's real extracted text
     (pdf_extraction.extract_text_from_pdf, populated at upload time by
@@ -182,7 +202,7 @@ def run_extraction(db: Session, job_id: int) -> ContractIngestionJob:
     provider_instance = providers.get_provider(active.provider_name)
     results = provider_instance.extract_contract_data(
         document_text=job.document_text or "",
-        entity_types=PHASE_1_ENTITY_TYPES,
+        entity_types=PHASE_1_ENTITY_TYPES + PHASE_2_ENTITY_TYPES,
     )
     for r in results:
         record_extracted_field(

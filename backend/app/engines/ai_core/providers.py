@@ -119,6 +119,13 @@ class MockClaudeProvider:
     MealCode Literal was locked down); this mock uses "HB", a currently
     schema-valid code, so contract_writer's real create_contract_meal_plan
     call doesn't fail Pydantic validation.
+
+    Decision 061 (Phase 2) extended this with real, already-verified
+    SWJ26 numbers (Siyam World Maldives, real contract_id=8) for the
+    special_offer_* entity types, plus one deliberately-fabricated
+    unmapped_offer_clause -- see that entry's own comment for why it's
+    the one entry in this whole table that isn't sourced from a real
+    contract.
     """
 
     _CANNED_RESPONSES: dict[str, list[ExtractionFieldResult]] = {
@@ -446,6 +453,158 @@ class MockClaudeProvider:
                     }
                 ),
                 confidence_score=90,
+            ),
+        ],
+        # Decision 061 (Phase 2): real, already-verified SWJ26 numbers
+        # (Siyam World Maldives, the real contract_id=8) reused as
+        # template data for THIS mock's own synthetic Kandima-themed
+        # contract above -- not literally re-attached to the real Siyam
+        # World hotel. Two of SWJ26's real 4 offers are exercised here
+        # (Value Season's 30% room discount, Seaplane Transfer's
+        # 100%/50% tiers); the other two (Peak Summer, Winter/Spring) are
+        # deliberately omitted for brevity, not because anything about
+        # them is unsupported. special_offer_meal_plan_discount and
+        # special_offer_family_rule are deliberately absent from this
+        # scenario -- SWJ26 genuinely doesn't use either mechanism (its
+        # family-rule equivalent is Decision 057's contract-scoped
+        # ContractFamilyRule, out of Phase 2's scope), so nothing here
+        # fabricates numbers for them. transfer_type is "domestic_comfort"
+        # (matching this mock's own transfer_option above), not SWJ26's
+        # real "seaplane" -- Siyam World's real transfer type was never
+        # defined on this synthetic contract, so using it here would
+        # create a dangling reference; only the discount_percent/
+        # min_nights/applies_to_children VALUES are SWJ26's real ones.
+        "special_offer": [
+            ExtractionFieldResult(
+                entity_type="special_offer",
+                field_data=json.dumps(
+                    {
+                        "ref": "value_season",
+                        "offer_name": "SWJ26 - Value Season",
+                        "booking_start": "2026-06-16",
+                        "booking_end": "2026-08-15",
+                        "combinable_with_other_offers": True,
+                        "combinable_with_promotions": False,
+                    }
+                ),
+                confidence_score=88,
+            ),
+            ExtractionFieldResult(
+                entity_type="special_offer",
+                field_data=json.dumps(
+                    {
+                        "ref": "seaplane_transfer",
+                        "offer_name": "SWJ26 - Seaplane Transfer",
+                        "booking_start": "2026-06-16",
+                        "booking_end": "2026-08-15",
+                        "combinable_with_other_offers": True,
+                        "combinable_with_promotions": False,
+                    }
+                ),
+                confidence_score=85,
+            ),
+        ],
+        "special_offer_room_discount": [
+            ExtractionFieldResult(
+                entity_type="special_offer_room_discount",
+                field_data=json.dumps(
+                    {
+                        "offer_ref": "value_season",
+                        "room_type_ref": None,
+                        "start_date": "2026-06-16",
+                        "end_date": "2026-06-30",
+                        "discount_percent": 30.0,
+                        "applies_to_extra_person": False,
+                        "priority": 0,
+                    }
+                ),
+                confidence_score=91,
+            ),
+            ExtractionFieldResult(
+                entity_type="special_offer_room_discount",
+                field_data=json.dumps(
+                    {
+                        "offer_ref": "value_season",
+                        "room_type_ref": None,
+                        "start_date": "2026-08-25",
+                        "end_date": "2026-10-23",
+                        "discount_percent": 30.0,
+                        "applies_to_extra_person": False,
+                        "priority": 0,
+                    }
+                ),
+                confidence_score=91,
+            ),
+            ExtractionFieldResult(
+                entity_type="special_offer_room_discount",
+                field_data=json.dumps(
+                    {
+                        "offer_ref": "value_season",
+                        "room_type_ref": None,
+                        "start_date": "2027-04-15",
+                        "end_date": "2027-10-20",
+                        "discount_percent": 30.0,
+                        "applies_to_extra_person": False,
+                        "priority": 0,
+                    }
+                ),
+                confidence_score=91,
+            ),
+        ],
+        "special_offer_transfer_discount": [
+            ExtractionFieldResult(
+                entity_type="special_offer_transfer_discount",
+                field_data=json.dumps(
+                    {
+                        "offer_ref": "seaplane_transfer",
+                        "transfer_type": "domestic_comfort",
+                        "discount_percent": 100.0,
+                        "min_nights": 7,
+                        "start_date": "2026-06-16",
+                        "end_date": "2027-10-31",
+                        "applies_to_children": False,
+                    }
+                ),
+                confidence_score=80,
+            ),
+            ExtractionFieldResult(
+                entity_type="special_offer_transfer_discount",
+                field_data=json.dumps(
+                    {
+                        "offer_ref": "seaplane_transfer",
+                        "transfer_type": "domestic_comfort",
+                        "discount_percent": 50.0,
+                        "min_nights": 4,
+                        "start_date": "2026-06-16",
+                        "end_date": "2027-10-31",
+                        "applies_to_children": False,
+                    }
+                ),
+                confidence_score=80,
+            ),
+        ],
+        # Deliberately-unmapped clause (Decision 061) -- a synthetic
+        # example, not real data from either Kandima or Siyam World,
+        # written specifically to prove the low-confidence flagging
+        # mechanism actually works end-to-end, not just the happy path.
+        # A quantity-based "buy N get 1 free" room discount has no analog
+        # in any of the 5 special_offer_* shapes -- all 5 discount a
+        # PRICE (room rate, meal plan, transfer) or waive a per-child
+        # charge; none can express "an entire room becomes free after a
+        # booking-quantity threshold."
+        "unmapped_offer_clause": [
+            ExtractionFieldResult(
+                entity_type="unmapped_offer_clause",
+                field_data=json.dumps(
+                    {
+                        "raw_text": "Book 3 Deluxe Villas for the same dates and receive a 4th Deluxe Villa completely complimentary, subject to availability.",
+                        "suspected_category": "quantity-based free-room discount",
+                    }
+                ),
+                confidence_score=35,
+                original_text="Book 3 Deluxe Villas for the same dates and receive a 4th Deluxe Villa completely complimentary, subject to availability.",
+                ai_interpretation="Appears to be a 'buy 3 get 1 free' room-quantity promotion, not a percentage or per-guest discount.",
+                low_confidence_reason="This clause describes a promotional mechanism not covered by any of the 5 currently-modeled SpecialOffer shapes (room discount, meal plan discount, family rule, transfer discount) -- it discounts an entire room based on a booking quantity threshold, which none of them can express.",
             ),
         ],
     }

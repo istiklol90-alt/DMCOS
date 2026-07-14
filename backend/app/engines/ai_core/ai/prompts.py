@@ -113,6 +113,84 @@ Entity type: "rate_supplement" (repeats once per pricing adjustment: extra perso
     "calculation_basis": one of "per_person_per_night","per_stay","percentage_of_rate",
     "amount": number (negative means a discount rather than a surcharge)
   }
+
+--- SPECIAL OFFER ENTITY TYPES (Phase 2) ---
+
+A "special offer" is a named, bounded promotional package (e.g. a
+contract's own "KM26_03" or "SWJ26" code) -- distinct from a hotel's
+everyday rate table. It bundles one or more of the 4 mechanisms below.
+Only extract a special_offer_* mechanism type if you were explicitly
+asked for it, same as every other entity type.
+
+Entity type: "special_offer" (repeats once per named promotional package)
+  {
+    "ref": string,
+    "offer_name": string,
+    "booking_start": "YYYY-MM-DD" or null (the window during which this offer can be BOOKED, not travelled),
+    "booking_end": "YYYY-MM-DD" or null,
+    "combinable_with_other_offers": boolean (false if not stated -- whether this offer can be combined with a DIFFERENT special offer on the same contract),
+    "combinable_with_promotions": boolean (false if not stated -- whether this offer's discount can stack with a separate Early Bird/Promotion discount; real contracts rarely state this explicitly, so leave false unless the text is clear)
+  }
+
+Entity type: "special_offer_room_discount" (mechanism 1: a percentage off a specific room type's base rate for a period)
+  {
+    "offer_ref": string (matches a special_offer's ref),
+    "room_type_ref": string or null (matches a room_type's ref -- omit/null if the discount is flat across every room type on the contract; do not invent a room_type_ref if the text doesn't name specific rooms),
+    "start_date": "YYYY-MM-DD" (the TRAVEL window this discount applies to),
+    "end_date": "YYYY-MM-DD",
+    "discount_percent": number,
+    "applies_to_extra_person": boolean (false if not stated -- whether the discount also reduces the extra_person rate_supplement charge),
+    "priority": integer (0 if not stated -- only matters when two room-discount rows could both cover the same date; higher wins)
+  }
+
+Entity type: "special_offer_meal_plan_discount" (mechanism 2: a percentage off a meal-plan upgrade's supplement cost)
+  {
+    "offer_ref": string,
+    "meal_plan_ref": string or null (matches a meal_plan's ref -- omit/null if it applies uniformly to every meal-plan-supplement-priced upgrade),
+    "start_date": "YYYY-MM-DD",
+    "end_date": "YYYY-MM-DD",
+    "discount_percent": number
+  }
+
+Entity type: "special_offer_family_rule" (mechanism 3: waives the per-child accommodation charge for up to N children, conditional on a minimum number of adults)
+  {
+    "offer_ref": string,
+    "start_date": "YYYY-MM-DD",
+    "end_date": "YYYY-MM-DD",
+    "min_adults": integer,
+    "max_free_children_accommodation": integer,
+    "max_free_child_age_accommodation": number (the oldest age still eligible, e.g. 11.99),
+    "max_free_children_meals": integer or null (a separate, sometimes more generous, free-meals-only clause -- only fill in if the text states a distinct meals rule),
+    "max_free_child_age_meals": number or null
+  }
+
+Entity type: "special_offer_transfer_discount" (mechanism 4: a percentage off a transfer_option's price, conditional on a minimum length of stay)
+  {
+    "offer_ref": string,
+    "transfer_type": string (matches a transfer_option's transfer_type slug),
+    "discount_percent": number,
+    "min_nights": integer,
+    "start_date": "YYYY-MM-DD" (the TRAVEL window, keyed by arrival date),
+    "end_date": "YYYY-MM-DD",
+    "applies_to_children": boolean (false if not stated -- whether the discount extends to the child/infant portion of the transfer, or only adults; real contracts rarely state this explicitly either way, so this field should be treated as inherently uncertain unless the text is clear, and scored accordingly under the confidence rubric)
+  }
+
+Entity type: "unmapped_offer_clause" (repeats once per promotional/offer-shaped clause you found in the text that does NOT confidently fit any of the 5 shapes above)
+  {
+    "raw_text": string (the clause verbatim, or as close as needed for a human reviewer to locate and read it in context),
+    "suspected_category": string or null (a brief, honest guess at what kind of mechanism this might be, e.g. "quantity-based discount" -- never a confident invented label)
+  }
+  This entity type exists because not every real contract's promotional
+  terms fit the 5 mechanisms above -- and that is an EXPECTED, not a
+  failure, outcome. If you find a clause that is clearly some kind of
+  promotional/discount/complimentary-upgrade offer but its structure
+  doesn't match special_offer_room_discount / meal_plan_discount /
+  family_rule / transfer_discount, report it here instead of forcing it
+  into one of those shapes or silently dropping it. ALWAYS score this
+  entity type below 70 and ALWAYS fill in original_text,
+  ai_interpretation, and low_confidence_reason for it -- by definition,
+  you are not confident this maps to a known mechanism, so the
+  low-confidence explanation is never optional here.
 """
 
 

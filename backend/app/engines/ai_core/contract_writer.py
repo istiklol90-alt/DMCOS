@@ -4,7 +4,15 @@ Contract Engine's real tables -- Decision 035's workflow step 10-11,
 expanded from Decision 042's Hotel-only version to the full 8-entity
 Phase 1 taxonomy agreed before implementation (see ai/prompts.py for the
 entity shape spec, and Decision 043 for what's deliberately NOT extracted
-yet -- Promotion/SpecialOffer/BlackoutDate/CancellationPolicy).
+yet -- Promotion/SpecialOffer/BlackoutDate/CancellationPolicy), and now
+Decision 061's Phase 2 taxonomy: SpecialOffer + its 4 sub-mechanism
+tables (room discount, meal plan discount, family rule, transfer
+discount). unmapped_offer_clause (Decision 061's first-class "I don't
+recognize this clause" signal) is NEVER written here -- it has no real
+table by design, and stays visible only at the Human Gate for a manager
+to handle manually. Promotion/BlackoutDate/CancellationPolicy/
+ContractFamilyRule remain out of scope, same as Decision 043 originally
+deferred them.
 
 The only module in AI Core Engine allowed to call another Engine's
 create/write functions directly, same "one seam" precedent providers.py
@@ -45,6 +53,11 @@ from app.engines.contract.schemas import (
     ContractTransferOptionCreate,
     RateCreate,
     RateSupplementCreate,
+    SpecialOfferCreate,
+    SpecialOfferRoomDiscountCreate,
+    SpecialOfferMealPlanDiscountCreate,
+    SpecialOfferFamilyRuleCreate,
+    SpecialOfferTransferDiscountCreate,
 )
 
 # entity_type -> HotelCreate field name. Only the fields required to
@@ -152,10 +165,14 @@ def write_approved_fields_to_contract_engine(
     If a "contract" entity IS present, proceeds through the full
     dependency chain (see module docstring): room_type -> contract ->
     {age_category, meal_plan, season} -> transfer_option -> rate ->
-    rate_supplement. Each step only runs for entity types actually
-    present in this job's approved fields -- a contract with room types
-    and seasons but no rates yet still writes what it has, rather than
-    requiring every one of the 8 entity types to be present.
+    rate_supplement -> special_offer -> {special_offer_room_discount,
+    special_offer_meal_plan_discount, special_offer_family_rule,
+    special_offer_transfer_discount}. Each step only runs for entity
+    types actually present in this job's approved fields -- a contract
+    with room types and seasons but no rates yet still writes what it
+    has, rather than requiring every entity type to be present.
+    unmapped_offer_clause is intentionally absent from this chain -- see
+    module docstring.
 
     Returns (hotel_id, contract_id). Raises ValueError on any failure,
     with a message listing every entity successfully created (real ids
@@ -181,6 +198,19 @@ def write_approved_fields_to_contract_engine(
         )
         _write_rate_supplements(
             db, rate_refs, age_category_refs, meal_plan_refs, by_type.get("rate_supplement", []), created
+        )
+        offer_refs = _write_special_offers(db, contract_id, by_type.get("special_offer", []), created)
+        _write_special_offer_room_discounts(
+            db, offer_refs, room_type_refs, by_type.get("special_offer_room_discount", []), created
+        )
+        _write_special_offer_meal_plan_discounts(
+            db, offer_refs, meal_plan_refs, by_type.get("special_offer_meal_plan_discount", []), created
+        )
+        _write_special_offer_family_rules(
+            db, offer_refs, by_type.get("special_offer_family_rule", []), created
+        )
+        _write_special_offer_transfer_discounts(
+            db, offer_refs, by_type.get("special_offer_transfer_discount", []), created
         )
     except ValueError as e:
         raise ValueError(
@@ -320,3 +350,89 @@ def _write_rate_supplements(
             ),
         )
         created.append(("rate_supplement", None, row.id))
+
+
+# ---------------------------------------------------------------------------
+# Decision 061 (Phase 2): SpecialOffer + its 4 sub-mechanism tables.
+# unmapped_offer_clause has no writer function here by design -- see
+# module docstring.
+# ---------------------------------------------------------------------------
+
+
+def _write_special_offers(db: Session, contract_id: int, occurrences: list[dict], created: list) -> dict[str, int]:
+    refs: dict[str, int] = {}
+    for occ in occurrences:
+        ref = occ.get("ref")
+        if not ref:
+            raise ValueError("A special_offer entity is missing its required 'ref'")
+        data = _strip(occ, "ref")
+        row = contract_service.create_special_offer(db, SpecialOfferCreate(contract_id=contract_id, **data))
+        refs[ref] = row.id
+        created.append(("special_offer", ref, row.id))
+    return refs
+
+
+def _write_special_offer_room_discounts(
+    db: Session,
+    offer_refs: dict[str, int],
+    room_type_refs: dict[str, int],
+    occurrences: list[dict],
+    created: list,
+) -> None:
+    for occ in occurrences:
+        offer_id = _resolve_ref(offer_refs, occ.get("offer_ref"), "special_offer", required=True)
+        # Optional, unlike every other room_type_ref in this file --
+        # None here correctly means "applies to every room type on the
+        # contract" (Decision 053's real nullable convention), not a
+        # missing reference.
+        room_type_id = _resolve_ref(room_type_refs, occ.get("room_type_ref"), "room_type", required=False)
+        data = _strip(occ, "offer_ref", "room_type_ref")
+        row = contract_service.create_special_offer_room_discount(
+            db, SpecialOfferRoomDiscountCreate(offer_id=offer_id, room_type_id=room_type_id, **data)
+        )
+        created.append(("special_offer_room_discount", None, row.id))
+
+
+def _write_special_offer_meal_plan_discounts(
+    db: Session,
+    offer_refs: dict[str, int],
+    meal_plan_refs: dict[str, int],
+    occurrences: list[dict],
+    created: list,
+) -> None:
+    for occ in occurrences:
+        offer_id = _resolve_ref(offer_refs, occ.get("offer_ref"), "special_offer", required=True)
+        meal_plan_id = _resolve_ref(meal_plan_refs, occ.get("meal_plan_ref"), "meal_plan", required=False)
+        data = _strip(occ, "offer_ref", "meal_plan_ref")
+        row = contract_service.create_special_offer_meal_plan_discount(
+            db, SpecialOfferMealPlanDiscountCreate(offer_id=offer_id, meal_plan_id=meal_plan_id, **data)
+        )
+        created.append(("special_offer_meal_plan_discount", None, row.id))
+
+
+def _write_special_offer_family_rules(
+    db: Session, offer_refs: dict[str, int], occurrences: list[dict], created: list
+) -> None:
+    for occ in occurrences:
+        offer_id = _resolve_ref(offer_refs, occ.get("offer_ref"), "special_offer", required=True)
+        data = _strip(occ, "offer_ref")
+        row = contract_service.create_special_offer_family_rule(
+            db, SpecialOfferFamilyRuleCreate(offer_id=offer_id, **data)
+        )
+        created.append(("special_offer_family_rule", None, row.id))
+
+
+def _write_special_offer_transfer_discounts(
+    db: Session, offer_refs: dict[str, int], occurrences: list[dict], created: list
+) -> None:
+    for occ in occurrences:
+        offer_id = _resolve_ref(offer_refs, occ.get("offer_ref"), "special_offer", required=True)
+        # transfer_type is matched by value against ContractTransferOption
+        # (a plain string, not a ref-resolved id) -- same convention
+        # Contract Engine's own real SpecialOfferTransferDiscount uses,
+        # so no transfer_option ref-resolution is needed here at all.
+        data = _strip(occ, "offer_ref")
+        row = contract_service.create_special_offer_transfer_discount(
+            db, SpecialOfferTransferDiscountCreate(offer_id=offer_id, **data)
+        )
+        created.append(("special_offer_transfer_discount", None, row.id))
