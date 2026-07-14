@@ -437,7 +437,9 @@ class SpecialOfferResponse(BaseModel):
 
 class SpecialOfferRoomDiscountCreate(BaseModel):
     offer_id: int
-    room_type_id: int
+    # Decision 053: None = applies to every room type on this offer's
+    # contract (a flat, non-room-type-varying discount).
+    room_type_id: Optional[int] = None
     start_date: date
     end_date: date
     discount_percent: float = Field(..., gt=0, le=100)
@@ -448,7 +450,7 @@ class SpecialOfferRoomDiscountCreate(BaseModel):
 class SpecialOfferRoomDiscountResponse(BaseModel):
     id: int
     offer_id: int
-    room_type_id: int
+    room_type_id: Optional[int] = None
     start_date: date
     end_date: date
     discount_percent: float
@@ -538,7 +540,11 @@ class SpecialOfferTransferDiscountResponse(BaseModel):
 
 class BlackoutDateCreate(BaseModel):
     contract_id: int
-    promotion_id: int
+    # Decision 053: exactly one of promotion_id/special_offer_id must be
+    # set (validated in service.create_blackout_date) -- whichever
+    # mechanism this blackout restricts.
+    promotion_id: Optional[int] = None
+    special_offer_id: Optional[int] = None
     start_date: date
     end_date: date
     description: Optional[str] = None
@@ -547,7 +553,8 @@ class BlackoutDateCreate(BaseModel):
 class BlackoutDateResponse(BaseModel):
     id: int
     contract_id: int
-    promotion_id: int
+    promotion_id: Optional[int] = None
+    special_offer_id: Optional[int] = None
     start_date: date
     end_date: date
     description: Optional[str] = None

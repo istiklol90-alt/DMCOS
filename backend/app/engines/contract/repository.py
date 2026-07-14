@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from typing import Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from database.db import SessionLocal
@@ -470,10 +471,22 @@ def create_special_offer_room_discount(db: Session, **fields) -> SpecialOfferRoo
 def list_special_offer_room_discounts(
     db: Session, offer_id: int, room_type_id: Optional[int] = None
 ) -> list[SpecialOfferRoomDiscount]:
-    """Return every room discount row for one offer, optionally narrowed to a single room_type_id."""
+    """
+    Return every room discount row for one offer, optionally narrowed to
+    rows that apply to a given room_type_id -- which includes both rows
+    with an exact room_type_id match AND rows with room_type_id IS NULL
+    (Decision 053: a flat discount applying to every room type on the
+    contract). Passing room_type_id=None (the default) returns every row
+    for the offer, matching or not, same as before this decision.
+    """
     query = db.query(SpecialOfferRoomDiscount).filter(SpecialOfferRoomDiscount.offer_id == offer_id)
     if room_type_id is not None:
-        query = query.filter(SpecialOfferRoomDiscount.room_type_id == room_type_id)
+        query = query.filter(
+            or_(
+                SpecialOfferRoomDiscount.room_type_id == room_type_id,
+                SpecialOfferRoomDiscount.room_type_id.is_(None),
+            )
+        )
     return query.order_by(SpecialOfferRoomDiscount.priority.desc()).all()
 
 
@@ -539,7 +552,7 @@ def list_special_offer_transfer_discounts(
 
 
 def create_blackout_date(db: Session, **fields) -> BlackoutDate:
-    """Insert a new blackout date row (must include contract_id, promotion_id, start_date, end_date) and return it with its generated id."""
+    """Insert a new blackout date row (must include contract_id, start_date, end_date, and exactly one of promotion_id/special_offer_id) and return it with its generated id."""
     blackout = BlackoutDate(**fields)
     db.add(blackout)
     db.commit()
@@ -553,12 +566,17 @@ def get_blackout_date(db: Session, blackout_id: int) -> Optional[BlackoutDate]:
 
 
 def list_blackout_dates(
-    db: Session, contract_id: int, promotion_id: Optional[int] = None
+    db: Session,
+    contract_id: int,
+    promotion_id: Optional[int] = None,
+    special_offer_id: Optional[int] = None,
 ) -> list[BlackoutDate]:
-    """Return blackout dates for one contract, optionally narrowed to a single promotion."""
+    """Return blackout dates for one contract, optionally narrowed to a single promotion or special offer."""
     query = db.query(BlackoutDate).filter(BlackoutDate.contract_id == contract_id)
     if promotion_id is not None:
         query = query.filter(BlackoutDate.promotion_id == promotion_id)
+    if special_offer_id is not None:
+        query = query.filter(BlackoutDate.special_offer_id == special_offer_id)
     return query.all()
 
 

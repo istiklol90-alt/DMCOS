@@ -599,10 +599,11 @@ def create_blackout_date(
 def list_blackout_dates(
     contract_id: int,
     promotion_id: int | None = None,
+    special_offer_id: int | None = None,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    return _run(lambda: service.list_blackout_dates(db, contract_id, promotion_id))
+    return _run(lambda: service.list_blackout_dates(db, contract_id, promotion_id, special_offer_id))
 
 
 # ---------------------------------------------------------------------------

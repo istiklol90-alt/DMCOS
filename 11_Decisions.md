@@ -2810,6 +2810,178 @@ confirming that boundary wasn't accidentally loosened.
 
 ---
 
+# Decision 053
+
+Date: 2026-07-14
+
+Decision: Three generic, reusable extensions to LOCKED Contract Engine
+(plus one to LOCKED Hotel Engine) to support Siyam World's real SWJ26
+special offer, which introduced two mechanisms no real contract had
+exercised before: blackout dates carved out of an otherwise-discounted
+period, and a tiered free-vs-discounted transfer outcome. Each piece
+was explicitly confirmed generic -- not Siyam-specific -- with the
+project owner before implementation, isolation-tested with throwaway
+data, and regression-checked against Kandima's real KM26_03 before any
+real SWJ26 data was entered.
+
+1. `BlackoutDate` generalized from Promotion-only to Promotion-or-
+   SpecialOffer: `promotion_id` made nullable, `special_offer_id` added
+   (nullable FK to `special_offers.id`), exactly one of the two
+   enforced in `service.create_blackout_date`. Zero regression risk --
+   this table had zero real rows anywhere before this decision (fully
+   unused since its original creation, confirmed by grep before
+   touching it). New helper `_is_blacked_out(db, contract_id,
+   special_offer_id, check_in)`, checked per-offer (not per-contract)
+   inside `_find_active_special_offer_room_discount` and
+   `_find_active_special_offer_transfer_discount` -- scoped to the
+   specific offer so one offer's blackout never silently suppresses an
+   unrelated offer's mechanism just because their dates happen to
+   overlap (SWJ26 itself has exactly this trap: Offer 3's room-discount
+   blackout and Offer 4's transfer blackout both include 27 Dec-4 Jan,
+   but are otherwise-independent periods). A blacked-out check_in
+   simply produces zero candidates for that offer, falling back to
+   whatever get_room_price/get_transfer_price would already compute
+   without it -- the same "no candidates found" behavior that already
+   existed for a check_in outside every row's period.
+
+2. `SpecialOfferRoomDiscount.room_type_id` made nullable -- NULL means
+   the discount applies to every room type on the offer's contract,
+   the same nullable-means-unrestricted convention `Rate.market_id`
+   already uses. Needed because SWJ26's offers are flat, non-room-type-
+   varying discounts (unlike Kandima's KM26_03 matrix, which still
+   works unchanged via explicit room_type_id rows) -- without this,
+   Siyam World's 15 room types would have needed 15 duplicate rows per
+   offer for a discount that never actually varies by room.
+   `repository.list_special_offer_room_discounts` updated to match
+   rows with an exact room_type_id OR room_type_id IS NULL.
+
+3. Fix C: `_find_active_special_offer_transfer_discount` changed from
+   "first matching row wins" to "largest satisfied min_nights wins" --
+   the same tier-selection bug class Decision 051 Fix B already fixed
+   for `Promotion.days_before_arrival`. Previously, a contract with two
+   min_nights tiers on the same transfer_type (e.g. SWJ26 Offer 4: 50%
+   at 4+ nights, 100%/free at 7+ nights) could silently return the
+   worse tier depending on row insertion order, even when the guest
+   qualified for the better one. No model change needed for "free" --
+   `discount_percent` was already an unbounded 0-100 float; 100.0 flows
+   through the existing `total *= 1 - (discount_percent/100)` math and
+   produces 0 with zero special-casing.
+
+4. Hotel Engine: new nullable `bedroom_count` on `RoomType` (LOCKED
+   engine, deliberate additive extension, explicitly flagged and
+   approved separately from the Contract Engine changes). Originally
+   scoped to support a "2 guests per bedroom" cap on SWJ26's free/
+   discounted transfer entitlement -- but implementing that cap for
+   real requires `get_transfer_price` to know which room type a
+   transfer is for, and that function has no room_type_id parameter at
+   all today; it's already called twice by LOCKED Booking Engine
+   (`service.py:203,470`), so adding one is a 3-engine change. Given a
+   choice between (a) wiring room_type_id through Contract + Hotel +
+   Booking Engine, (b) wiring it through Contract Engine only and
+   leaving Booking Engine's real bookings uncapped for now, or (c) not
+   enforcing the cap at all, the project owner explicitly chose (c):
+   `bedroom_count` is entered as informational data only, not consulted
+   by any pricing check. SWJ26's free/discounted transfer tiers apply
+   based on nights alone, uncapped by party size, until a future task
+   deliberately revisits this.
+
+Real data entered for Siyam World (contract_id=8), modeled as 4
+separate `SpecialOffer` rows sharing the "SWJ26" name prefix and the
+same booking window (2026-06-16 to 2026-08-15) rather than one bundled
+offer -- chosen specifically so each offer's blackout dates stay
+correctly scoped (see point 1 above), since Offer 4 spans almost the
+whole contract period independently of Offers 1-3's disjoint travel
+windows:
+  - Offer 1 "SWJ26 - Value Season": 30% off all room types, 3 disjoint
+    travel windows (16-30 Jun 2026, 25 Aug-23 Oct 2026, 15 Apr-20 Oct
+    2027) -> 3 SpecialOfferRoomDiscount rows, room_type_id=NULL.
+  - Offer 2 "SWJ26 - Peak Summer": 20% off, 1 Jul-24 Aug 2026 -> 1 row.
+  - Offer 3 "SWJ26 - Winter/Spring": 25% off, 24 Oct 2026-14 Apr 2027
+    and 21-31 Oct 2027 -> 2 rows, plus 2 BlackoutDate rows (27 Dec
+    2026-4 Jan 2027, 1-28 Feb 2027) attached via special_offer_id.
+  - Offer 4 "SWJ26 - Seaplane Transfer": entered structurally (the
+    SpecialOffer row, both SpecialOfferTransferDiscount tiers --
+    100%/7+ nights, 50%/4+ nights -- and its own blackout, 27 Dec 2026-
+    4 Jan 2027) but NOT runtime-functional: Siyam World's contract has
+    zero ContractTransferOption rows, and the source data for this
+    offer never included a base seaplane price (price_adult/
+    price_child) to discount against -- only the discount tiers. Not
+    fabricated; flagged as a known gap, same "enter what's given, flag
+    what's missing" discipline as Decision 052's max_occupancy/transfer
+    flags. get_transfer_price will raise "no Active transfer option"
+    for transfer_type='Seaplane' on this contract until a real base
+    price is provided.
+
+Real gap discovered during verification, unrelated to any of the above
+mechanisms: Offer 1's first travel window (16-30 Jun 2026) and all of
+Offer 2's window (1 Jul-24 Aug 2026) fall entirely before Siyam World's
+own contract seasons begin (earliest season "Low" starts 1 Nov 2026,
+per the original contract data Decision 052 entered) -- there is no
+Rate/season coverage at all for Jun-Oct 2026, so get_room_price
+correctly raises "no season covering" for those dates. This is a real,
+pre-existing gap in the base contract's rate coverage, not a defect in
+Decision 053's mechanisms -- flagged for the project owner, not
+silently worked around by inventing off-season rates.
+
+DB migration: `blackout_dates.promotion_id` and
+`special_offer_room_discounts.room_type_id` were originally NOT NULL
+at the SQLite level (not just in the SQLAlchemy model) -- SQLite has no
+ALTER COLUMN, so both tables were rebuilt (create replacement table,
+copy data, drop original, rename). `dmc.db` backed up first
+(`dmc.db.bak-decision053`, deleted after migration was confirmed
+correct). `special_offer_room_discounts` held Kandima's real 70-row
+KM26_03 data; verified byte-for-byte identical (`before_rows ==
+after_rows`) after the rebuild before proceeding. `blackout_dates` was
+empty (zero real rows anywhere), rebuilt trivially.
+
+Approved By: Daler
+
+Status: Implemented and verified. Isolated tests (throwaway synthetic
+hotel/contract/offers, deleted afterward) confirmed all 3 mechanisms
+before any real data was touched: wildcard room_type_id discount
+applied correctly (20% off); blackout correctly suppressed the
+discount inside its window and the discount correctly resumed outside
+it; `create_blackout_date` correctly rejected both "neither set" and
+(by construction) "both set"; Fix C correctly selected the 100% tier
+over the 50% tier at 10 nights (deliberately creating the smaller-
+tier row first, to prove selection isn't "first row wins"), the 50%
+tier at 5 nights, and no discount at 3 nights.
+
+Regression-checked against Kandima's real KM26_03 booking (room_type_id
+3, Peak season) twice -- once right after the schema migration, and
+again after discovering and fixing a stale `uvicorn --reload` worker
+that was silently serving pre-Decision-053 code (see below) -- both
+times: base_total=251.5 (503 x 0.5, KM26_03's real 50% row), unchanged.
+
+Real SWJ26 verification, Water Villa (room_type_id=21): Offer 1 window
+3 (2027-05-01, Shoulder rate 935) -> base_total=654.5 (935 x 0.70,
+30% off), applied_special_offer_ids=[2], correct. Offer 3 window 1
+(2027-03-01, Peak rate 1227, NOT in either blackout) -> base_total=
+920.25 (1227 x 0.75, 25% off), applied_special_offer_ids=[4], correct.
+Offer 3 window 2 (2027-10-25, Low2 rate 1122) -> base_total=841.5
+(1122 x 0.75), correct. Both blackout windows verified directly:
+2026-12-30 (inside 27 Dec-4 Jan) -> base_total=1546.0, the FULL
+Festive rate with zero discount and applied_special_offer_ids=[];
+2027-02-15 (inside 1-28 Feb) -> base_total=1227.0, the FULL Peak rate,
+same zero-discount result -- confirming the discount is suppressed
+specifically inside blackout, not merely reduced or coincidentally
+absent.
+
+Caught and fixed during verification, unrelated to the mechanisms
+themselves: the first round of HTTP verification calls returned stale,
+pre-Decision-053 results (e.g. Offer 1's wildcard discount not applying
+at all) despite the underlying code and data both being correct --
+confirmed by calling the same service functions directly in a fresh
+Python process, which returned the correct result immediately. Root
+cause: `uvicorn --reload`'s orphaned multiprocessing worker child
+(same Windows quirk as Decision 042) was still serving the pre-edit
+process. Fixed with `taskkill /PID <reloader> /F /T` to kill the whole
+process tree, then a clean restart -- all subsequent HTTP checks
+(including a third Kandima regression check on the fresh process)
+confirmed correct.
+
+---
+
 # Decision Template
 
 Decision Number:

@@ -81,6 +81,13 @@ class RoomType(Base):
     room_size = Column(Float, nullable=True)
     bed_type = Column(String(100), nullable=True)
     max_occupancy = Column(Integer, nullable=False)
+    # Decision 053: nullable, backfilled as needed per hotel -- not
+    # required at creation since most existing room types never needed it.
+    # Added specifically to support "N guests per bedroom" special-offer
+    # terms (e.g. a free-transfer entitlement sized to a room's bedroom
+    # count), a generic field any hotel's room types can populate, not
+    # specific to whichever contract first needed it.
+    bedroom_count = Column(Integer, nullable=True)
     status = Column(String(20), default="Draft")
     created_at = Column(DateTime, default=datetime.utcnow)
 

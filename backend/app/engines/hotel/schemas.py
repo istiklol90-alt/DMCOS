@@ -160,6 +160,7 @@ class RoomTypeCreate(BaseModel):
     room_size: Optional[float] = Field(None, gt=0)
     bed_type: Optional[str] = None
     max_occupancy: int = Field(..., ge=1)
+    bedroom_count: Optional[int] = Field(None, ge=1)
 
 
 class RoomTypeUpdate(BaseModel):
@@ -169,6 +170,7 @@ class RoomTypeUpdate(BaseModel):
     room_size: Optional[float] = Field(None, gt=0)
     bed_type: Optional[str] = None
     max_occupancy: Optional[int] = Field(None, ge=1)
+    bedroom_count: Optional[int] = Field(None, ge=1)
     status: Optional[HotelStatus] = None
 
 
@@ -181,6 +183,7 @@ class RoomTypeResponse(BaseModel):
     room_size: Optional[float] = None
     bed_type: Optional[str] = None
     max_occupancy: int
+    bedroom_count: Optional[int] = None
     status: str
     created_at: datetime
 

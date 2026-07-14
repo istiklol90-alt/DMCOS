@@ -676,14 +676,35 @@ def list_special_offer_transfer_discounts(
 
 
 def create_blackout_date(db: Session, data: BlackoutDateCreate) -> BlackoutDate:
-    """Add a blackout date to a promotion. Raises ValueError if the contract/promotion don't exist, the promotion belongs to a different contract, or the date range is inverted."""
+    """
+    Add a blackout date to either a Promotion or a SpecialOffer (Decision
+    053 generalized this from Promotion-only). Raises ValueError if the
+    contract doesn't exist, neither or both of promotion_id/special_offer_id
+    are set, the referenced promotion/offer doesn't exist or belongs to a
+    different contract, or the date range is inverted.
+    """
     _require_contract(db, data.contract_id)
-    promotion = _require_promotion(db, data.promotion_id)
-    if promotion.contract_id != data.contract_id:
+
+    if (data.promotion_id is None) == (data.special_offer_id is None):
         raise ValueError(
-            f"Promotion {promotion.id} belongs to contract {promotion.contract_id}, "
-            f"not contract {data.contract_id}"
+            "Exactly one of promotion_id or special_offer_id must be set on a blackout date"
         )
+
+    if data.promotion_id is not None:
+        promotion = _require_promotion(db, data.promotion_id)
+        if promotion.contract_id != data.contract_id:
+            raise ValueError(
+                f"Promotion {promotion.id} belongs to contract {promotion.contract_id}, "
+                f"not contract {data.contract_id}"
+            )
+    else:
+        offer = _require_special_offer(db, data.special_offer_id)
+        if offer.contract_id != data.contract_id:
+            raise ValueError(
+                f"Special offer {offer.id} belongs to contract {offer.contract_id}, "
+                f"not contract {data.contract_id}"
+            )
+
     validate_date_range(data.start_date, data.end_date)
     return repository.create_blackout_date(db, **data.model_dump())
 
@@ -697,10 +718,13 @@ def get_blackout_date(db: Session, blackout_id: int) -> BlackoutDate:
 
 
 def list_blackout_dates(
-    db: Session, contract_id: int, promotion_id: Optional[int] = None
+    db: Session,
+    contract_id: int,
+    promotion_id: Optional[int] = None,
+    special_offer_id: Optional[int] = None,
 ) -> list[BlackoutDate]:
-    """Return blackout dates for one contract, optionally narrowed to a single promotion."""
-    return repository.list_blackout_dates(db, contract_id, promotion_id)
+    """Return blackout dates for one contract, optionally narrowed to a single promotion or special offer."""
+    return repository.list_blackout_dates(db, contract_id, promotion_id, special_offer_id)
 
 
 def update_blackout_date(db: Session, blackout_id: int, **fields) -> BlackoutDate:
@@ -1400,6 +1424,23 @@ def _bookable_special_offers(db: Session, contract_id: int) -> list[SpecialOffer
     ]
 
 
+def _is_blacked_out(db: Session, contract_id: int, special_offer_id: int, check_in: date_type) -> bool:
+    """
+    Decision 053: True if check_in falls within any blackout window
+    attached to this specific SpecialOffer. Scoped to the offer, not the
+    whole contract — one offer's blackout (e.g. a room-discount offer's
+    Christmas exclusion) must never silently also black out a different
+    offer's own mechanism (e.g. an independently-windowed transfer offer)
+    just because their date ranges happen to overlap in one particular
+    contract's real data — Siyam World's SWJ26 has exactly this shape:
+    Offer 3 (room discount) and Offer 4 (transfer) both exclude 27 Dec-4
+    Jan, but are otherwise unrelated periods and must be checked
+    independently.
+    """
+    blackouts = repository.list_blackout_dates(db, contract_id, special_offer_id=special_offer_id)
+    return any(b.start_date <= check_in <= b.end_date for b in blackouts)
+
+
 def _find_active_special_offer_room_discount(
     db: Session, contract_id: int, room_type_id: int, check_in: date_type
 ) -> Optional[SpecialOfferRoomDiscount]:
@@ -1409,9 +1450,18 @@ def _find_active_special_offer_room_discount(
     bookable offer on this contract. Uses check_in for the whole stay — the
     same simplification get_room_price already applies for seasons (no
     per-night proration across a period boundary).
+
+    Decision 053: an offer blacked out for this check_in (see
+    _is_blacked_out) contributes no candidates at all — the discount simply
+    doesn't apply for that night, falling back to whatever get_room_price
+    would compute without it (full contract rate + Promotion), exactly the
+    same "no candidates found" behavior as a check_in outside every row's
+    period.
     """
     candidates = []
     for offer in _bookable_special_offers(db, contract_id):
+        if _is_blacked_out(db, contract_id, offer.id, check_in):
+            continue
         for row in repository.list_special_offer_room_discounts(db, offer.id, room_type_id=room_type_id):
             if row.status == "Active" and row.start_date <= check_in <= row.end_date:
                 candidates.append(row)
@@ -1465,12 +1515,29 @@ def _find_active_special_offer_transfer_discount(
     db: Session, contract_id: int, transfer_type: str, arrival_date: date_type, nights: int
 ) -> Optional[SpecialOfferTransferDiscount]:
     """
-    Decision 026, mechanism 4: the first Active transfer discount row for
-    this transfer_type whose min_nights is met and whose period covers
+    Decision 026, mechanism 4: among Active transfer discount rows for this
+    transfer_type whose min_nights is met and whose period covers
     arrival_date — keyed by arrival date only, per the real offer's own
-    "determined by arrival date when stay spans multiple months" note.
+    "determined by arrival date when stay spans multiple months" note —
+    the one with the LARGEST min_nights wins (Decision 053, Fix C).
+
+    Fix C corrects a real bug: this previously returned the FIRST matching
+    row, not the best one. A contract with two tiers on the same
+    transfer_type — e.g. Siyam World's SWJ26 Offer 4, 50% off at 4+ nights
+    OR fully complimentary (discount_percent=100) at 7+ nights — could
+    silently return the worse 50% tier for a 10-night stay depending on
+    row insertion order, even though the guest actually qualifies for the
+    better 100% tier. Same "largest satisfied threshold wins" selection
+    Decision 051 Fix B already established for Promotion.days_before_arrival
+    (more advance notice / a longer stay both deserve the better tier).
+
+    Decision 053: also skips any offer blacked out for arrival_date (see
+    _is_blacked_out), same as the room-discount finder.
     """
+    candidates = []
     for offer in _bookable_special_offers(db, contract_id):
+        if _is_blacked_out(db, contract_id, offer.id, arrival_date):
+            continue
         for row in repository.list_special_offer_transfer_discounts(db, offer.id):
             if (
                 row.status == "Active"
@@ -1478,8 +1545,10 @@ def _find_active_special_offer_transfer_discount(
                 and nights >= row.min_nights
                 and row.start_date <= arrival_date <= row.end_date
             ):
-                return row
-    return None
+                candidates.append(row)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda r: r.min_nights)
 
 
 def get_room_price(

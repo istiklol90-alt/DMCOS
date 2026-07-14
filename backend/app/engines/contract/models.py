@@ -260,6 +260,15 @@ class SpecialOfferRoomDiscount(Base):
     age_category_price, which is a separate mechanism (SpecialOfferFamilyRule)
     or untouched. One row per (room_type, period); a room type with 7
     differently-priced periods is 7 rows, not one row with a formula.
+
+    Decision 053: room_type_id is nullable -- NULL means the discount
+    applies to every room type on this offer's contract, the same
+    nullable-means-unrestricted convention Rate.market_id already uses.
+    Needed for flat, non-room-type-varying offers (e.g. Siyam World's
+    SWJ26 "30% off all villa types") that would otherwise need one
+    duplicate row per room type for no real reason. A row with an explicit
+    room_type_id still works exactly as before, for offers whose discount
+    genuinely varies by room type (e.g. Kandima's KM26_03 matrix).
     """
 
     __tablename__ = "special_offer_room_discounts"
@@ -268,7 +277,7 @@ class SpecialOfferRoomDiscount(Base):
     offer_id = Column(Integer, ForeignKey("special_offers.id"), nullable=False)
     # Plain Integer, not a real ForeignKey into Hotel Engine's `room_types`
     # table -- same cross-engine decoupling as Rate.room_type_id.
-    room_type_id = Column(Integer, nullable=False)
+    room_type_id = Column(Integer, nullable=True)
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
     discount_percent = Column(Float, nullable=False)
@@ -358,11 +367,24 @@ class SpecialOfferTransferDiscount(Base):
 
 
 class BlackoutDate(Base):
+    """
+    Decision 053: a date range within which a Promotion's or SpecialOffer's
+    discount does NOT apply, even though the range falls inside that
+    mechanism's own booking/travel window -- e.g. an Early Bird promotion,
+    or a flat room-discount special offer, excluding a peak sub-period like
+    Christmas/New Year. Exactly one of promotion_id/special_offer_id must be
+    set (enforced in service.create_blackout_date) -- whichever mechanism
+    this blackout restricts. Generalized from Promotion-only (originally
+    promotion_id was required); the change is purely additive since this
+    table had zero real rows anywhere before this decision.
+    """
+
     __tablename__ = "blackout_dates"
 
     id = Column(Integer, primary_key=True, index=True)
     contract_id = Column(Integer, ForeignKey("contracts.id"), nullable=False)
-    promotion_id = Column(Integer, ForeignKey("promotions.id"), nullable=False)
+    promotion_id = Column(Integer, ForeignKey("promotions.id"), nullable=True)
+    special_offer_id = Column(Integer, ForeignKey("special_offers.id"), nullable=True)
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
     description = Column(Text, nullable=True)
