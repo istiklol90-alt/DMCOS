@@ -236,6 +236,21 @@ class SpecialOffer(Base):
     never built to express. combinable_with_other_offers governs only
     other SpecialOffer rows on this contract -- entirely independent of
     Promotion.is_stackable, a structurally separate system.
+
+    Decision 056: combinable_with_promotions governs a third, separate
+    relationship -- whether THIS offer's discount may stack with an
+    Early Bird / Promotion discount on the same booking. Deliberately
+    its own field, not a reuse of combinable_with_other_offers, since
+    the two are independently-sourced real contract facts that can
+    differ per hotel (a tactical offer might refuse to combine with
+    other tactical offers yet still allow Early Bird, or vice versa) --
+    confirmed not merely theoretical: Siyam World's SWJ26 offers are
+    combinable_with_other_offers=True (they compose with each other)
+    but combinable_with_promotions=False (real contract term: tactical
+    offers block Early Bird), the exact divergent case that ruled out
+    reusing one field for both questions. Defaults to False (no
+    combination), matching real contract language's typically
+    restrictive default and combinable_with_other_offers's own default.
     """
 
     __tablename__ = "special_offers"
@@ -249,6 +264,7 @@ class SpecialOffer(Base):
     # Rate.market_id.
     market_id = Column(Integer, ForeignKey("contract_markets.id"), nullable=True)
     combinable_with_other_offers = Column(Boolean, default=False)
+    combinable_with_promotions = Column(Boolean, default=False)
     status = Column(String(20), default="Active")
 
 

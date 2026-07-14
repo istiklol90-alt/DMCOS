@@ -1772,38 +1772,58 @@ def get_room_price(
     today = date_type.today()
     days_until_arrival = (check_in - today).days
 
-    # Decision 051 (Fix B): among Promotion rows using days_before_arrival
-    # (a rolling "book N+ days before arrival" tier -- e.g. Siyam World's
-    # real 30-day/10% and 60-day/15% Early Bird -- distinct from
-    # booking_start/booking_end's fixed calendar dates), only the SINGLE
-    # BEST tier actually satisfied applies: the largest days_before_arrival
-    # among those met, since more advance notice deserves the better
-    # discount. This is the INVERSE of Booking Engine's
-    # _resolve_cancellation_fee, where the SMALLEST threshold breached
-    # wins -- there the strictest/soonest-triggered tier wins because
-    # cancellation penalties escalate as arrival nears; here the most
-    # generous tier wins because early booking is rewarded, not penalized.
-    # Known simplification: this selection is global across every
-    # days_before_arrival row on the contract, not grouped by
-    # promotion_name/family -- correct for a single early-bird ladder (the
-    # only real case so far), would need real grouping if a contract ever
-    # needs two independent day-based promotion families at once.
-    all_promotions = repository.list_promotions(db, contract_id)
-    tiered_promotions = [p for p in all_promotions if p.days_before_arrival is not None]
-    untiered_promotions = [p for p in all_promotions if p.days_before_arrival is None]
-    met_tiers = [p for p in tiered_promotions if days_until_arrival >= p.days_before_arrival]
-    best_tier = max(met_tiers, key=lambda p: p.days_before_arrival) if met_tiers else None
+    # Decision 056: a SpecialOffer room discount can block Promotion
+    # (Early Bird) entirely, per that specific offer's own
+    # combinable_with_promotions flag -- a real, per-contract term (e.g.
+    # Kandima's KM26_03: "cannot be combined with any other Tactical
+    # offers & EBO"; Siyam World's SWJ26 confirmed the same real rule).
+    # Deliberately data-driven, not a hardcoded universal rule: a future
+    # hotel's tactical offer with combinable_with_promotions=True would
+    # let Early Bird stack normally. Checked against room_discount
+    # specifically (not meal_discount/family_rule alone), matching the
+    # scope this was designed for -- the room-rate discount is what the
+    # real contracts' "cannot combine with EBO" language is about.
+    promotions_blocked_by_offer = False
+    if room_discount is not None:
+        owning_offer = repository.get_special_offer(db, room_discount.offer_id)
+        if owning_offer is not None and not owning_offer.combinable_with_promotions:
+            promotions_blocked_by_offer = True
 
-    promotion_candidates = untiered_promotions + ([best_tier] if best_tier else [])
-    eligible_promotions = [
-        p
-        for p in promotion_candidates
-        if p.status == "Active"
-        and (p.booking_start is None or p.booking_start <= today)
-        and (p.booking_end is None or today <= p.booking_end)
-        and (p.travel_start is None or p.travel_start <= check_out)
-        and (p.travel_end is None or check_in <= p.travel_end)
-    ]
+    if promotions_blocked_by_offer:
+        eligible_promotions = []
+    else:
+        # Decision 051 (Fix B): among Promotion rows using days_before_arrival
+        # (a rolling "book N+ days before arrival" tier -- e.g. Siyam World's
+        # real 30-day/10% and 60-day/15% Early Bird -- distinct from
+        # booking_start/booking_end's fixed calendar dates), only the SINGLE
+        # BEST tier actually satisfied applies: the largest days_before_arrival
+        # among those met, since more advance notice deserves the better
+        # discount. This is the INVERSE of Booking Engine's
+        # _resolve_cancellation_fee, where the SMALLEST threshold breached
+        # wins -- there the strictest/soonest-triggered tier wins because
+        # cancellation penalties escalate as arrival nears; here the most
+        # generous tier wins because early booking is rewarded, not penalized.
+        # Known simplification: this selection is global across every
+        # days_before_arrival row on the contract, not grouped by
+        # promotion_name/family -- correct for a single early-bird ladder (the
+        # only real case so far), would need real grouping if a contract ever
+        # needs two independent day-based promotion families at once.
+        all_promotions = repository.list_promotions(db, contract_id)
+        tiered_promotions = [p for p in all_promotions if p.days_before_arrival is not None]
+        untiered_promotions = [p for p in all_promotions if p.days_before_arrival is None]
+        met_tiers = [p for p in tiered_promotions if days_until_arrival >= p.days_before_arrival]
+        best_tier = max(met_tiers, key=lambda p: p.days_before_arrival) if met_tiers else None
+
+        promotion_candidates = untiered_promotions + ([best_tier] if best_tier else [])
+        eligible_promotions = [
+            p
+            for p in promotion_candidates
+            if p.status == "Active"
+            and (p.booking_start is None or p.booking_start <= today)
+            and (p.booking_end is None or today <= p.booking_end)
+            and (p.travel_start is None or p.travel_start <= check_out)
+            and (p.travel_end is None or check_in <= p.travel_end)
+        ]
     validate_promotion_stacking(eligible_promotions)
     final_total = apply_sequential_discounts(price_before_promotions, eligible_promotions)
 

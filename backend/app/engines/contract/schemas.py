@@ -410,6 +410,7 @@ class SpecialOfferCreate(BaseModel):
     booking_end: Optional[date] = None
     market_id: Optional[int] = None
     combinable_with_other_offers: bool = False
+    combinable_with_promotions: bool = False
 
 
 class SpecialOfferUpdate(BaseModel):
@@ -418,6 +419,7 @@ class SpecialOfferUpdate(BaseModel):
     booking_end: Optional[date] = None
     market_id: Optional[int] = None
     combinable_with_other_offers: Optional[bool] = None
+    combinable_with_promotions: Optional[bool] = None
     status: Optional[ChildStatus] = None
 
 
@@ -429,6 +431,7 @@ class SpecialOfferResponse(BaseModel):
     booking_end: Optional[date] = None
     market_id: Optional[int] = None
     combinable_with_other_offers: bool
+    combinable_with_promotions: bool
     status: str
 
     class Config:

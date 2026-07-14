@@ -3197,6 +3197,101 @@ frontend calls) and via `tsc` typecheck, not by driving an actual
 browser. Visual confirmation in a real browser session was handed back
 to the project owner.
 
+---
+
+# Decision 056
+
+Date: 2026-07-14
+
+Decision: `SpecialOffer.combinable_with_promotions` (new field, Boolean,
+`default=False`) makes tactical-offer-vs-Early-Bird combinability a
+real, per-offer, data-driven setting rather than a hardcoded rule --
+correcting a genuine bug where `get_room_price` applied Promotion
+(Early Bird) discounts completely unconditionally, regardless of
+whether a SpecialOffer room discount had already reduced the same
+booking's price.
+
+Investigated before proposing anything: `SpecialOffer` already had
+`combinable_with_other_offers`, but its own docstring explicitly scopes
+it to "other SpecialOffer rows on this contract -- entirely independent
+of `Promotion.is_stackable`, a structurally separate system." Neither
+existing field (`combinable_with_other_offers` for SpecialOffer-vs-
+SpecialOffer, `Promotion.is_stackable`/`stacking_group` for Promotion-
+vs-Promotion) governs the third relationship this decision needed
+(SpecialOffer-vs-Promotion) -- confirmed by reading both fields'
+documented intent, not assumed from naming alone. Reusing
+`combinable_with_other_offers` was explicitly rejected: current real
+data shows Kandima's KM26_03 at `False` (coincidentally matching what
+EBO-blocking would want) but all 4 of Siyam World's SWJ26 offers at
+`True` (set in Decision 053 to mean "these offers compose with each
+other," a fact totally independent of whether they also block Early
+Bird) -- proving these are two independently-sourced real contract
+facts, not one, and that a single field would either force them to
+match or silently misrepresent one of them.
+
+Fix wired into `get_room_price`: when an active `SpecialOffer` room
+discount is found, its parent offer's `combinable_with_promotions` is
+checked -- `False` (the default) skips Promotion entirely for that
+booking (`eligible_promotions = []`, computed before any of the
+existing `days_before_arrival` tier-selection logic even runs); `True`
+lets Promotion apply exactly as before. Scoped to `room_discount`
+specifically (not `meal_discount`/`family_rule` alone), matching the
+real contracts' "cannot combine with EBO" language, which is about the
+room-rate discount. A booking with no SpecialOffer room discount at all
+is completely unaffected -- Promotion selection runs exactly as it did
+before this decision.
+
+Real data set to the confirmed values (both via the new column's
+`DEFAULT 0`, applied automatically to all 5 existing rows on migration,
+so no separate per-row write was needed): Kandima's KM26_03
+(offer_id=1) and all 4 of Siyam World's SWJ26 offers (offer_id 2-5) ->
+`combinable_with_promotions=False`, matching both hotels' real contract
+terms confirmed by the project owner.
+
+Approved By: Daler
+
+Status: Implemented and verified. `dmc.db` backed up before the
+migration (a plain additive `ALTER TABLE ... ADD COLUMN
+combinable_with_promotions BOOLEAN DEFAULT 0`, no table rebuild needed
+since the new column starts nullable/defaulted -- unlike Decision 053's
+two NOT NULL columns), deleted after verification passed.
+
+Isolated test (throwaway synthetic hotel/contract/offer/promotion,
+deleted afterward) proved the mechanism is genuinely data-driven, not
+hardcoded, via three scenarios on the identical setup: (A)
+`combinable_with_promotions=False` -> SpecialOffer's 30% applied,
+Early Bird correctly skipped entirely (`applied_promotions=[]`,
+final_total=700.0 exactly, not 595.0). (B) the SAME offer flipped to
+`combinable_with_promotions=True` -> both now apply sequentially
+(final_total=595.0 = 700 x 0.85, `applied_promotions=[promo.id]`) --
+proving the code branches on the data, not a fixed rule. (C) a
+check_in outside the SpecialOffer's window entirely -> Early Bird
+applies completely normally on its own (final_total=850.0), confirming
+zero regression to the base case where no SpecialOffer is involved at
+all.
+
+Regression-checked against real data with a concrete before/after:
+Kandima's KM26_03 unchanged (base_total=251.5, this scenario has no
+Promotion active regardless). Siyam World Peak season during Offer 3's
+blackout (2027-02-15, no SpecialOffer applies since blacked out) --
+Early Bird still applies normally, final_total=1042.95, unchanged,
+confirming the fix doesn't touch bookings with no active SpecialOffer.
+Siyam World Shoulder season (2027-06-01, SWJ26's 30% active) -- THE
+concrete proof: `applied_promotions` is now `[]` and final_total stops
+at 654.5, where before this decision Early Bird would have also
+applied on top, producing 556.325 instead.
+
+Exact scenario verification (Water Villa, room_type_id=21, 14-21 May
+2027, 2 adults, Premium AI): room 935/night x 7 nights x 0.7 (SWJ26
+30%, Early Bird correctly blocked) = 4581.5, `applied_promotions=[]`
+confirmed; Green Tax (12/person/night x 2 x 7) = 168.0; seaplane
+transfer at 7 nights (the free tier) = 0.0. Total: 4581.5 + 168.0 + 0.0
+= 4749.5 -- exact match to the project owner's expected $4,749.50.
+
+---
+
+# Decision Template
+
 Decision Number:
 
 Date:
