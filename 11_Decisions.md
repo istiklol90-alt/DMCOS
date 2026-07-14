@@ -3593,7 +3593,7 @@ Date: 2026-07-14
 
 Decision: Two new filtering features for the Admin Panel's Reservations
 screen (`BookingsList` in `Reservations.tsx`) -- a booking-number
-search field, and an opt-in "by date" view with two distinct,
+search field, and an opt-in "by date" view with three distinct,
 confirmed semantics. Both client-side over the already-fetched
 bookings list, extending the existing `filteredSorted` useMemo rather
 than introducing a new table component.
@@ -3617,19 +3617,30 @@ implementing, rather than guessed:
    matching the project owner's own instinct and the stated operational
    purpose of the whole feature.
 
+A third mode was added in the same session after the project owner
+caught that the initial "Заезды" filter (stay dates) doesn't cover a
+genuinely different, separately useful question: "which reservations
+were CREATED on this date," independent of whenever the actual stay
+happens to be. Added as a third mutually-exclusive sub-view rather
+than conflating it with "Заезды" -- a booking made today for a March
+2027 stay belongs in "Созданы," not "Заезды."
+
 Implementation: `searchQuery` filters `booking_number` via
 case-insensitive substring match (e.g. "3EAD" finds
 "BK-3EAD4138D496"). `dateModeEnabled`/`dateModeView`/`selectedDate`
-add two mutually-exclusive filters under the opt-in toggle: "Заезды"
+add three mutually-exclusive filters under the opt-in toggle: "Заезды"
 (`selectedDate` within `[arrival_date, departure_date)`, excluding
 `Cancelled`/`Rejected` -- genuinely staying, not merely date-range-
 overlapping, since a cancelled booking never actually occupied the
-room) and "Отмены" (`arrival_date === selectedDate AND status ===
-"Cancelled"`). Date strings compared lexicographically as ISO
-"YYYY-MM-DD" -- the same convention already used elsewhere in this
-file, no `Date` object parsing needed. All new filters compose with
-the existing status/hotel/agent filters and fold into the existing
-"Сбросить фильтры" reset.
+room), "Созданы" (the first 10 characters of `created_at` -- a full
+ISO datetime, e.g. "2026-07-14T12:26:08.987733" -- equal `selectedDate`,
+entirely independent of the booking's actual stay dates), and "Отмены"
+(`arrival_date === selectedDate AND status === "Cancelled"`). Date
+strings compared lexicographically as ISO "YYYY-MM-DD" -- the same
+convention already used elsewhere in this file, no `Date` object
+parsing needed. All new filters compose with the existing
+status/hotel/agent filters and fold into the existing "Сбросить
+фильтры" reset.
 
 Approved By: Daler
 
@@ -3647,6 +3658,16 @@ only on its exact original `arrival_date` (2027-03-16), not on other
 dates that fell within its now-void stay window (e.g. 2027-03-18) --
 confirming the arrival-date-specific semantics, not a date-range
 overlap check.
+
+"Созданы" verified with a concrete contrast proving it's a genuinely
+different filter, not a redundant rename: for `selectedDate=2026-07-14`
+(the real creation date of booking id=4), "Созданы" correctly returns
+only that booking, while "Заезды" for the same date returns zero
+results -- all 3 real bookings' stay windows are in March 2027, nowhere
+near July 2026, so "Заезды" can never accidentally produce the same
+result "Созданы" does. For `selectedDate=2026-07-13` (the shared real
+creation date of bookings id=2 and id=3), "Созданы" correctly returns
+both.
 
 ---
 

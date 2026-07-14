@@ -1753,12 +1753,14 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
   const [searchQuery, setSearchQuery] = useState<string>("");
   // Opt-in "by date" view -- unchecked by default so the screen's existing
   // full-list behavior is unaffected until a manager explicitly asks for
-  // a single day's picture. dateModeView chooses between two genuinely
+  // a single day's picture. dateModeView chooses between three genuinely
   // different questions for that day: who's actually staying (excludes
-  // Cancelled/Rejected -- they were never really there) vs. who was
-  // supposed to arrive but cancelled (arrival_date match + Cancelled only).
+  // Cancelled/Rejected -- they were never really there), which
+  // reservations were CREATED that day (booking_date, independent of
+  // whenever the actual stay happens to be), and who was supposed to
+  // arrive but cancelled (arrival_date match + Cancelled only).
   const [dateModeEnabled, setDateModeEnabled] = useState(false);
-  const [dateModeView, setDateModeView] = useState<"staying" | "cancellations">("staying");
+  const [dateModeView, setDateModeView] = useState<"staying" | "created" | "cancellations">("staying");
   const [selectedDate, setSelectedDate] = useState<string>(todayStr());
   const [sortKey, setSortKey] = useState<SortKey>("created_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -1898,6 +1900,13 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
             b.status !== "Cancelled" &&
             b.status !== "Rejected"
         );
+      } else if (dateModeView === "created") {
+        // created_at is a full ISO datetime ("2026-07-14T12:26:08.987733"),
+        // not just a date -- compare only its first 10 characters against
+        // selectedDate. Independent of the booking's actual stay dates:
+        // a reservation created today for a stay next March belongs here,
+        // not in "Заезды".
+        list = list.filter((b) => b.created_at.slice(0, 10) === selectedDate);
       } else {
         list = list.filter((b) => b.arrival_date === selectedDate && b.status === "Cancelled");
       }
@@ -2048,6 +2057,15 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
             </button>
             <button
               type="button"
+              onClick={() => setDateModeView("created")}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                dateModeView === "created" ? "bg-coral text-white" : "text-slate/70 hover:bg-sand/60"
+              }`}
+            >
+              Созданы
+            </button>
+            <button
+              type="button"
               onClick={() => setDateModeView("cancellations")}
               className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                 dateModeView === "cancellations" ? "bg-coral text-white" : "text-slate/70 hover:bg-sand/60"
@@ -2059,7 +2077,9 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
           <span className="text-xs text-slate/50">
             {dateModeView === "staying"
               ? "Бронирования, у которых выбранная дата попадает в период проживания (заезд ≤ дата < выезд), кроме отменённых/отклонённых"
-              : "Бронирования с заездом на выбранную дату, которые были отменены"}
+              : dateModeView === "created"
+                ? "Бронирования, созданные в выбранную дату, независимо от дат заезда/выезда"
+                : "Бронирования с заездом на выбранную дату, которые были отменены"}
           </span>
         </div>
       )}
