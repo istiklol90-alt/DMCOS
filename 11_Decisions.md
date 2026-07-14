@@ -3095,7 +3095,107 @@ is the only file this decision commits.
 
 ---
 
-# Decision Template
+# Decision 055
+
+Date: 2026-07-14
+
+Decision: A general UI rule for $0 special-offer prices, Siyam World's
+real seaplane transfer data, and a second round of stale-hotel-data
+cleanup surfaced while verifying it -- all one connected workstream, one
+commit.
+
+**General UI rule, applied to `HotelSearch.tsx`:** a transfer whose
+final calculated price reaches exactly $0 (a 100% special-offer
+discount, e.g. Siyam World's SWJ26 free-seaplane tier) must always be
+shown explicitly as included/free -- never hidden, never silently
+omitted, and never visually indistinguishable from "no transfer option
+configured." Audited every layer of the existing code before changing
+anything: `PricedTransferOption.price` is typed as `TransferPrice |
+undefined` (an object, not a bare number), so `!opt.price` and
+`opt.price ?` truthiness checks were already correct -- a `{total: 0}`
+object doesn't collapse to falsy the way a raw `0` would. Downstream
+totals (`selectedTransferTotal`, `grandTotal`) already used `??`, not
+`||`, so `0` was never silently replaced by a fallback either. The one
+real gap: a free transfer rendered as a bare "USD 0", which is
+technically correct but easy to misread as a display glitch rather
+than a deliberate benefit. Fixed by rendering an explicit "Включено
+бесплатно" badge instead, specifically when `total === 0` -- reusing
+the existing coral accent-badge style (`bg-coral/10`/`text-coral`,
+same as the "Обязательный выбор" badge) rather than inventing a new
+color, since no green/success color exists anywhere in this project's
+palette (`--color-ink`/`--color-coral`/`--color-slate` are the only
+three defined). This is a general rule, not Siyam-specific -- it fires
+on any contract's transfer option whenever its computed total is
+exactly 0, regardless of hotel.
+
+**Siyam World real transfer data:** `ContractTransferOption`
+(transfer_type="seaplane", transfer_name="Seaplane Transfer (Round
+Trip)", price_adult=515, price_child=310, price_infant=0) plus
+`Contract.transfer_required=true`, entered via the existing service
+layer. Caught a real bug while entering this: Decision 053's two
+`SpecialOfferTransferDiscount` tier rows (the free-at-7-nights/50%-at-
+4-nights mechanism) were stored with `transfer_type="Seaplane"`
+(capitalized), but this task specified lowercase `"seaplane"` for the
+new option -- since that field is matched by exact string equality
+throughout Contract Engine (`get_transfer_price`,
+`_find_active_special_offer_transfer_discount`), the mismatch would
+have silently prevented the discount tiers from ever being found for
+this option. Fixed by updating both existing rows to `"seaplane"`
+rather than silently picking one side of the mismatch, flagged
+explicitly rather than left quiet. All three tiers verified via
+`GET .../transfer-price`: 3 nights -> 1030.0 (full price, 515 x 2),
+5 nights -> 515.0 (50% off), 8 nights -> 0.0 (free).
+
+**Second stale-data cleanup round, surfaced while investigating why
+Kandima might display oddly in search (not assumed -- queried
+directly):** found 7 hotel rows named "Kandima Maldives" (ids 2-8),
+all `status="Draft"`, but only hotel_id=2 had any contract or room
+type attached (10 room types, 1 real Active contract). Hotels 3-8 were
+completely empty shells (0 room_types, 0 contracts, 0 of anything) --
+the same leftover duplicates flagged but explicitly left out of scope
+during Decision 054's cleanup, which only covered hotels 9/10/11/12
+(the ones with contracts attached) and hotel 1. Confirmed this was a
+real data problem, not a `HotelSearch.tsx` display bug: the page's
+hotel-list fetch (`GET /hotel-engine/hotels`) has no status or
+room-type filtering anywhere in the code, so every one of the 7 rows
+would render its own card, each empty one showing "Нет активного
+контракта" and "Нет доступных типов номеров" -- confusing, though
+inert (unbookable).
+
+Also found, separately: both real hotels (2 and 13) still had
+`Hotel.status="Draft"` -- distinct from `Contract.contract_status`,
+which Decision 054 already fixed. `HotelSearch.tsx` doesn't filter on
+this field, so it wasn't blocking anything, but it's the same class of
+Draft/Active inconsistency Decision 054 caught for contracts, now
+found on the Hotel Engine side too.
+
+Approved By: Daler
+
+Status: Implemented and verified. `dmc.db` backed up before the hotel
+deletion (deleted after verification passed, same discipline as
+Decisions 053/054). Full dependency check run before deleting hotels
+3-8: `hotel_images`, `hotel_facilities`, `room_types`, `contracts`,
+`bookings` all zero across all six ids -- confirmed via direct query,
+not assumed. Deletion matched the expected count exactly (6 rows).
+`hotel_service.update_hotel_status` (existing, already-tested function)
+applied to hotel_id 2 and 13.
+
+Verified via the exact API calls the frontend itself makes, not just
+direct DB queries: `GET /hotel-engine/hotels?skip=0&limit=100` now
+returns exactly 2 rows (Kandima id=2, Siyam World id=13, both
+`status="Active"`). Kandima's KM26_03 regression check unchanged
+(base_total=251.5). Siyam World's March 2027 booking scenario from
+Decision 054 unchanged (final_total=5475.4875). Final combined state:
+2 hotels, both Active; 2 contracts, both Active; nothing else in
+either table.
+
+**Known limitation, disclosed rather than silently claimed otherwise:**
+no browser-automation tool (Playwright or similar) was available in
+this session, so the $0-transfer badge and the hotel-list deduplication
+were verified at the API layer (exact endpoint/query match to what the
+frontend calls) and via `tsc` typecheck, not by driving an actual
+browser. Visual confirmation in a real browser session was handed back
+to the project owner.
 
 Decision Number:
 

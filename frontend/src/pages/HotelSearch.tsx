@@ -899,9 +899,21 @@ function RoomTypeCard({
                           <span className="text-ink">{opt.option.transfer_name ?? opt.option.transfer_type}</span>
                         </span>
                         {opt.price ? (
-                          <span className="font-mono text-xs font-semibold text-ink">
-                            {transferCurrency} {opt.price.total.toLocaleString("ru-RU")}
-                          </span>
+                          opt.price.total === 0 ? (
+                            // A special-offer transfer discount can reach 100% (e.g.
+                            // Siyam World's SWJ26 free-seaplane tier at 7+ nights) —
+                            // $0 must never look like "no price computed" or be
+                            // confused with the priceError branch below, so it gets
+                            // its own explicit "included free" badge instead of a
+                            // bare "USD 0" that's easy to misread as a glitch.
+                            <span className="rounded-full bg-coral/10 px-2 py-0.5 text-[11px] font-medium text-coral">
+                              Включено бесплатно
+                            </span>
+                          ) : (
+                            <span className="font-mono text-xs font-semibold text-ink">
+                              {transferCurrency} {opt.price.total.toLocaleString("ru-RU")}
+                            </span>
+                          )
                         ) : (
                           <span className="text-[11px] font-medium text-slate/50">
                             {opt.priceError ?? "Цена недоступна"}
