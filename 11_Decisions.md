@@ -3475,6 +3475,118 @@ real 50% discount rather than the raw $515/$310 catalog rates.
 
 ---
 
+# Decision 059
+
+Date: 2026-07-14
+
+Decision: `SpecialOfferTransferDiscount.applies_to_children` (new
+field, Boolean, `default=False`) makes whether a transfer discount
+extends to children/infants a genuine, per-row, data-driven fact
+instead of a hardcoded assumption in either direction -- found via
+live testing on Siyam World's transfer flow immediately after Decision
+058, and directly reverses that decision's assumption that "guests"
+applies uniformly to all ages for every hotel.
+
+Before implementing, checked whether this should be Siyam-World-
+specific data or a universal code change (the two options the project
+owner posed) and found neither was correct: a direct DB query surfaced
+8 real, live `SpecialOfferTransferDiscount` rows already belonging to
+Kandima's KM26_03 (`domestic_comfort` 50%, `seaplane` 25%, both
+previously untouched by this session's Siyam World work). Cross-
+checking against `11_Decisions.md`'s own Decision 034 (logged earlier
+in this project) found that decision had already investigated and
+verified, against a real project-owner-supplied quote, that Kandima's
+50% Domestic Comfort discount correctly includes a child's portion --
+$564.00 for 2 adults + 1 child, re-confirmed still live and unchanged
+before touching anything. This directly contradicts the project
+owner's new instruction that children should NEVER get the transfer
+discount treatment -- if applied as a universal code rule, it would
+have silently broken Kandima's already-verified-correct real figure;
+if left as Siyam-World-only special-cased data with no calculation
+change, there was no way to express it at all, since both hotels'
+real rows run through the exact same shared calculation function.
+Resolved by adding a new per-row field, the same pattern as Decision
+056's `combinable_with_promotions` -- both real, contradictory facts
+about two real hotels are correct simultaneously because they're
+different data on different rows, not a hardcoded rule either
+direction.
+
+Calculation fix in `get_transfer_price`: `adult_total`/`child_total`/
+`infant_total` computed as separate subtotals; the discount factor
+always reduces `adult_total`, and only reduces `child_total`/
+`infant_total` when the matched `SpecialOfferTransferDiscount` row's
+`applies_to_children` is True. `total` is their sum, unchanged in
+shape. The three real per-bucket subtotals are now also returned
+directly in the response (`adult_total`/`child_total`/`infant_total`),
+not just the blended `total`.
+
+Real data: Kandima's 8 KM26_03 transfer-discount rows set to
+`applies_to_children=True` (preserving the real $564.00 figure).
+Siyam World's 2 SWJ26 rows left at the default `False` (matching the
+project owner's explicit confirmation that Siyam World's real terms
+charge children separately/normally for the transfer, never extending
+the free/discounted tiers to them) -- set explicitly rather than left
+implicit, for the same audit-trail reasons as every other real-data
+change this session.
+
+Cascading consequence, flagged and fixed in the same decision:
+Decision 058's frontend fix (committed one turn earlier) reconstructed
+each guest bucket's discounted amount by deriving ONE factor from
+`api_total / raw_blended_total` and applying it uniformly -- which
+only worked because the discount WAS uniform across every bucket at
+the time. Once `applies_to_children` can make the discount apply to
+adults only, that reconstruction produces a wrong, misleading blended
+percentage (e.g. would show both an adult and a child line partially
+discounted by ~23%, when the real breakdown is "adults 100% off,
+child 0% off"). Fixed at the root instead of patching the fragile
+reconstruction further: `get_transfer_price`'s response now carries
+the real, final per-bucket subtotals directly, and
+`HotelSearch.tsx`'s breakdown lines consume `opt.price.adult_total`/
+`child_total`/`infant_total` directly -- the factor-reconstruction
+code from Decision 058 is fully removed, not layered on top of.
+
+Approved By: Daler
+
+Status: Implemented and verified. `dmc.db` backed up before the
+migration (plain additive `ALTER TABLE ... ADD COLUMN
+applies_to_children BOOLEAN DEFAULT 0`, all existing rows defaulted to
+False automatically), deleted after verification passed.
+
+Isolated test (throwaway synthetic hotel/contract/two transfer
+options, deleted afterward) proved both branches on otherwise-
+identical 100%-off/7-night setups: `applies_to_children=False` ->
+`adult_total=0.0`, `child_total=300.0` (full price, excluded),
+`total=300.0`. `applies_to_children=True` -> `adult_total=0.0`,
+`child_total=0.0`, `total=0.0`. Confirms the field genuinely branches
+the calculation, not a cosmetic flag.
+
+Critical regression check, the figure that motivated this entire
+decision: Kandima's real domestic_comfort scenario (2 adults + 1
+child, 2027-03-18 to 2027-03-25) re-verified via live API call BEFORE
+and AFTER the change -- `total=564.0` unchanged both times, now also
+showing the correct itemized `adult_total=414.0`/`child_total=150.0`
+(sum 564, matching the previously-blended figure exactly, since
+Kandima's real terms always included the child).
+
+Siyam World's real new-correct behavior verified: 8-night, 2 adults +
+1 child (the free-tier window) -> `adult_total=0.0`, `child_total=310.0`
+(full catalog price, no longer discounted), `total=310.0` -- a genuine
+behavior change from what Decision 058 showed one turn earlier (which
+had assumed the whole $0), now correctly reflecting that only the
+adult portion is free.
+
+Frontend reconstructed against the real API responses (no browser-
+automation tool available in this session, disclosed explicitly, same
+limitation as Decisions 055/058): Kandima's breakdown now shows "2
+Взрослых x $207 = $414" / "1 Ребёнок x $150 = $150", summing to the
+unchanged $564 total badge. Siyam World's 8-night booking now shows
+the top badge itself changing to "USD 310" (correctly NOT "Включено
+бесплатно," since the transfer as a whole is no longer free) with "2
+Взрослых: Включено бесплатно" / "1 Ребёнок x $310 = $310" beneath it --
+internally consistent throughout, no contradictory figures anywhere.
+
+---
+
 # Decision Template
 
 Decision Number:

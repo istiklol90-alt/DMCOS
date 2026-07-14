@@ -1265,10 +1265,20 @@ def get_transfer_price(
     discounts) — a purely additive signature change (Decision 022 didn't
     need dates at all; this adds them as required parameters since a
     transfer discount's min_nights and period-matching genuinely can't be
-    evaluated without them). Applied as a percentage reduction to the
-    total above via _find_active_special_offer_transfer_discount, keyed by
-    check_in (arrival date), never check_out — see that helper's docstring
-    for why.
+    evaluated without them). Applied as a percentage reduction via
+    _find_active_special_offer_transfer_discount, keyed by check_in
+    (arrival date), never check_out — see that helper's docstring for why.
+
+    Decision 059: the discount always reduces the adult portion; whether
+    it also reduces children/infants depends on that specific
+    SpecialOfferTransferDiscount row's applies_to_children flag — a
+    per-row, per-contract fact (real, contradictory evidence from two
+    real hotels ruled out a single universal rule either direction). The
+    response's adult_total/child_total/infant_total are the real, final
+    post-discount subtotals per bucket — callers needing a per-guest
+    breakdown must use these directly, never reconstruct a discount
+    factor from `total` (no longer safe now that the discount can be
+    non-uniform across buckets).
 
     Raises ValueError if the contract doesn't exist, or no Active transfer
     option with this transfer_type exists on it.
@@ -1285,18 +1295,28 @@ def get_transfer_price(
         )
     option = options[0]
 
-    total = (
-        option.price_adult * adults
-        + option.price_child * children
-        + (option.price_infant or 0) * infants
-    )
+    adult_total = option.price_adult * adults
+    child_total = option.price_child * children
+    infant_total = (option.price_infant or 0) * infants
 
     nights = (check_out - check_in).days
     transfer_discount = _find_active_special_offer_transfer_discount(
         db, contract_id, transfer_type, check_in, nights
     )
+    # Decision 059: the discount always applies to the adult portion; it
+    # only extends to children/infants when this specific row's
+    # applies_to_children is True -- a per-row fact, not a universal rule
+    # (see SpecialOfferTransferDiscount's docstring for the real,
+    # contradictory evidence from Kandima vs. Siyam World that ruled out
+    # a single hardcoded behavior for all contracts).
     if transfer_discount is not None:
-        total *= 1 - (transfer_discount.discount_percent / 100)
+        factor = 1 - (transfer_discount.discount_percent / 100)
+        adult_total *= factor
+        if transfer_discount.applies_to_children:
+            child_total *= factor
+            infant_total *= factor
+
+    total = adult_total + child_total + infant_total
 
     return {
         "contract_id": contract_id,
@@ -1307,6 +1327,14 @@ def get_transfer_price(
         "price_adult": option.price_adult,
         "price_child": option.price_child,
         "price_infant": option.price_infant,
+        # Decision 059: real post-discount subtotals per bucket -- the
+        # frontend must use these directly, not reverse-engineer a
+        # discount factor from `total` (that reconstruction assumed a
+        # uniform discount across every bucket, which applies_to_children
+        # can now make untrue).
+        "adult_total": adult_total,
+        "child_total": child_total,
+        "infant_total": infant_total,
         "total": total,
     }
 

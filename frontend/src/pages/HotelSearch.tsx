@@ -123,6 +123,13 @@ type TransferPrice = {
   price_adult: number;
   price_child: number;
   price_infant: number | null;
+  // Decision 059: the real, final post-discount subtotal per guest bucket
+  // -- a SpecialOfferTransferDiscount's applies_to_children flag can make
+  // the discount non-uniform across buckets, so these must be used
+  // directly for any per-guest breakdown, never reconstructed from total.
+  adult_total: number;
+  child_total: number;
+  infant_total: number;
   total: number;
 };
 
@@ -904,22 +911,18 @@ function RoomTypeCard({
               </div>
               <div className="mt-2 space-y-2.5">
                 {transferOptions.map((opt) => {
-                  // Raw (undiscounted) catalog subtotals per bucket -- used only to
-                  // derive the discount factor below, never rendered directly.
-                  const adultRaw = opt.option.price_adult * adults;
-                  const childRaw = opt.option.price_child * childrenCount;
-                  const infantRaw = (opt.option.price_infant ?? 0) * infants;
-                  const rawTotal = adultRaw + childRaw + infantRaw;
-                  // get_transfer_price applies one uniform percentage to the whole
-                  // blended total (confirmed correct for SWJ26's offer -- "guests"
-                  // covers any age, not adults-only), so this factor reconstructs
-                  // each bucket's true discounted amount exactly, not an estimate:
-                  // bucket_raw * factor is mathematically identical to what a
-                  // bucket-scoped backend calculation would have produced.
-                  const factor = opt.price && rawTotal > 0 ? opt.price.total / rawTotal : 1;
-                  const adultTotal = adultRaw * factor;
-                  const childTotal = childRaw * factor;
-                  const infantTotal = infantRaw * factor;
+                  // Decision 059: use the API's real, final post-discount
+                  // subtotals directly -- a SpecialOfferTransferDiscount's
+                  // applies_to_children flag can make the discount apply only
+                  // to adults, so it's no longer safe to assume one uniform
+                  // factor across every bucket (Decision 058's original
+                  // reconstruction approach, now removed). Falls back to the
+                  // raw catalog subtotal only when opt.price is unavailable
+                  // (a priceError case), matching the pre-existing behavior
+                  // there.
+                  const adultTotal = opt.price ? opt.price.adult_total : opt.option.price_adult * adults;
+                  const childTotal = opt.price ? opt.price.child_total : opt.option.price_child * childrenCount;
+                  const infantTotal = opt.price ? opt.price.infant_total : (opt.option.price_infant ?? 0) * infants;
                   return (
                     <div key={opt.option.id}>
                       <label className="flex cursor-pointer items-center justify-between gap-3 text-sm">

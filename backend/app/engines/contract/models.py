@@ -416,6 +416,21 @@ class SpecialOfferTransferDiscount(Base):
     per the real offer's own "determined by arrival date when stay spans
     multiple months" note, the same check_in-for-the-whole-stay
     simplification precedent get_room_price already uses for seasons).
+
+    Decision 059: applies_to_children (Boolean, default=False) governs
+    whether this row's discount_percent extends to children AND infants,
+    or only to adults -- a genuinely per-row, per-contract fact, not a
+    universal rule. Confirmed by real, contradictory evidence from both
+    real hotels: Kandima's KM26_03 rows are True, preserving the real,
+    project-owner-verified $564.00 quote (Decision 034) for 2 adults + 1
+    child on Domestic Comfort, which requires the child's portion to be
+    discounted along with the adults'. Siyam World's SWJ26 rows are
+    False, per the project owner's explicit real-terms confirmation that
+    children are always charged separately/normally for that offer's
+    transfer, never getting the free/discounted tiers adults get. A
+    universal code rule either direction would have broken one of these
+    two already-real, already-verified facts -- this field is what makes
+    both correct simultaneously, data-driven per row.
     """
 
     __tablename__ = "special_offer_transfer_discounts"
@@ -428,6 +443,7 @@ class SpecialOfferTransferDiscount(Base):
     min_nights = Column(Integer, nullable=False)
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
+    applies_to_children = Column(Boolean, default=False)
     status = Column(String(20), default="Active")
 
 

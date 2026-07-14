@@ -550,6 +550,7 @@ class SpecialOfferTransferDiscountCreate(BaseModel):
     min_nights: int = Field(..., ge=1)
     start_date: date
     end_date: date
+    applies_to_children: bool = False
 
 
 class SpecialOfferTransferDiscountResponse(BaseModel):
@@ -560,6 +561,7 @@ class SpecialOfferTransferDiscountResponse(BaseModel):
     min_nights: int
     start_date: date
     end_date: date
+    applies_to_children: bool
     status: str
 
     class Config:
