@@ -3290,6 +3290,191 @@ transfer at 7 nights (the free tier) = 0.0. Total: 4581.5 + 168.0 + 0.0
 
 ---
 
+# Decision 057
+
+Date: 2026-07-14
+
+Decision: Closed two related, real gaps in Siyam World's children
+handling, both stemming from the same root cause -- the original
+source data given for Decision 052's contract entry never included
+children pricing or occupancy information, so none was invented at the
+time. Real data from the source PDF's Section 1.2 ("Villa Occupancy &
+Water Villas Restriction on Children") now closes both.
+
+Traced before proposing anything, per standing discipline: (1)
+confirmed via direct query that Siyam World's contract had zero
+`ContractAgeCategory` rows at all (Kandima has real `Child`/`Adult`
+rows; Siyam World had none). (2) confirmed via direct query that every
+one of the 15 room types' `RoomOccupancyOption` rows had `children=0`
+across the board (the Decision 052/054 inferred 1A/2A/max-occ-adults-
+only rows), so Decision 024's dominance check correctly but
+unhelpfully rejected any request with children. (3) confirmed via code
+trace that `hotel_service.validate_capacity` runs at the very top of
+`get_room_price`, before any age-category logic -- so the capacity
+check (cause #2) was the actual, immediate failure for "2 adults + 1
+child," not the missing age category (cause #1), which is real but
+downstream and never reached.
+
+New mechanism: `ContractFamilyRule` (contract-scoped, mirrors
+`SpecialOfferFamilyRule`'s waiver shape but keyed to `contract_id`, not
+`offer_id`). Deliberately NOT built by reusing `SpecialOfferFamilyRule`
+via a fake "permanent" `SpecialOffer` row -- that would misrepresent a
+standing base contract term (free for life of the contract, not a
+bounded promotional window) as a limited-time tactical offer, and would
+pollute `applied_special_offer_ids` with a citation to an offer that
+doesn't correspond to any real offer code (the same class of concern
+that ruled out reusing `combinable_with_other_offers` in Decision 056).
+`start_date`/`end_date` nullable (unlike the offer-scoped table's
+required pair) -- NULL spans the contract's entire validity, avoiding a
+redundant date range that would just have to track the contract's own
+dates. `get_room_price` composes `ContractFamilyRule` with
+`SpecialOfferFamilyRule` via `max()` of their `max_free_children_
+accommodation`, never additively -- inert overlap today (Kandima only
+ever has the offer-scoped rule via KM26_03, Siyam World only the
+contract-scoped one), but correctly composable if a future hotel needs
+both. Only the offer-scoped rule ever contributes to
+`applied_special_offer_ids`.
+
+Real data entered for Siyam World (contract_id=8): "Child"
+`ContractAgeCategory` (2-11); a `$260/night` `age_category_price`
+`RateSupplement` for Child on all 75 real `Rate` rows (the real
+"extra child beyond the complimentary 2" charge); one
+`ContractFamilyRule` row (`min_adults=1, max_free_children_
+accommodation=2, max_free_child_age_accommodation=11.99`, no date
+bound). All 45 old inferred `RoomOccupancyOption` rows deleted and
+replaced with 29 real rows matching the source PDF's exact "X+Y / Z"
+Max. Occupancy notation per room type (14 room types got the pair;
+Two Storey Pool Beach Residence got only its single real "2A+1C"
+combo -- no "/3A" alternative was given for it, and none was invented).
+
+Cross-checking the real occupancy data against Decision 052's inferred
+`max_occupancy` values surfaced 7 room types where the placeholder was
+wrong in both directions -- some too permissive (Water Villa 4->3, Two
+Storey Pool Beach Residence 4->3), several too restrictive and would
+have silently blocked real max-occupancy bookings (Water Pavilion
+4->5, Beach Suite 4->5, Three Bedroom Lagoon Villa 8->9, Three Bedroom
+Pool Beach Villa 8->9, Four Bedroom Beach Residence 10->12). All 7
+corrected to the real values. Separately, `RoomType.bedroom_count` was
+found to be NULL for all 15 room types despite Decision 053's
+documentation claiming it had been backfilled -- it was only ever
+added as a column, never populated. Backfilled now using the same
+bedroom-count-in-name inference Decision 052 used for the (now
+corrected) `max_occupancy`, and the stale claim corrected in both
+`11_Decisions.md` and `CLAUDE.md`.
+
+Approved By: Daler
+
+Status: Implemented and verified. Isolated test (throwaway synthetic
+hotel/contract/family-rule setup, deleted afterward) proved 4
+scenarios: no family rule at all -- every child charged $260/night; a
+`ContractFamilyRule` alone waiving 2 -- only the 3rd child charged,
+`applied_special_offer_ids=[]` confirmed uncorrupted; 1 child within
+the free cap -- fully free; a `ContractFamilyRule` (waives 2) and a
+less-generous `SpecialOfferFamilyRule` (waives 1) both active
+simultaneously -- `max(2,1)=2` waived, NOT additive (would have been 3
+free if additive), proving the composition rule.
+
+Caught and fixed a real ordering bug in the data-entry script itself
+(not the underlying mechanism): the first attempt tried to insert
+Water Pavilion's real "2A+3C" occupancy row before raising its
+`max_occupancy` from the stale inferred 4 to the real 5, so
+`validate_occupancy_within_capacity` correctly rejected 5 people
+against the still-stale ceiling of 4. Fixed by reordering the script
+(update `max_occupancy` first, then insert occupancy rows per room
+type) and resumed cleanly for the 12 remaining room types without
+duplicating the 3 that had already completed successfully.
+
+Regression-checked against both real hotels' existing verified numbers
+(Kandima's KM26_03, Siyam World's Decision 056 combinability fix) --
+both unchanged. Real scenario checks: Water Villa, 2 adults + 1 child
+(Peak season) -> `supplements_total=0.0`, the child fully free,
+resolving the originally-reported "no price returned" bug entirely.
+Water Pavilion, 2 adults + 3 children (Peak season) -> `supplements_
+total=260.0`, exactly the 3rd child charged at $260/night, the first 2
+correctly free.
+
+---
+
+# Decision 058
+
+Date: 2026-07-14
+
+Decision: Fixed a real, confirmed frontend display bug in
+`HotelSearch.tsx`'s transfer breakdown -- distinct from Decision 057
+(a backend/data gap), found via live testing on the same booking flow
+in the same session, logged separately since they're two unrelated
+fixes.
+
+Investigated before proposing anything: traced `get_transfer_price`'s
+exact logic and confirmed it computes one blended total across
+adults/children/infants FIRST, then applies a SpecialOfferTransferDiscount's
+`discount_percent` to that single combined number -- a structural
+property of the schema (`discount_percent` is one flat value per row),
+not merely a data-configuration choice. Re-read SWJ26 Offer 4's exact
+original source text and found it genuinely silent on whether children
+receive the same free/discounted transfer treatment as adults -- "2
+guests per bedroom" uses the generic term "guests," not "adults," and
+nothing else in the given text distinguishes child transfer pricing
+from the separate ($260/night) child ROOM pricing rule. The project
+owner confirmed: treat "guests" as covering any age for this offer --
+the current uniform-blended-discount mechanism is correct behavior for
+SWJ26, not a bug, and no backend/schema change was made for this.
+
+The real, confirmed bug was found separately while tracing the above:
+`HotelSearch.tsx`'s per-guest-bucket breakdown lines ("2 x $515 =
+$1,030", "1 x $310 = $310") were computed from the RAW, undiscounted
+catalog `price_adult`/`price_child` -- while the total shown alongside
+them (a dollar figure, or the Decision 055 "Включено бесплатно" badge)
+reflects the real DISCOUNTED total from the API. A 7+-night free
+transfer would show "Включено бесплатно" as the total while the lines
+directly below it still displayed the full undiscounted per-person
+math as if that's what guests were being charged -- a directly
+contradictory, misleading breakdown, and exactly the "must show
+adult/child pricing distinctly and accurately" principle the project
+owner had asked for, just violated in the opposite direction (a false
+breakdown, not a hidden distinction).
+
+Fix: since the backend's discount is a single uniform percentage
+applied to the whole blended total (confirmed correct for this offer
+per the above), each bucket's true discounted amount can be
+reconstructed exactly, client-side, with no backend change --
+`factor = api_total / raw_blended_total`, then `bucket_raw * factor`
+per adults/children/infants. This is not an approximation: because the
+backend's discount is genuinely uniform, `bucket_raw * factor` is
+mathematically identical to what a bucket-scoped backend calculation
+would have produced. New `renderTransferBucketLine` helper: when a
+bucket's discounted total is exactly $0, renders "{count} {label}:
+Включено бесплатно" (matching the project owner's requested phrasing
+and the existing total badge's wording) instead of a "2 x $0 = $0"
+line that reads as a glitch; otherwise renders the same "count x
+discounted-per-unit = discounted-subtotal" format as before, just with
+real numbers.
+
+Approved By: Daler
+
+Status: Implemented and verified. `tsc -b` typecheck clean for
+`HotelSearch.tsx` (all other reported errors are pre-existing,
+unrelated files). No browser-automation tool (Playwright or similar)
+is available in this session, so verification was a precise
+reconstruction against real API responses using the exact arithmetic
+the component now runs, not a screenshot -- disclosed explicitly
+rather than claimed as a full visual confirmation; the project owner
+will do the manual browser check.
+
+8-night transfer, 2 adults + 1 child (free tier): API total=0.0.
+Reconstructed: adultRaw=1030, childRaw=310, rawTotal=1340, factor=0 ->
+both buckets discount to exactly $0 -> both lines read "Включено
+бесплатно," consistent with the top badge, no undiscounted figure
+anywhere.
+
+5-night transfer, 2 adults + 1 child (50% tier): API total=670.0.
+Reconstructed: factor=670/1340=0.5 -> adults 1030*0.5=515 ("2 Adults x
+$257.50 = $515"), child 310*0.5=155 ("1 Child x $155 = $155"). Sum
+515+155=670 matches the top total exactly, correctly reflecting the
+real 50% discount rather than the raw $515/$310 catalog rates.
+
+---
+
 # Decision Template
 
 Decision Number:

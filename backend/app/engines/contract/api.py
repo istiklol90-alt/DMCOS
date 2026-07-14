@@ -43,6 +43,8 @@ from app.engines.contract.schemas import (
     SpecialOfferMealPlanDiscountResponse,
     SpecialOfferFamilyRuleCreate,
     SpecialOfferFamilyRuleResponse,
+    ContractFamilyRuleCreate,
+    ContractFamilyRuleResponse,
     SpecialOfferTransferDiscountCreate,
     SpecialOfferTransferDiscountResponse,
     BlackoutDateCreate,
@@ -554,6 +556,28 @@ def list_special_offer_family_rules(
     offer_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.list_special_offer_family_rules(db, offer_id))
+
+
+@router.post(
+    "/contract-family-rules",
+    response_model=ContractFamilyRuleResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_contract_family_rule(
+    data: ContractFamilyRuleCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return _run(lambda: service.create_contract_family_rule(db, data))
+
+
+@router.get(
+    "/contracts/{contract_id}/family-rules", response_model=list[ContractFamilyRuleResponse]
+)
+def list_contract_family_rules(
+    contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    return _run(lambda: service.list_contract_family_rules(db, contract_id))
 
 
 @router.post(

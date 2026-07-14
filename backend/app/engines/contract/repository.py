@@ -19,6 +19,7 @@ from app.engines.contract.models import (
     SpecialOfferRoomDiscount,
     SpecialOfferMealPlanDiscount,
     SpecialOfferFamilyRule,
+    ContractFamilyRule,
     SpecialOfferTransferDiscount,
     BlackoutDate,
     Allotment,
@@ -523,6 +524,22 @@ def list_special_offer_family_rules(db: Session, offer_id: int) -> list[SpecialO
     """Return every family rule row for one offer."""
     return (
         db.query(SpecialOfferFamilyRule).filter(SpecialOfferFamilyRule.offer_id == offer_id).all()
+    )
+
+
+def create_contract_family_rule(db: Session, **fields) -> ContractFamilyRule:
+    """Insert a new standing family rule row for a contract (Decision 057)."""
+    row = ContractFamilyRule(**fields)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_contract_family_rules(db: Session, contract_id: int) -> list[ContractFamilyRule]:
+    """Return every standing family rule row for one contract."""
+    return (
+        db.query(ContractFamilyRule).filter(ContractFamilyRule.contract_id == contract_id).all()
     )
 
 

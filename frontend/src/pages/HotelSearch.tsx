@@ -272,6 +272,29 @@ function pluralInfants(n: number): string {
   return "младенцев";
 }
 
+// A transfer-price bucket line (adults/children/infants) must always reflect
+// the ACTUAL discounted amount, never the raw undiscounted catalog price —
+// showing undiscounted math next to a "included free"/discounted total is a
+// contradictory, misleading breakdown. When a bucket's true discounted total
+// is exactly 0, it gets the same explicit "included free" wording as the
+// overall total badge, instead of a "2 × $0 = $0" line that reads as a glitch.
+function renderTransferBucketLine(count: number, label: string, discountedTotal: number, currency: string | null) {
+  if (discountedTotal === 0) {
+    return (
+      <>
+        {count} {label}: Включено бесплатно
+      </>
+    );
+  }
+  const perUnit = discountedTotal / count;
+  return (
+    <>
+      {count} {label} × {currency} {perUnit.toLocaleString("ru-RU")} = {currency}{" "}
+      {discountedTotal.toLocaleString("ru-RU")}
+    </>
+  );
+}
+
 // Real Maldives contracts (verified against Kandima's PDF) price a guest
 // aged 12+ as an adult, 2-11.99 as a child, 0-1.99 as an infant — the exact
 // buckets get_room_price/get_transfer_price already use. The search form
@@ -881,9 +904,22 @@ function RoomTypeCard({
               </div>
               <div className="mt-2 space-y-2.5">
                 {transferOptions.map((opt) => {
-                  const adultTotal = opt.option.price_adult * adults;
-                  const childTotal = opt.option.price_child * childrenCount;
-                  const infantTotal = (opt.option.price_infant ?? 0) * infants;
+                  // Raw (undiscounted) catalog subtotals per bucket -- used only to
+                  // derive the discount factor below, never rendered directly.
+                  const adultRaw = opt.option.price_adult * adults;
+                  const childRaw = opt.option.price_child * childrenCount;
+                  const infantRaw = (opt.option.price_infant ?? 0) * infants;
+                  const rawTotal = adultRaw + childRaw + infantRaw;
+                  // get_transfer_price applies one uniform percentage to the whole
+                  // blended total (confirmed correct for SWJ26's offer -- "guests"
+                  // covers any age, not adults-only), so this factor reconstructs
+                  // each bucket's true discounted amount exactly, not an estimate:
+                  // bucket_raw * factor is mathematically identical to what a
+                  // bucket-scoped backend calculation would have produced.
+                  const factor = opt.price && rawTotal > 0 ? opt.price.total / rawTotal : 1;
+                  const adultTotal = adultRaw * factor;
+                  const childTotal = childRaw * factor;
+                  const infantTotal = infantRaw * factor;
                   return (
                     <div key={opt.option.id}>
                       <label className="flex cursor-pointer items-center justify-between gap-3 text-sm">
@@ -921,23 +957,17 @@ function RoomTypeCard({
                         )}
                       </label>
                       <p className="pl-6 text-[11px] leading-relaxed text-slate/50">
-                        {adults} {pluralAdults(adults)} × {transferCurrency}{" "}
-                        {opt.option.price_adult.toLocaleString("ru-RU")} = {transferCurrency}{" "}
-                        {adultTotal.toLocaleString("ru-RU")}
+                        {renderTransferBucketLine(adults, pluralAdults(adults), adultTotal, transferCurrency)}
                         {childrenCount > 0 && (
                           <>
                             <br />
-                            {childrenCount} {pluralChildren(childrenCount)} × {transferCurrency}{" "}
-                            {opt.option.price_child.toLocaleString("ru-RU")} = {transferCurrency}{" "}
-                            {childTotal.toLocaleString("ru-RU")}
+                            {renderTransferBucketLine(childrenCount, pluralChildren(childrenCount), childTotal, transferCurrency)}
                           </>
                         )}
                         {infants > 0 && opt.option.price_infant != null && (
                           <>
                             <br />
-                            {infants} {pluralInfants(infants)} × {transferCurrency}{" "}
-                            {opt.option.price_infant.toLocaleString("ru-RU")} = {transferCurrency}{" "}
-                            {infantTotal.toLocaleString("ru-RU")}
+                            {renderTransferBucketLine(infants, pluralInfants(infants), infantTotal, transferCurrency)}
                           </>
                         )}
                       </p>

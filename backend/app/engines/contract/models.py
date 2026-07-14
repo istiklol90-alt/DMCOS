@@ -359,6 +359,55 @@ class SpecialOfferFamilyRule(Base):
     status = Column(String(20), default="Active")
 
 
+class ContractFamilyRule(Base):
+    """
+    Decision 057: a standing, non-promotional family/child policy for a
+    contract as a whole -- e.g. Siyam World's real "up to 2 children
+    under 11.99 stay free when sharing with parents" base contract term
+    (source PDF Section 1.2), which applies year-round, not during a
+    bounded promotional window. Deliberately separate from
+    SpecialOfferFamilyRule (mechanism 3 above): that table is namespaced
+    under offer_id, and SpecialOffer's own docstring calls it "a named,
+    BOUNDED promotional package" -- attaching a permanent contract term
+    to a SpecialOffer row would misrepresent it as a limited-time offer,
+    and would pollute applied_special_offer_ids with a citation that
+    doesn't correspond to any real offer code (the same class of concern
+    that ruled out reusing combinable_with_other_offers for
+    combinable_with_promotions in Decision 056). Same waiver mechanism
+    and field shape as SpecialOfferFamilyRule, deliberately mirrored for
+    consistency -- just contract-scoped instead of offer-scoped.
+
+    start_date/end_date nullable, unlike SpecialOfferFamilyRule's
+    required pair -- NULL means the rule spans the contract's entire
+    validity, the same nullable-means-unrestricted convention used
+    throughout this engine (Promotion.booking_start,
+    SpecialOffer.booking_start, etc.). A promotional offer is inherently
+    bounded so its own dates are required; a permanent contract term
+    isn't, so forcing a redundant date range here (that would just have
+    to track the contract's own start_date/end_date) would be an
+    artificial constraint carried over from a different context.
+
+    get_room_price composes this with SpecialOfferFamilyRule via max(),
+    not additively -- whichever source waives more children wins, never
+    both stacked. Inert overlap today: Kandima only ever has the offer-
+    scoped rule, Siyam World will only ever have this contract-scoped
+    one, but a future hotel needing both stays correctly expressible.
+    """
+
+    __tablename__ = "contract_family_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    contract_id = Column(Integer, ForeignKey("contracts.id"), nullable=False)
+    start_date = Column(Date, nullable=True)
+    end_date = Column(Date, nullable=True)
+    min_adults = Column(Integer, nullable=False)
+    max_free_children_accommodation = Column(Integer, nullable=False)
+    max_free_child_age_accommodation = Column(Float, nullable=False)
+    max_free_children_meals = Column(Integer, nullable=True)
+    max_free_child_age_meals = Column(Float, nullable=True)
+    status = Column(String(20), default="Active")
+
+
 class SpecialOfferTransferDiscount(Base):
     """
     Mechanism 4: a percentage discount on a specific transfer_type's

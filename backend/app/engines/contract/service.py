@@ -42,6 +42,7 @@ from app.engines.contract.models import (
     SpecialOfferRoomDiscount,
     SpecialOfferMealPlanDiscount,
     SpecialOfferFamilyRule,
+    ContractFamilyRule,
     SpecialOfferTransferDiscount,
     BlackoutDate,
     Allotment,
@@ -70,6 +71,7 @@ from app.engines.contract.schemas import (
     SpecialOfferRoomDiscountCreate,
     SpecialOfferMealPlanDiscountCreate,
     SpecialOfferFamilyRuleCreate,
+    ContractFamilyRuleCreate,
     SpecialOfferTransferDiscountCreate,
     BlackoutDateCreate,
     AllotmentCreate,
@@ -652,6 +654,25 @@ def create_special_offer_family_rule(
 def list_special_offer_family_rules(db: Session, offer_id: int) -> list[SpecialOfferFamilyRule]:
     """Return every family rule row for one offer."""
     return repository.list_special_offer_family_rules(db, offer_id)
+
+
+def create_contract_family_rule(db: Session, data: ContractFamilyRuleCreate) -> ContractFamilyRule:
+    """
+    Add a standing family rule (Decision 057) directly to a contract --
+    not a SpecialOffer, since this represents a permanent, non-promotional
+    policy. Raises ValueError if the contract doesn't exist, or if both
+    start_date/end_date are given but inverted (skipped entirely when
+    either is None, since a permanent rule may have no date range at all).
+    """
+    _require_contract(db, data.contract_id)
+    if data.start_date is not None and data.end_date is not None:
+        validate_date_range(data.start_date, data.end_date)
+    return repository.create_contract_family_rule(db, **data.model_dump())
+
+
+def list_contract_family_rules(db: Session, contract_id: int) -> list[ContractFamilyRule]:
+    """Return every standing family rule row for one contract."""
+    return repository.list_contract_family_rules(db, contract_id)
 
 
 def create_special_offer_transfer_discount(
@@ -1511,6 +1532,31 @@ def _find_active_special_offer_family_rule(
     return max(candidates, key=lambda r: r.min_adults)
 
 
+def _find_active_contract_family_rule(
+    db: Session, contract_id: int, check_in: date_type, adults: int
+) -> Optional[ContractFamilyRule]:
+    """
+    Decision 057: the contract-scoped counterpart to
+    _find_active_special_offer_family_rule -- same highest-min_adults-wins
+    selection, but reads ContractFamilyRule directly by contract_id (no
+    _bookable_special_offers wrapper, since this isn't offer-scoped at
+    all). start_date/end_date are nullable here (unlike the offer-scoped
+    version): None on either means "no bound on that side," so a rule
+    with both None covers every check_in.
+    """
+    candidates = [
+        row
+        for row in repository.list_contract_family_rules(db, contract_id)
+        if row.status == "Active"
+        and (row.start_date is None or row.start_date <= check_in)
+        and (row.end_date is None or check_in <= row.end_date)
+        and adults >= row.min_adults
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda r: r.min_adults)
+
+
 def _find_active_special_offer_transfer_discount(
     db: Session, contract_id: int, transfer_type: str, arrival_date: date_type, nights: int
 ) -> Optional[SpecialOfferTransferDiscount]:
@@ -1596,7 +1642,10 @@ def get_room_price(
         discounting an amount. Since the "children" bucket is already,
         by construction, restricted to the contract's child age category
         (e.g. 2-11.99), any count in it already satisfies a family rule's
-        age ceiling with no extra age check needed here.
+        age ceiling with no extra age check needed here. Decision 057:
+        composed via max() with ContractFamilyRule, a standing (non-
+        promotional) equivalent for permanent contract terms like Siyam
+        World's real "first 2 children free" policy — never additive.
       - A SpecialOfferRoomDiscount (mechanism 1) reduces base_total, and —
         only if applies_to_extra_person — the extra_person contribution,
         AFTER those are computed. Never touches age_category_price.
@@ -1663,10 +1712,23 @@ def get_room_price(
 
     # Decision 026, mechanism 3: waive age_category_price for up to N
     # qualifying children before computing that supplement at all.
+    #
+    # Decision 057: composed with ContractFamilyRule (a standing,
+    # non-promotional waiver -- e.g. Siyam World's real "first 2 children
+    # free" base contract term) via max(), not additively -- whichever
+    # source waives more children wins, never both stacked together. Only
+    # family_rule (the SpecialOffer-scoped one) feeds
+    # applied_special_offer_ids below; contract_family_rule deliberately
+    # never does, since it isn't a special offer at all.
     chargeable_children = children
     family_rule = _find_active_special_offer_family_rule(db, contract_id, check_in, adults)
-    if family_rule is not None:
-        waived = min(children, family_rule.max_free_children_accommodation)
+    contract_family_rule = _find_active_contract_family_rule(db, contract_id, check_in, adults)
+    waived_from_offer = family_rule.max_free_children_accommodation if family_rule is not None else 0
+    waived_from_contract = (
+        contract_family_rule.max_free_children_accommodation if contract_family_rule is not None else 0
+    )
+    if family_rule is not None or contract_family_rule is not None:
+        waived = min(children, max(waived_from_offer, waived_from_contract))
         chargeable_children = children - waived
 
     categories = repository.list_contract_age_categories(db, contract_id)

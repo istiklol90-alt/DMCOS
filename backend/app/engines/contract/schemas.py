@@ -513,6 +513,36 @@ class SpecialOfferFamilyRuleResponse(BaseModel):
         from_attributes = True
 
 
+class ContractFamilyRuleCreate(BaseModel):
+    contract_id: int
+    # Nullable, unlike SpecialOfferFamilyRuleCreate's required pair --
+    # None = spans the contract's entire validity. See ContractFamilyRule's
+    # docstring for why a permanent contract term doesn't need bounded dates.
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    min_adults: int = Field(..., ge=1)
+    max_free_children_accommodation: int = Field(..., ge=0)
+    max_free_child_age_accommodation: float = Field(..., ge=0)
+    max_free_children_meals: Optional[int] = Field(None, ge=0)
+    max_free_child_age_meals: Optional[float] = Field(None, ge=0)
+
+
+class ContractFamilyRuleResponse(BaseModel):
+    id: int
+    contract_id: int
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    min_adults: int
+    max_free_children_accommodation: int
+    max_free_child_age_accommodation: float
+    max_free_children_meals: Optional[int] = None
+    max_free_child_age_meals: Optional[float] = None
+    status: str
+
+    class Config:
+        from_attributes = True
+
+
 class SpecialOfferTransferDiscountCreate(BaseModel):
     offer_id: int
     transfer_type: str = Field(..., min_length=1, max_length=50)
