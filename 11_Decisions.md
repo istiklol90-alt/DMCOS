@@ -3587,6 +3587,69 @@ internally consistent throughout, no contradictory figures anywhere.
 
 ---
 
+# Decision 060
+
+Date: 2026-07-14
+
+Decision: Two new filtering features for the Admin Panel's Reservations
+screen (`BookingsList` in `Reservations.tsx`) -- a booking-number
+search field, and an opt-in "by date" view with two distinct,
+confirmed semantics. Both client-side over the already-fetched
+bookings list, extending the existing `filteredSorted` useMemo rather
+than introducing a new table component.
+
+Two structural ambiguities resolved with the project owner before
+implementing, rather than guessed:
+
+1. Whether the date filter should be always-active by default (table
+   opens every time already restricted to today's stays) or an opt-in
+   toggle (unchanged full-list default, switches into date mode only
+   when asked). Confirmed: opt-in toggle -- the screen's existing
+   default behavior for anyone already using it stays completely
+   unaffected; a "По дате" button reveals the date picker (defaulting
+   to today) and a "Заезды/Отмены" sub-view control only once enabled.
+
+2. What "cancellations tied to a date" should mean: `cancelled_at`
+   falling on the selected date (when the cancellation was processed --
+   an audit/activity question) vs. `arrival_date` matching the selected
+   date AND status Cancelled (who was supposed to check in that day but
+   won't -- an operational, front-desk question). Confirmed the latter,
+   matching the project owner's own instinct and the stated operational
+   purpose of the whole feature.
+
+Implementation: `searchQuery` filters `booking_number` via
+case-insensitive substring match (e.g. "3EAD" finds
+"BK-3EAD4138D496"). `dateModeEnabled`/`dateModeView`/`selectedDate`
+add two mutually-exclusive filters under the opt-in toggle: "Заезды"
+(`selectedDate` within `[arrival_date, departure_date)`, excluding
+`Cancelled`/`Rejected` -- genuinely staying, not merely date-range-
+overlapping, since a cancelled booking never actually occupied the
+room) and "Отмены" (`arrival_date === selectedDate AND status ===
+"Cancelled"`). Date strings compared lexicographically as ISO
+"YYYY-MM-DD" -- the same convention already used elsewhere in this
+file, no `Date` object parsing needed. All new filters compose with
+the existing status/hotel/agent filters and fold into the existing
+"Сбросить фильтры" reset.
+
+Approved By: Daler
+
+Status: Implemented and verified. `tsc -b` clean for `Reservations.tsx`
+(all other reported errors are pre-existing, unrelated files). No
+browser-automation tool available in this session (same disclosed
+limitation as Decisions 055/058/059), so verification was hand-tracing
+the exact filter logic against the real, live `/booking-engine/bookings`
+API response (3 real bookings, confirmed identical to the direct DB
+query): search for "3EAD" correctly matches `BK-3EAD4138D496`; "Заезды"
+for a date inside booking id=2's stay (Pending) correctly includes it
+and correctly excludes booking id=3 (Cancelled, even where its old stay
+window would otherwise overlap); "Отмены" correctly finds booking id=3
+only on its exact original `arrival_date` (2027-03-16), not on other
+dates that fell within its now-void stay window (e.g. 2027-03-18) --
+confirming the arrival-date-specific semantics, not a date-range
+overlap check.
+
+---
+
 # Decision Template
 
 Decision Number:

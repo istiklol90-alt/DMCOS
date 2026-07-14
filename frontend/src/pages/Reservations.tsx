@@ -1750,6 +1750,16 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [hotelFilter, setHotelFilter] = useState<string>("all");
   const [agentFilter, setAgentFilter] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  // Opt-in "by date" view -- unchecked by default so the screen's existing
+  // full-list behavior is unaffected until a manager explicitly asks for
+  // a single day's picture. dateModeView chooses between two genuinely
+  // different questions for that day: who's actually staying (excludes
+  // Cancelled/Rejected -- they were never really there) vs. who was
+  // supposed to arrive but cancelled (arrival_date match + Cancelled only).
+  const [dateModeEnabled, setDateModeEnabled] = useState(false);
+  const [dateModeView, setDateModeView] = useState<"staying" | "cancellations">("staying");
+  const [selectedDate, setSelectedDate] = useState<string>(todayStr());
   const [sortKey, setSortKey] = useState<SortKey>("created_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
@@ -1870,6 +1880,28 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
     if (scope.type === "all" && agentFilter !== "all") {
       list = list.filter((b) => String(b.agent_id) === agentFilter);
     }
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      list = list.filter((b) => b.booking_number.toLowerCase().includes(q));
+    }
+    if (dateModeEnabled) {
+      if (dateModeView === "staying") {
+        // ISO "YYYY-MM-DD" strings compare correctly lexicographically --
+        // same convention already used elsewhere in this file (e.g. the
+        // b.arrival_date > today check above), no Date parsing needed.
+        // [arrival_date, departure_date) -- a checkout-day booking has
+        // already left, so departure_date itself is excluded.
+        list = list.filter(
+          (b) =>
+            selectedDate >= b.arrival_date &&
+            selectedDate < b.departure_date &&
+            b.status !== "Cancelled" &&
+            b.status !== "Rejected"
+        );
+      } else {
+        list = list.filter((b) => b.arrival_date === selectedDate && b.status === "Cancelled");
+      }
+    }
 
     const sorted = [...list].sort((a, b) => {
       let cmp = 0;
@@ -1880,7 +1912,19 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
       return sortDir === "asc" ? cmp : -cmp;
     });
     return sorted;
-  }, [bookings, statusFilter, hotelFilter, agentFilter, scope.type, sortKey, sortDir]);
+  }, [
+    bookings,
+    statusFilter,
+    hotelFilter,
+    agentFilter,
+    scope.type,
+    searchQuery,
+    dateModeEnabled,
+    dateModeView,
+    selectedDate,
+    sortKey,
+    sortDir,
+  ]);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -1947,12 +1991,35 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
           </select>
         )}
 
-        {(statusFilter !== "all" || hotelFilter !== "all" || agentFilter !== "all") && (
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Поиск по № брони..."
+          className="w-48 appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+        />
+
+        <button
+          type="button"
+          onClick={() => setDateModeEnabled(!dateModeEnabled)}
+          className={`appearance-none rounded-lg border px-3.5 py-2.5 text-sm font-medium transition-colors ${
+            dateModeEnabled
+              ? "border-coral bg-coral/10 text-coral"
+              : "border-ink/15 bg-white text-slate hover:bg-sand/60"
+          }`}
+        >
+          По дате
+        </button>
+
+        {(statusFilter !== "all" || hotelFilter !== "all" || agentFilter !== "all" || searchQuery.trim() || dateModeEnabled) && (
           <button
             onClick={() => {
               setStatusFilter("all");
               setHotelFilter("all");
               setAgentFilter("all");
+              setSearchQuery("");
+              setDateModeEnabled(false);
+              setDateModeView("staying");
             }}
             className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-xs font-medium text-slate/70 transition-colors hover:bg-sand/60"
           >
@@ -1960,6 +2027,42 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
           </button>
         )}
       </div>
+
+      {dateModeEnabled && (
+        <div className="mt-2.5 flex flex-wrap items-center gap-2.5 rounded-xl bg-sand/50 px-3.5 py-2.5">
+          <input
+            type="date"
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+            className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+          />
+          <div className="flex items-center gap-1 rounded-lg border border-ink/15 bg-white p-1">
+            <button
+              type="button"
+              onClick={() => setDateModeView("staying")}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                dateModeView === "staying" ? "bg-coral text-white" : "text-slate/70 hover:bg-sand/60"
+              }`}
+            >
+              Заезды
+            </button>
+            <button
+              type="button"
+              onClick={() => setDateModeView("cancellations")}
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                dateModeView === "cancellations" ? "bg-coral text-white" : "text-slate/70 hover:bg-sand/60"
+              }`}
+            >
+              Отмены
+            </button>
+          </div>
+          <span className="text-xs text-slate/50">
+            {dateModeView === "staying"
+              ? "Бронирования, у которых выбранная дата попадает в период проживания (заезд ≤ дата < выезд), кроме отменённых/отклонённых"
+              : "Бронирования с заездом на выбранную дату, которые были отменены"}
+          </span>
+        </div>
+      )}
 
       <div className="mt-4 overflow-x-auto rounded-2xl border border-ink/10 bg-white">
         <table className="w-full min-w-[1180px] border-collapse text-left text-sm">
