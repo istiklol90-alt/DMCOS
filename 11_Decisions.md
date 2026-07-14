@@ -2982,6 +2982,119 @@ confirmed correct.
 
 ---
 
+# Decision 054
+
+Date: 2026-07-14
+
+Decision: Fixed a real bug in Siyam World's bookability, and hard-deleted
+five test/leftover data artifacts from the database so only Kandima and
+Siyam World remain as production contracts -- both actions taken to
+avoid leaving undocumented, silent database state behind after an
+extended session of real data entry and isolated testing.
+
+**Bug fix:** searching Siyam World for 19-26 Mar 2027 returned "Нет
+активного контракта" despite that date falling squarely inside the
+Peak season (11 Jan-14 Apr 2027) entered in Decision 052. Root cause
+traced directly, not guessed: `get_active_contract` requires BOTH
+`contract_status == "Active"` AND the date range to cover check_in --
+Siyam World's date range (2026-11-01 to 2027-10-31) was always correct,
+but `contract_status` had defaulted to `"Draft"` on creation (the
+`Contract` model's column default) and Decision 052's data-entry script
+never explicitly activated it, unlike Kandima's real contract, which is
+`"Active"`. Confirmed by reproducing `get_active_contract(db, 13,
+date(2027,3,19))` returning `None` before the fix, then `contract_id=8`
+immediately after calling the existing `service.update_contract_status(db,
+8, "Active")` -- zero other changes involved. Nothing else was wrong;
+the date-range and season/rate data were correct all along.
+
+**Cleanup, in 4 parts, each executed only after an explicit inventory
+and (for destructive steps) a shown plan:**
+
+1. Activated Siyam World's contract (the bug fix above).
+2. Deleted contract_id=9 + its orphaned `contract_seasons` row (id=20)
+   -- confirmed as this session's own incomplete cleanup: the first
+   (failed) isolated test run for Decision 053 created a throwaway
+   hotel/contract/season before crashing on an unrelated Pydantic
+   validation error; the hotel and room type were deleted at the time,
+   but the contract and season rows were missed. Zero real data
+   involved (0 rates, 0 bookings).
+3. Deleted contracts 3/5/6/7 (three duplicate "Kandima Maldives" test
+   hotels, ids 9/11/12) and contract 4 ("Broken Ref Test Hotel", id
+   10) -- confirmed by the project owner as artifacts from earlier
+   "AI Core Engine atomicity testing," predating this conversation's
+   visible history. All Draft status, zero bookings. Full footprint
+   removed: rate_supplements, rates, contract_meal_plans,
+   contract_age_categories, contract_transfer_options, contract_seasons,
+   contracts, room_occupancy_options, room_types, and the hotels
+   themselves (9/10/11/12) -- not just the contract rows, since leaving
+   orphaned hotel/room_type shells behind would have defeated the
+   stated goal of a clean "only Kandima and Siyam World" state.
+4. Deleted contract_id=1 ("Test Beach Resort", hotel_id=1) and its one
+   dependent `Booking` row (`BK-8D6B9B5CA2DA`, already status=Cancelled)
+   plus that booking's 1 `Guest` row -- confirmed by the project owner
+   as the original placeholder hotel from early Hotel/Contract Engine
+   TASK-005 manual verification, not a real partner. Full dependency
+   map traced before any delete: `guests` (1), `booking_correspondence`
+   (0, checked and empty), `allotments` (3, contract-level not
+   booking-linked), `rate_supplements` (1), `rates` (1),
+   `contract_seasons`/`contract_meal_plans`/`contract_age_categories`
+   (1/1/1), `contract_transfer_options` (0), `room_occupancy_options`
+   (1), `room_types` (1). No safe deletion path exists anywhere in
+   Contract/Booking Engine for this -- confirmed by grep, zero
+   `delete_*` functions in any of the three engines' `service.py`
+   files; `cancel_booking` (already applied to this booking previously)
+   is a soft status change, not a hard delete. Raw SQL was the only
+   option, flagged explicitly to the project owner before executing,
+   exactly per this session's standing rule that any hard delete
+   touching booking-shaped data needs an explicit shown plan first.
+
+Approved By: Daler
+
+Status: Implemented and verified. `dmc.db` backed up before each
+destructive step (parts 2-4 shared one backup; part 4 got its own,
+since it was approved and executed separately) and deleted only after
+each step's verification passed -- same discipline as Decision 053's
+schema migration.
+
+Row-count verification: every DELETE's `cur.rowcount` matched the
+pre-delete inventory count exactly for all ~13 affected tables across
+parts 2-4 (guests, bookings, allotments, rate_supplements, rates,
+contract_seasons, contract_meal_plans, contract_age_categories,
+contract_transfer_options, contracts, room_occupancy_options,
+room_types, hotels). Global post-cleanup totals confirmed against
+expected (before minus deleted) for all 7 tracked tables: contracts=2,
+hotels=8, room_types=25, bookings=2, guests=1, rates=115,
+contract_seasons=9 -- all exact matches.
+
+Regression-checked after every destructive step: Kandima's real
+KM26_03 booking (room_type_id=3, Peak season) priced identically
+throughout -- base_total=251.5 (503 x 0.5) -- confirmed unchanged
+after parts 2/3's cleanup AND again after part 4's cleanup. Siyam
+World's SWJ26 mechanisms re-verified post-cleanup and found fully
+consistent with Decision 053's original checks, now additionally
+showing the complete real picture with SWJ26 live across the whole
+calendar (previously only Peak/Shoulder had been checked before SWJ26
+existed): Low1 (15 Nov 2026) and Festive (25 Dec 2026) both fall under
+Offer 3's 25% (841.5, 1159.5), Peak (1 Feb 2027) correctly still
+blacked out to the full rate (1227, zero special-offer discount),
+Shoulder (1 Jun 2027) and Low2 (15 Oct 2027) both fall under Offer 1's
+30% (654.5, 785.4) -- each then further reduced by the 60-day Early
+Bird tier, all figures self-consistent with the underlying rate table.
+The originally-reported March 2027 bug scenario re-verified identical
+to its first post-fix check: final_total=5475.4875 for the 7-night
+Peak-season stay.
+
+Final state confirmed via the exact API call the Contracts admin view
+itself makes (`GET /contract-engine/contracts?skip=0&limit=100`, not a
+separate direct-DB check): returns exactly 2 rows -- Kandima
+(contract_id=2, Active) and Siyam World (contract_id=8, Active).
+Nothing else. No code files were changed by this decision -- only
+`service.update_contract_status` (an existing, already-tested function)
+was called, plus the raw-SQL deletes described above; `11_Decisions.md`
+is the only file this decision commits.
+
+---
+
 # Decision Template
 
 Decision Number:
