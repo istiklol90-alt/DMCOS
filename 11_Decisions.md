@@ -3865,6 +3865,90 @@ without ever being logged.
 
 ---
 
+# Decision 063
+
+Date: 2026-07-14
+
+Decision: New standalone "Расчёт цены" (Price Calculator) tool in Admin
+Panel -- a read-only internal verification screen that calls the exact
+same real Contract Engine endpoints (`get_room_price`, `get_transfer_price`,
+`get_mandatory_tax`) `HotelSearch.tsx` and `Reservations.tsx`'s
+`BookingDetail` cost breakdown already use, with zero new pricing logic
+and zero database writes of any kind -- every call in the new file is a
+GET.
+
+New `frontend/src/pages/PriceCalculator.tsx`, mounted as a 5th
+`AdminPanel.tsx` tab alongside Пользователи/Бронирования/Контракты/
+Контракты — ИИ, same tab-switching pattern. Form: Hotel -> Room Type
+(cascading dropdowns, real Hotel Engine data) -> check-in/check-out
+(reused `DateRangePicker`, already exported from `HotelSearch.tsx`) ->
+Adults + child ages, reusing `deriveOccupancy` verbatim (newly exported
+from `HotelSearch.tsx` for this reuse) rather than inventing a third,
+inconsistent guest-input pattern -- no separate raw "infants" field, since
+`HotelSearch.tsx`'s own real pattern derives all three buckets
+(adults/children/infants) from each child's age, not from separate raw
+counts. Meal Plan (the priced-only `GET .../room-types/{id}/meal-plans`
+Interface Contract endpoint, not the full unfiltered CRUD list) and
+Transfer (optional, `GET .../transfer-options/available`) dropdowns both
+scoped to the hotel's real active contract, resolved via the same
+`GET /hotels/{id}/active-contract?check_in=...` call `HotelSearch.tsx`
+already makes. Breakdown display resolves season name
+(`GET /contract-seasons/{id}`), Promotion names, and SpecialOffer names
+the same way `Reservations.tsx`'s LPO already does. "Копировать" reuses
+the same plain Markdown-pipe-table convention and `navigator.clipboard`
+pattern as the LPO, headed "Расчёт для проверки" instead of a hotel
+greeting.
+
+Reason: Direct project-owner request for a fast, zero-risk way to
+manually verify what the pricing engine actually produces for any real
+hotel/room/date/occupancy combination, without going through a full
+search-and-book flow and without any risk of the verification itself
+creating real data.
+
+Approved By: Daler
+
+Status: Implemented. `tsc -b` clean for all three touched files
+(`PriceCalculator.tsx` new, `AdminPanel.tsx`, `HotelSearch.tsx`'s
+`deriveOccupancy` export) -- other reported errors are pre-existing,
+unrelated files.
+
+A real discrepancy was caught and resolved before this decision was
+logged, not silently written down: the project owner's initial
+verification target, $1,192.00 (Kandima Sunrise Beach Pool Villa, 3
+adults, BB), was traced live and found to no longer be reproducible by
+the current system -- confirmed to be Decision 017's original raw
+base_price ($1,002) + extra_person supplement ($190) figure, predating
+KM26_03's real 50% room-discount data entry for this exact room type
+(`applies_to_extra_person=True`, active across virtually the entire
+contract's validity, 2026-07-08 through 2028-01-10). The project owner
+confirmed $1,192 was the outdated pre-KM26_03 reference point, not an
+expectation the calculator should have matched -- $596.00 (base $501.00
++ supplements $95.00, both exactly half of the raw figures, KM26_03
+applied automatically) is the correct, current, live-verified answer,
+and matching it (not $1,192) is what proves the calculator is using the
+real pricing engine correctly.
+
+Verified by tracing every call `PriceCalculator.tsx` makes, in the exact
+sequence and with the exact parameters the component produces for this
+scenario, directly against the live server: active-contract resolution
+-> contract_id=2; meal-plans list includes BB; `get_room_price`
+(contract=2, room_type=2, BB, 3 adults, 2027-02-01) ->
+base_total=501.0, supplements_total=95.0, applied_special_offer_ids=[1],
+final_total=596.0; `get_mandatory_tax` (nights=1, adults=3) -> Green
+Tax, 36.0; season_id=2 resolves to "Peak"; special_offer id=1 resolves
+to "KM26_03". Grand total (no transfer selected): 596.00 + 36.00 =
+632.00 -- the exact figure the component's own arithmetic (summing
+three already-computed real totals, no client-side pricing logic)
+produces.
+
+No browser-automation tool is available in this session (same disclosed
+limitation as every prior UI feature this session -- Decisions
+055/058/059/060), so this was the strongest verification available:
+confirming every underlying real API call matches exactly, not a
+screenshot of the rendered form.
+
+---
+
 # Decision Template
 
 Decision Number:

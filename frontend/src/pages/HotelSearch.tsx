@@ -308,7 +308,7 @@ function renderTransferBucketLine(count: number, label: string, discountedTotal:
 // only takes each child's age directly; adults/children/infants sent to
 // every API call are derived from that, never entered as separate raw
 // counts for children/infants.
-function deriveOccupancy(
+export function deriveOccupancy(
   baseAdults: number,
   childAges: number[]
 ): { adults: number; children: number; infants: number } {
