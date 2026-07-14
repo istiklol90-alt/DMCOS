@@ -3949,6 +3949,90 @@ screenshot of the rendered form.
 
 ---
 
+# Decision 064
+
+Date: 2026-07-14
+
+Decision: Formalizing integration-readiness principles for future
+dynamic/API-driven hotel connectivity.
+
+Correction before this decision's own content: the project owner's
+request framed this as "extending Decision 019's original long-term
+integration vision." Checked directly rather than assumed: Decision 019
+is genuinely about net-vs-gross discount/tax calculation ordering,
+unrelated to integration. The actual source of the "Decision 019's
+long-term vision" phrase is a loose, informal parenthetical already
+sitting in Decision 044 ("no real per-day hotel inventory feed exists
+yet, per Decision 019's long-term vision being unbuilt") -- itself a
+pre-existing mislabel from before this session, not a real prior
+articulation of this vision. `05_Architecture.md` doesn't substantively
+cover it either -- module #19 ("Integration") is a bare one-line list
+entry, never expanded. This decision is therefore the first substantive
+articulation of the integration-readiness vision, not an extension of
+an existing one; flagged here rather than silently perpetuating an
+inaccurate lineage into a second decision.
+
+Core principle (already true by construction, now formalized as a
+permanent constraint): Contract Engine and Hotel Engine must remain the
+single, stable "source of truth" that ANY input method writes into --
+manual entry (built), AI-assisted PDF parsing (built, Phase 1+2), and
+future real-time hotel/aggregator integration (not built) must all be
+interchangeable data sources feeding the same tables, with zero changes
+required to Booking Engine, `HotelSearch.tsx`, pricing calculations, or
+any other downstream consumer.
+
+Real-world addition: not all hotels offer direct API integration --
+many require going through third-party aggregators/channel managers
+(e.g. Derbysoft, HotelBeds, SiteMinder-style platforms), each with its
+own distinct data format/API/field structure. This means future
+integration isn't a single adapter -- it's potentially a FAMILY of
+aggregator-specific adapters, each translating that aggregator's
+particular format into the same Contract/Hotel Engine tables via the
+same `create_hotel`/`create_contract`/`create_rate` functions already
+used by manual entry and AI parsing today. Each adapter is built only
+when a real partnership with that specific channel is confirmed -- same
+"build only once a proven need exists" discipline as Decisions 036/061
+-- not built speculatively in advance.
+
+Concrete readiness gaps flagged for future work (documentation only,
+not building now):
+1. A "last synced" timestamp on Contract/Rate rows, distinct from
+   `created_at`, to detect staleness once real-time feeds exist.
+2. Future integrations will likely need to UPDATE existing rates, not
+   just create new ones -- check whether `update_rate`/
+   `update_contract_season` already have the right granularity, or need
+   future extension.
+3. Allotment (Decision 044's permissive-mode gap) becomes far more
+   important once real-time -- a live inventory feed would need strict
+   mode re-enabled per-contract once real data flows in, not the
+   current global flag.
+4. AI Core Engine's Human Gate pattern (manual approval before publish)
+   likely won't scale to real-time updates arriving many times a day --
+   a future high-confidence/high-trust auto-publish path may eventually
+   be needed for integrated/aggregator-fed hotels specifically, while
+   newly-onboarded or manually-entered hotels keep the current Gate.
+   This Level 3 vs Level 2 distinction needs real thought later, not
+   decided now.
+
+Reason: Project owner's real-world experience confirms most current
+hotel relationships are contract-based (static documents), but the
+strategic direction is toward dynamic, API/aggregator-driven
+connectivity. Documenting this now, while the architecture is still
+small (2 real hotels), ensures future integration work builds on an
+already-compatible foundation rather than requiring rework -- the same
+reasoning already applied to AI Core's provider abstraction, now
+extended to the data-source layer itself.
+
+Approved By: Daler
+
+Status: Logged as long-term architectural vision and readiness
+checklist. No implementation now -- current focus remains manual entry
+and AI-assisted parsing (both already working). This decision ensures
+today's architecture doesn't need rework when real-time/aggregator
+integrations become relevant later.
+
+---
+
 # Decision Template
 
 Decision Number:
