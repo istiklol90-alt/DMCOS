@@ -3811,6 +3811,60 @@ is missing an entire Engine's documentation.
 
 ---
 
+# Decision 062
+
+Date: 2026-07-13 (logged retroactively on 2026-07-14 -- this decision
+was implemented and shipped a day before this entry was written; see
+Decision 061's Status section for how the gap was found)
+
+Decision: Real PDF-to-text extraction, closing a gap discovered before
+any real (billed) Claude API call was ever made: `ContractIngestionJob`'s
+document handed to a provider was just the uploaded filename
+(`selectedFile.name`), never the file's actual content.
+`MockClaudeProvider` never surfaced this, since it ignores
+`document_text` entirely by design -- but `ClaudeProvider` would have
+silently sent a filename string as "the contract" on its first real,
+paid call.
+
+New `pdf_extraction.py` (`pdfplumber`) extracts text in-memory from the
+uploaded bytes -- verified beforehand against a real 13-page DMC
+contract PDF (41,989 characters, real rate/tax terminology intact
+end-to-end) before being wired into the pipeline, entirely free. New
+`ContractIngestionJob.document_text` column, deliberately separate from
+`file_reference` (which stays the human-readable filename shown in the
+UI). New `POST /jobs/upload-pdf` (multipart) extracts text synchronously
+at upload time; the older JSON `POST /jobs` is untouched, still valid
+for `hotel_id`-only or manual/test job creation. `run_extraction` now
+reads `job.document_text` instead of `job.file_reference`. No raw PDF
+bytes are ever persisted anywhere -- only the extracted text, since no
+file-storage layer exists in this project (`CLAUDE.md`'s reality-vs-docs
+gap).
+
+`requirements.txt` gained `pdfplumber` and `python-multipart` -- the
+latter wasn't installed at all; FastAPI silently requires it for any
+`UploadFile`/`Form` endpoint, caught here before it became a runtime
+failure rather than after.
+
+Reason: A real, paid Claude API call must never be made against a
+filename string mislabeled as contract text -- this needed to be fixed
+before `backend/.env` ever gets a real `ANTHROPIC_API_KEY`, not
+discovered on the first billed call.
+
+Approved By: Daler
+
+Status: Implemented and verified at the time (commit `5e7a1e6`, "Close
+pre-paid-API gap: real PDF text extraction, not a filename"). Verified
+live via the real multipart endpoint, not just a standalone script:
+`document_text` length in the DB matched the standalone
+`pdfplumber` test byte-for-byte; backward compatibility with the older
+JSON `POST /jobs` path and the non-PDF error path (a clean 400, not a
+crash) were both confirmed. This entry itself is a retroactive log
+correction, not new work -- flagged and closed per the project owner's
+explicit instruction after Decision 061 surfaced that it had shipped
+without ever being logged.
+
+---
+
 # Decision Template
 
 Decision Number:
