@@ -4033,6 +4033,72 @@ integrations become relevant later.
 
 ---
 
+# Decision 065
+
+Date: 2026-07-15
+
+Decision: "No AI subsystem may receive a production implementation
+until at least one real business workflow successfully uses the
+existing AI infrastructure end-to-end. Architecture may exist. Skeleton
+may exist. Production implementation must follow proven business
+value." This is a strengthening of Decision 036's three-question
+discipline into a hard, binding rule: it's not enough to answer "what
+problem does this solve" -- a component may not move from
+architecture/skeleton into real, working code until an existing AI
+capability has been demonstrated working in a real, end-to-end scenario
+(not just isolated tests, but genuine use).
+
+Precision note on the retroactive framing below: Model Router,
+confidence scoring, and the Human Gate were not built after a separate
+prior capability proved the need for them -- they ARE Phase 1's own
+foundational core, built and proven together (Decisions 038-041: domain
+model, workflow state machine, REST surface, then the mock end-to-end
+pipeline run). They are the first real AI capability this project ever
+shipped, not an instance of this rule already being followed in
+sequence. What the retroactive application below correctly captures is
+that everything since Phase 1 -- starting with Phase 2 -- has in fact
+waited for that already-proven core before being built, and that is the
+precedent this rule now makes binding going forward.
+
+Applied retroactively to confirm this project's actual practice: AI
+Core Engine's Knowledge Base, Context Manager, Skills-as-plugins,
+Learning, and Metrics remain architecture-and-skeleton-only (per
+Decision 035's full vision, gated by Decision 036) -- confirmed still
+true by direct inspection: `ai/assistant.py`, `automation.py`,
+`checker.py`, `learning.py`, `memory.py`, and `rules.py` are all still
+zero-byte, only `ai/prompts.py` has real content. Correctly not
+implemented, because no proven business workflow has yet demonstrated
+their necessity. Model Router, confidence scoring, and the Human Gate
+DID receive production implementation as Phase 1's proven core; Phase 2
+(SpecialOffer extraction) then correctly extended that same
+already-proven pipeline rather than front-loading a new one, verified
+against real hotel data (Kandima, Siyam World) before being called
+complete.
+
+Applied forward: any future AI capability (e.g. AI-driven hotel email
+correspondence, autonomous booking-modification proposals, Pricing
+Engine's markup suggestions) must wait until it can point to a real,
+working precedent using the existing AI Core infrastructure -- not be
+built speculatively alongside architecture, and not be justified by
+"the architecture already supports it."
+
+Reason: Prevents building AI production code ahead of proven need,
+even when the underlying architecture would technically permit it --
+architecture and skeleton are cheap and can be laid out in advance (as
+this project already does for all 22 Engines), but production
+implementation carries real cost (development time, maintenance
+burden, and for AI specifically, real API cost once connected) and
+should only be spent where business value is already demonstrated, not
+anticipated.
+
+Approved By: Daler
+
+Status: Logged as a binding, stricter successor to Decision 036 --
+governs all future AI Core Engine (and any other Engine's AI-related)
+production work.
+
+---
+
 # Decision Template
 
 Decision Number:
