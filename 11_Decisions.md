@@ -4184,6 +4184,57 @@ for that id) after verification, leaving no test data behind.
 
 ---
 
+# Decision 067
+
+Date: 2026-07-15
+
+Decision: Retroactively logging `frontend/src/pages/HotelSearch.tsx`'s
+Marriott.com-referenced layout redesign (commit `09e84c2`, built and
+confirmed working live in-browser earlier this session, but committed
+without a Decision entry at the time -- a deviation from this session's
+otherwise consistent practice, flagged then and now corrected). Used as
+a visual STRUCTURE reference only (layout, prominence, calendar UX) --
+not a literal Marriott-branded copy -- keeping the project's existing
+ink/coral/teal/sand palette and Fraunces/Inter fonts throughout. Four
+changes: (1) agent navigation moved into a horizontal top bar (logo
+left; "Поиск"/"Мои бронирования" center-right, the latter reusing the
+existing `onBack`/agent-dashboard navigation with no new route; agent
+name + initials avatar far right), replacing the prior plain-header
+pattern; (2) the search form enlarged into a prominent, centered card
+(`-mt-10`/`-mt-12` overlapping a new gradient hero band, `shadow-xl`,
+larger padding/text/columns/button) instead of the previous small
+compact form, with zero changes to its underlying fields, state, or
+handlers; (3) the date field's popover now renders two real calendar
+months side by side via a new `MonthGrid` sub-component (pure
+rendering, shared selection logic), both advancing together off one
+shared prev/next control -- previously only a single month rendered;
+(4) a gradient hero band (`from-ink via-ink to-coral/40`) substitutes
+for a photo, since no photo-asset pipeline exists in this project yet
+(flagged explicitly in-code as a placeholder choice, not a finished
+design decision).
+
+Reason: Improves the agent-facing hotel search experience's visual
+prominence and calendar usability to match a well-established reference
+pattern, while deliberately changing only presentation -- no search
+logic, occupancy derivation, or API calls were touched (`deriveOccupancy`
+was exported for the new component split but its behavior is
+unchanged). Logged now, retroactively, so the Decision log accurately
+reflects a real, already-shipped, already-verified change -- consistent
+with this session's practice of recording every deliberate change to
+Engine-adjacent frontend code, even backend-locked Engines' consuming
+UI.
+
+Approved By: Daler
+
+Status: Implemented, committed (`09e84c2`, 144 insertions / 75
+deletions), and confirmed working live in-browser by the project owner
+at the time of the change (two-month calendar opens correctly on
+click, top nav navigation works, search form submits unchanged). `tsc
+-b` was clean for this file at commit time. No backend changes
+involved.
+
+---
+
 # Decision Template
 
 Decision Number:
