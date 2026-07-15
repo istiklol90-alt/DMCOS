@@ -431,6 +431,68 @@ function formatDateRangeLabel(checkIn: string, checkOut: string): string {
   return `${fmt(checkIn || checkOut)} – ?`;
 }
 
+// One month's weekday header + day grid -- shared by both panels of the
+// two-month picker below. Pure rendering, all selection logic (which day
+// is check-in/check-out/in-range, whether a day is clickable) stays in
+// the parent, passed in already-resolved, so both panels behave
+// identically with zero duplicated logic.
+function MonthGrid({
+  year,
+  month,
+  checkInDate,
+  checkOutDate,
+  onDayClick,
+}: {
+  year: number;
+  month: number;
+  checkInDate: Date | null;
+  checkOutDate: Date | null;
+  onDayClick: (day: Date) => void;
+}) {
+  const cells = buildMonthGrid(year, month);
+  const monthLabel = new Date(year, month, 1).toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
+
+  return (
+    <div className="w-64">
+      <p className="text-center text-sm font-medium capitalize text-ink">{monthLabel}</p>
+      <div className="mt-3 grid grid-cols-7 gap-y-1 text-center text-[11px] font-medium text-slate/40">
+        {WEEKDAY_LABELS.map((w) => (
+          <span key={w}>{w}</span>
+        ))}
+      </div>
+      <div className="mt-1 grid grid-cols-7 gap-y-1 text-center text-sm">
+        {cells.map((day, i) => {
+          if (!day) return <span key={i} />;
+
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const isPast = day < today;
+          const isCheckIn = checkInDate && isSameDate(day, checkInDate);
+          const isCheckOut = checkOutDate && isSameDate(day, checkOutDate);
+          const isInRange = checkInDate && checkOutDate && day > checkInDate && day < checkOutDate;
+
+          return (
+            <button
+              key={i}
+              type="button"
+              disabled={isPast}
+              onClick={() => onDayClick(day)}
+              className={[
+                "mx-auto flex h-9 w-9 items-center justify-center rounded-full transition-colors",
+                isPast ? "cursor-not-allowed text-slate/20" : "text-ink hover:bg-sand",
+                isCheckIn || isCheckOut ? "bg-coral text-white hover:bg-coral" : "",
+                isInRange ? "bg-coral/10" : "",
+              ].join(" ")}
+            >
+              {day.getDate()}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function DateRangePicker({
   checkIn,
   checkOut,
@@ -476,8 +538,10 @@ export function DateRangePicker({
 
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth();
-  const cells = buildMonthGrid(year, month);
-  const monthLabel = viewDate.toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
+  // Second panel is always the month right after the first -- Marriott's
+  // own two-month pattern advances both together, one shared prev/next
+  // pair framing the whole block, not two independently-navigable panels.
+  const nextMonthDate = new Date(year, month + 1, 1);
   const checkInDate = checkIn ? parseISODate(checkIn) : null;
   const checkOutDate = checkOut ? parseISODate(checkOut) : null;
 
@@ -495,63 +559,39 @@ export function DateRangePicker({
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-20 mt-2 w-72 rounded-2xl border border-ink/10 bg-white p-4 shadow-lg">
-          <div className="flex items-center justify-between">
-            <button
-              type="button"
-              onClick={() => setViewDate(new Date(year, month - 1, 1))}
-              aria-label="Предыдущий месяц"
-              className="flex h-7 w-7 items-center justify-center rounded-md text-ink hover:bg-sand"
-            >
-              <IconChevronLeft />
-            </button>
-            <span className="text-sm font-medium capitalize text-ink">{monthLabel}</span>
-            <button
-              type="button"
-              onClick={() => setViewDate(new Date(year, month + 1, 1))}
-              aria-label="Следующий месяц"
-              className="flex h-7 w-7 items-center justify-center rounded-md text-ink hover:bg-sand"
-            >
-              <IconChevronRight />
-            </button>
-          </div>
+        <div className="absolute left-0 top-full z-20 mt-2 flex w-[34rem] items-start gap-2 rounded-2xl border border-ink/10 bg-white p-4 shadow-lg">
+          <button
+            type="button"
+            onClick={() => setViewDate(new Date(year, month - 1, 1))}
+            aria-label="Предыдущий месяц"
+            className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink hover:bg-sand"
+          >
+            <IconChevronLeft />
+          </button>
 
-          <div className="mt-3 grid grid-cols-7 gap-y-1 text-center text-[11px] font-medium text-slate/40">
-            {WEEKDAY_LABELS.map((w) => (
-              <span key={w}>{w}</span>
-            ))}
-          </div>
+          <MonthGrid
+            year={year}
+            month={month}
+            checkInDate={checkInDate}
+            checkOutDate={checkOutDate}
+            onDayClick={handleDayClick}
+          />
+          <MonthGrid
+            year={nextMonthDate.getFullYear()}
+            month={nextMonthDate.getMonth()}
+            checkInDate={checkInDate}
+            checkOutDate={checkOutDate}
+            onDayClick={handleDayClick}
+          />
 
-          <div className="mt-1 grid grid-cols-7 gap-y-1 text-center text-sm">
-            {cells.map((day, i) => {
-              if (!day) return <span key={i} />;
-
-              const today = new Date();
-              today.setHours(0, 0, 0, 0);
-              const isPast = day < today;
-              const isCheckIn = checkInDate && isSameDate(day, checkInDate);
-              const isCheckOut = checkOutDate && isSameDate(day, checkOutDate);
-              const isInRange =
-                checkInDate && checkOutDate && day > checkInDate && day < checkOutDate;
-
-              return (
-                <button
-                  key={i}
-                  type="button"
-                  disabled={isPast}
-                  onClick={() => handleDayClick(day)}
-                  className={[
-                    "mx-auto flex h-8 w-8 items-center justify-center rounded-full transition-colors",
-                    isPast ? "cursor-not-allowed text-slate/20" : "text-ink hover:bg-sand",
-                    isCheckIn || isCheckOut ? "bg-coral text-white hover:bg-coral" : "",
-                    isInRange ? "bg-coral/10" : "",
-                  ].join(" ")}
-                >
-                  {day.getDate()}
-                </button>
-              );
-            })}
-          </div>
+          <button
+            type="button"
+            onClick={() => setViewDate(new Date(year, month + 1, 1))}
+            aria-label="Следующий месяц"
+            className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink hover:bg-sand"
+          >
+            <IconChevronRight />
+          </button>
         </div>
       )}
     </div>
@@ -1382,52 +1422,81 @@ function HotelSearch({ onBack }: HotelSearchProps) {
 
   return (
     <div className="min-h-screen bg-sand font-sans text-slate">
+      {/* Top nav -- logo left, primary nav links center/right, account far
+          right. Replaces the old plain logo+back-link header. "Мои
+          бронирования" reuses the exact same navigation the old back
+          button already did (agent-scoped BookingsList already lives on
+          AgentDashboard_v2 -- no new route needed). */}
       <div className="border-b border-ink/10 bg-white">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 sm:px-8">
           <div className="flex items-center gap-2.5">
             <span className="h-8 w-8 rounded-lg bg-gradient-to-br from-coral to-teal" />
             <span className="font-display text-lg font-semibold text-ink">DMC OS</span>
           </div>
-          <div className="flex items-center gap-4">
-            <span className="hidden text-sm text-slate/60 sm:inline">
-              {getInitials(user.name)} · {user.name}
+
+          <nav className="hidden items-center gap-1 sm:flex">
+            <span className="rounded-lg px-3.5 py-2 text-sm font-medium text-ink">Поиск</span>
+            <button
+              type="button"
+              onClick={() => (onBack ? onBack() : (window.location.href = "/agent-dashboard"))}
+              className="rounded-lg px-3.5 py-2 text-sm font-medium text-slate/60 transition-colors hover:bg-sand hover:text-ink"
+            >
+              Мои бронирования
+            </button>
+          </nav>
+
+          <div className="flex items-center gap-3">
+            <span className="hidden text-sm text-slate/60 sm:inline">{user.name}</span>
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-ink text-xs font-semibold text-white">
+              {getInitials(user.name)}
             </span>
             <button
               type="button"
               onClick={() => (onBack ? onBack() : (window.location.href = "/agent-dashboard"))}
-              className="text-sm font-medium text-teal hover:underline"
+              className="text-sm font-medium text-teal hover:underline sm:hidden"
             >
-              ← Назад к дашборду
+              ← Назад
             </button>
           </div>
         </div>
       </div>
 
-      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-8">
+      {/* Hero band -- reuses the existing ink/coral/teal gradient already
+          used elsewhere in this file (HotelCard's own image-placeholder
+          gradients), standing in for a photo since this project has no
+          photo-asset pipeline anywhere. The search card below overlaps
+          its bottom edge via negative margin, matching the reference
+          layout's prominence. */}
+      <div className="bg-gradient-to-br from-ink via-ink to-coral/40 px-4 py-14 text-center sm:px-8 sm:py-20">
         <p className="text-xs font-semibold tracking-widest text-coral">ПОИСК И БРОНИРОВАНИЕ</p>
-        <h1 className="mt-1 font-display text-3xl font-semibold text-ink sm:text-4xl">Найти отель</h1>
+        <h1 className="mt-2 font-display text-3xl font-semibold text-white sm:text-5xl">Найти отель</h1>
+        <p className="mx-auto mt-3 max-w-xl text-sm text-white/70 sm:text-base">
+          Реальные тарифы напрямую из Contract Engine — сезоны, спецпредложения и трансферы уже учтены.
+        </p>
+      </div>
 
+      <main className="mx-auto max-w-6xl px-4 pb-8 sm:px-8">
         <form
           onSubmit={handleSearch}
-          className="mt-6 rounded-2xl border border-ink/10 bg-white shadow-sm"
+          className="-mt-10 rounded-2xl border border-ink/10 bg-white shadow-xl sm:-mt-12"
         >
           <div className="flex flex-col divide-y divide-ink/10 sm:flex-row sm:items-stretch sm:divide-x sm:divide-y-0">
-            <div className="flex flex-1 flex-col gap-1 px-4 py-3">
+            <div className="flex flex-1 flex-col gap-1.5 px-5 py-4 sm:py-6">
               <label className="text-xs font-medium text-slate/50">Направление / отель</label>
               <input
                 type="text"
                 value={destination}
                 onChange={(e) => setDestination(e.target.value)}
                 placeholder="Мальдивы, Rixos..."
-                className="w-full bg-transparent text-sm text-slate placeholder:text-slate/40 focus:outline-none"
+                className="w-full bg-transparent text-base text-slate placeholder:text-slate/40 focus:outline-none"
               />
               <p className="text-[11px] text-slate/40">
                 Поиск по названию пока не поддерживается Hotel Engine — показаны все отели.
               </p>
             </div>
 
-            <div className="flex flex-col gap-1 pt-3 sm:w-56 sm:shrink-0">
-              <label className="px-4 text-xs font-medium text-slate/50">Даты</label>
+            <div className="flex flex-col gap-1.5 pt-4 sm:w-64 sm:shrink-0 sm:py-6">
+              <label className="px-5 text-xs font-medium text-slate/50">Даты</label>
               <DateRangePicker
                 checkIn={checkIn}
                 checkOut={checkOut}
@@ -1438,7 +1507,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
               />
             </div>
 
-            <div className="flex flex-col gap-1 px-4 py-3 sm:w-56 sm:shrink-0">
+            <div className="flex flex-col gap-1.5 px-5 py-4 sm:w-64 sm:shrink-0 sm:py-6">
               <label className="text-xs font-medium text-slate/50">Гости</label>
               <div className="flex flex-col gap-2">
                 <Counter label="Взрослые" value={adults} min={1} onChange={setAdults} />
@@ -1463,13 +1532,13 @@ function HotelSearch({ onBack }: HotelSearchProps) {
               </div>
             </div>
 
-            <div className="flex items-center px-4 py-3 sm:shrink-0">
+            <div className="flex items-center px-5 py-4 sm:py-6 sm:pl-6 sm:pr-2 sm:shrink-0">
               <button
                 type="submit"
                 disabled={searching}
-                className="w-full rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 sm:w-auto"
+                className="w-full rounded-xl bg-coral px-8 py-3.5 text-base font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 sm:w-auto"
               >
-                {searching ? "Ищем..." : "Найти"}
+                {searching ? "Ищем..." : "Найти отели"}
               </button>
             </div>
           </div>
