@@ -4099,6 +4099,91 @@ production work.
 
 ---
 
+# Decision 066
+
+Date: 2026-07-15
+
+Decision: Booking Engine now sends an automatic, one-way booking-
+confirmation email to the agent's registered address immediately on
+booking creation (Decision 029 Stage 2: "automatic email
+notifications... no AI decision-making, just templated notifications").
+The email contains a Markdown-pipe-table (same convention as
+Reservations.tsx's LPO and PriceCalculator.tsx, replicated in Python
+for the first time as `email_service._render_text_table`) of hotel,
+room type, dates, meal plan, occupancy, guest names, base rate,
+supplements, offer/promo, room total, mandatory tax (real label),
+transfer (only when one was actually selected), and grand total -- all
+values pre-resolved server-side by `booking/api.py` via the same real
+Hotel/Contract Engine functions (`get_room_price`, `get_transfer_price`,
+`get_mandatory_tax`, `get_contract_meal_plan`) already used by
+Reservations.tsx's cost breakdown and the LPO generator. No new pricing
+or calculation logic was introduced.
+
+Corrected premise: this was initially assumed to need the same staged,
+content-only approach as `BookingCorrespondence` (Decision 049), which
+deliberately deferred real sending pending a business mailbox. That
+gap is specifically about TWO-WAY correspondence (reading replies via
+IMAP); this feature is one-way outbound only, and real, working SMTP
+infrastructure already exists (`services/email_service.py`'s
+`send_real_email`, already live-wired into the agent-registration
+flow) -- so both content generation and real send wiring were built
+together in this same task, not staged.
+
+Guest-data-timing constraint: `BookingCreate` has no guest fields --
+guests are always added via a separate, later, non-transactional call
+-- so guest names frequently don't exist yet at the moment a booking is
+created. Resolved (owner's explicit choice): fire the email immediately
+on booking creation regardless, showing the real state of guests at
+that moment (an honest "Гости будут добавлены отдельно" fallback when
+empty, never fabricated placeholder names) -- guaranteed, immediate
+delivery of the confirmation was judged more valuable than delaying for
+complete-but-possibly-never-sent content.
+
+Implementation: `email_service.send_booking_confirmation_email(data)`
+(new) builds the table and calls `send_real_email`, inheriting its
+existing graceful console-log fallback when SMTP isn't configured and
+its "never raises" safety. `booking/api.py` adds
+`_send_confirmation_email_best_effort(db, booking)`, called from
+`create_booking` right after a successful insert, wrapped in its own
+try/except covering the entire resolution block -- an email failure of
+any kind can never turn a successful booking creation into an HTTP
+error for the agent.
+
+Reason: Closes a real gap (agents previously received no confirmation
+of a booking they just created) using infrastructure that already
+exists, at the lowest-risk point in the flow (best-effort, non-
+blocking), consistent with Decision 029's own Stage 2 scope and
+Decision 065's gate (this extends an already-proven, already-wired
+capability -- real SMTP sending -- rather than building new production
+AI/infra ahead of need; no AI decision-making is involved at all).
+
+Approved By: Daler
+
+Status: Implemented and verified live. `email_service.py`:
+`_render_text_table` + `send_booking_confirmation_email` added.
+`booking/api.py`: imports added (`Booking`, `hotel_service`,
+`contract_service`, `User`, `email_service`);
+`_send_confirmation_email_best_effort` added;
+`create_booking` calls it after a successful insert. Verified against a
+real test booking (`BK-D36D87C5C49D`, Siyam World, Water Villa with
+Pool + Slide, 2027-06-01 to 2027-06-08, seaplane transfer,
+`agent_id=5`, a dedicated test agent, not a real person's account):
+empty guest list correctly rendered the fallback text; the real
+mandatory-tax label ("Green Tax") displayed correctly; the transfer
+line appeared (Seaplane Transfer, Round Trip) since this booking had
+one; grand total was $4749.5, an exact match to Decision 056's
+independently-verified figure for this same hotel/room/date
+combination. The transfer-line-ABSENT case could not be verified via a
+real end-to-end booking, since both real hotels in the system
+(Kandima, Siyam World) have `transfer_required=true` -- verified
+instead via an isolated call to `_render_text_table`/the row-building
+logic with `transfer_name=None`, confirming the line is correctly
+omitted. Test booking was cancelled (releasing its real allotment) and
+then hard-deleted (`guests`, `booking_correspondence`, `bookings` rows
+for that id) after verification, leaving no test data behind.
+
+---
+
 # Decision Template
 
 Decision Number:

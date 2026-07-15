@@ -8,6 +8,7 @@ from app.engines.authentication.constants import ALGORITHM
 from app.engines.authentication.repository import get_user_by_email
 
 from app.engines.booking import service
+from app.engines.booking.models import Booking
 from app.engines.booking.repository import get_db
 from app.engines.booking.schemas import (
     BookingCreate,
@@ -22,6 +23,10 @@ from app.engines.booking.schemas import (
     BookingCorrespondenceReplyRequest,
     BookingCorrespondenceResponse,
 )
+from app.engines.hotel import service as hotel_service
+from app.engines.contract import service as contract_service
+from models.user import User
+from services import email_service
 
 router = APIRouter(prefix="/booking-engine", tags=["Booking Engine"])
 
@@ -85,6 +90,103 @@ def _require_owner_or_admin(current_user, booking) -> None:
         raise HTTPException(status_code=403, detail="You can only modify bookings you own")
 
 
+def _send_confirmation_email_best_effort(db: Session, booking: Booking) -> None:
+    """
+    Decision 029 Stage 2 (see email_service.send_booking_confirmation_email's
+    own docstring for the full reasoning): fires once, right after a
+    booking is successfully created. Deliberately wrapped in its own
+    try/except covering the WHOLE block -- send_real_email itself already
+    can't raise, but every resolution step here (Hotel/Contract Engine
+    lookups, a second real pricing call) genuinely could, and an email
+    problem must never turn an already-successful booking creation into
+    an error response. Failures are printed, not silently swallowed --
+    same "never hide a real problem, just never let it block the caller"
+    principle as send_real_email's own internal handling.
+    """
+    try:
+        agent = db.query(User).filter(User.id == booking.agent_id).first()
+        if agent is None:
+            return
+
+        hotel = hotel_service.get_hotel(db, booking.hotel_id)
+        room_type = hotel_service.get_room_type(db, booking.room_type_id)
+        meal_plan = contract_service.get_contract_meal_plan(db, booking.meal_plan_id)
+
+        price = contract_service.get_room_price(
+            db,
+            booking.contract_id,
+            booking.room_type_id,
+            booking.arrival_date,
+            booking.departure_date,
+            meal_plan.meal_code,
+            booking.adults,
+            booking.children,
+            booking.infants,
+        )
+        tax = contract_service.get_mandatory_tax(
+            db, booking.contract_id, booking.nights, booking.adults, booking.children
+        )
+
+        transfer_name = None
+        transfer_total = None
+        if booking.transfer_type:
+            options = contract_service.list_contract_transfer_options(db, booking.contract_id)
+            matched = next((o for o in options if o.transfer_type == booking.transfer_type), None)
+            transfer_name = matched.transfer_name if matched else booking.transfer_type
+            transfer_total = booking.transfer_total
+
+        offer_names = []
+        for promo_id in price.get("applied_promotions", []):
+            try:
+                offer_names.append(contract_service.get_promotion(db, promo_id).promotion_name)
+            except ValueError:
+                pass
+        for offer_id in price.get("applied_special_offer_ids", []):
+            try:
+                offer_names.append(contract_service.get_special_offer(db, offer_id).offer_name)
+            except ValueError:
+                pass
+
+        # Real result, not assumed empty -- guest creation is always a
+        # separate, later POST /booking-engine/guests call (confirmed
+        # directly: BookingCreate has no guest fields at all), so this is
+        # typically [] at this exact trigger point. Rendered honestly by
+        # send_booking_confirmation_email when empty, never fabricated.
+        guests = service.list_guests(db, booking.id)
+        guest_names = ", ".join(f"{g.first_name} {g.last_name}" for g in guests)
+
+        grand_total = price["final_total"] + tax["total"] + (transfer_total or 0)
+
+        email_service.send_booking_confirmation_email(
+            {
+                "agent_email": agent.email,
+                "agent_name": agent.name,
+                "booking_number": booking.booking_number,
+                "hotel_name": hotel.hotel_name,
+                "room_type_name": room_type.room_name,
+                "arrival_date": str(booking.arrival_date),
+                "departure_date": str(booking.departure_date),
+                "nights": booking.nights,
+                "meal_plan_name": meal_plan.meal_name or meal_plan.meal_code,
+                "adults": booking.adults,
+                "children": booking.children,
+                "infants": booking.infants,
+                "guest_names": guest_names,
+                "base_total": price["base_total"],
+                "supplements_total": price["supplements_total"],
+                "offer_names": ", ".join(offer_names),
+                "room_total": price["final_total"],
+                "tax_label": tax["label"] or "Обязательный сбор",
+                "tax_total": tax["total"],
+                "transfer_name": transfer_name,
+                "transfer_total": transfer_total,
+                "grand_total": grand_total,
+            }
+        )
+    except Exception as e:
+        print(f"Booking confirmation email failed (booking id={booking.id}): {e}")
+
+
 # ---------------------------------------------------------------------------
 # Booking
 # ---------------------------------------------------------------------------
@@ -94,8 +196,10 @@ def _require_owner_or_admin(current_user, booking) -> None:
 def create_booking(
     data: BookingCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
-    """Full reserve-at-creation flow — see service.create_booking's docstring. Results in status="Pending", not "Draft"."""
-    return _run(lambda: service.create_booking(db, data))
+    """Full reserve-at-creation flow — see service.create_booking's docstring. Results in status="Pending", not "Draft". Also fires an automatic booking-confirmation email to the agent (Decision 029 Stage 2, best-effort — see _send_confirmation_email_best_effort)."""
+    booking = _run(lambda: service.create_booking(db, data))
+    _send_confirmation_email_best_effort(db, booking)
+    return booking
 
 
 @router.get("/bookings", response_model=list[BookingResponse])

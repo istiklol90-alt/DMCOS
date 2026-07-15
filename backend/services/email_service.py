@@ -134,3 +134,73 @@ Application ID: {data.get('application_id')}
 Команда DMC OS
     """
     return send_real_email(data.get('email'), subject, body)
+
+
+def _render_text_table(rows: list) -> str:
+    """Same plain Markdown-pipe-table convention as the frontend's LPO
+    (Reservations.tsx) and Price Calculator (PriceCalculator.tsx)
+    renderTextTable helpers -- unambiguous as raw plain text even where
+    nothing renders it as an actual table, since this becomes a plain-text
+    email body, not an HTML surface. First backend use of this convention;
+    kept identical rather than inventing a second table format."""
+    lines = ["| Поле | Значение |", "|---|---|"]
+    for label, value in rows:
+        lines.append(f"| {label} | {str(value).replace('|', chr(92) + '|')} |")
+    return "\n".join(lines)
+
+
+def send_booking_confirmation_email(data: dict) -> bool:
+    """
+    Decision 029 Stage 2: automatic, one-way booking-confirmation email to
+    the agent who created a booking -- "automatic email notifications...
+    no AI decision-making, just templated notifications", explicitly
+    distinguished in that same decision from Stage 3's two-way
+    email-reading/sending infrastructure, which BookingCorrespondence
+    (Decision 049) deliberately deferred pending a real business mailbox.
+    This is purely outbound, so it needed none of that -- it reuses
+    send_real_email exactly like send_registration_email/
+    send_approval_email/send_rejection_email above: same graceful
+    console-log fallback when SMTP isn't configured, same "never raises"
+    safety (every real failure mode is already caught inside
+    send_real_email itself).
+
+    Deliberately synchronous, unlike the async def functions above --
+    booking/api.py's create_booking endpoint is a plain def, not async
+    def, and send_real_email's own smtplib calls are already blocking,
+    so an async wrapper here would add nothing.
+
+    Every value in `data` is pre-resolved by the caller (booking/api.py,
+    which has real access to Hotel/Contract Engine's service functions)
+    via the exact same real get_room_price/get_transfer_price/
+    get_mandatory_tax functions Reservations.tsx's cost breakdown and the
+    LPO generator already call -- this function only formats and sends,
+    it never computes a price or resolves a name itself. guest_names is
+    the real (often empty, at this early a trigger point) result of
+    list_guests -- rendered honestly when empty, never fabricated.
+    """
+    rows = [
+        ("№ брони", data["booking_number"]),
+        ("Отель", data["hotel_name"]),
+        ("Тип номера", data["room_type_name"]),
+        ("Заезд — Выезд", f"{data['arrival_date']} — {data['departure_date']} ({data['nights']} ноч.)"),
+        ("План питания", data["meal_plan_name"]),
+        ("Заполняемость", f"{data['adults']} взр., {data['children']} дет., {data['infants']} млд."),
+        ("Гости", data["guest_names"] or "Гости будут добавлены отдельно"),
+        ("Базовая ставка", data["base_total"]),
+        ("Надбавки", data["supplements_total"]),
+        ("Спецпредложение / промо", data["offer_names"] or "нет"),
+        ("Стоимость номера", data["room_total"]),
+        (data["tax_label"], data["tax_total"]),
+    ]
+    if data.get("transfer_name") is not None:
+        rows.append((f"Трансфер ({data['transfer_name']})", data["transfer_total"]))
+    rows.append(("ИТОГО", data["grand_total"]))
+
+    subject = f"Подтверждение бронирования — {data['booking_number']} — {data['hotel_name']}"
+    body = (
+        f"Здравствуйте, {data['agent_name']}!\n\n"
+        "Ваше бронирование успешно создано.\n\n"
+        f"{_render_text_table(rows)}\n\n"
+        "С уважением,\nDMC OS"
+    )
+    return send_real_email(data["agent_email"], subject, body)
