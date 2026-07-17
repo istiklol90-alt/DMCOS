@@ -4,10 +4,11 @@ import BookingsList from "./Reservations";
 import Contracts from "./Contracts";
 import ContractsAI from "./ContractsAI";
 import PriceCalculator from "./PriceCalculator";
+import Counteragents from "./Counteragents";
 
 type StatKey = "all" | "agent" | "admin" | "active" | "never_logged" | "inactive";
 type RegStatus = "pending" | "approved" | "rejected";
-type AdminTab = "users" | "reservations" | "contracts" | "contracts-ai" | "price-calculator";
+type AdminTab = "users" | "reservations" | "contracts" | "contracts-ai" | "price-calculator" | "counteragents";
 
 const statusBadgeClasses: Record<RegStatus, string> = {
   pending: "bg-coral/15 text-coral",
@@ -206,7 +207,19 @@ const AdminPanel = () => {
           >
             Расчёт цены
           </button>
+          <button
+            onClick={() => setActiveTab("counteragents")}
+            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+              activeTab === "counteragents"
+                ? "border-coral text-ink"
+                : "border-transparent text-slate/60 hover:text-ink"
+            }`}
+          >
+            Контрагенты
+          </button>
         </div>
+
+        {activeTab === "counteragents" && <Counteragents />}
 
         {activeTab === "reservations" && (
           <div className="mt-6">

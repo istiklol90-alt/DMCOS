@@ -188,10 +188,24 @@ type RoomPrice = {
   final_total: number;
 };
 
+// Decision 070: the exact dict apply_agent_pricing returns (same function
+// create_booking calls server-side) -- never reconstructed client-side, so
+// this preview can't drift from what a real booking would actually charge.
+type AgentPrice = {
+  room_net_total: number;
+  is_exclusive: boolean;
+  contract_discount_percent: number;
+  exclusive_discount_amount: number;
+  markup_amount_per_night: number;
+  markup_amount: number;
+  agent_room_total: number;
+};
+
 type MealPlanOption = {
   mealCode: string;
   mealName: string | null;
   price?: RoomPrice;
+  agentPrice?: AgentPrice;
   priceError?: string;
 };
 
@@ -220,7 +234,7 @@ const CARD_GRADIENTS = [
 function cheapestOption(rt: RoomTypeResult): MealPlanOption | null {
   let best: MealPlanOption | null = null;
   for (const opt of rt.options) {
-    if (opt.price && (best === null || opt.price.final_total < best.price!.final_total)) {
+    if (opt.agentPrice && (best === null || opt.agentPrice.agent_room_total < best.agentPrice!.agent_room_total)) {
       best = opt;
     }
   }
@@ -228,7 +242,7 @@ function cheapestOption(rt: RoomTypeResult): MealPlanOption | null {
 }
 
 function cheapestOptionPrice(rt: RoomTypeResult): number | null {
-  return cheapestOption(rt)?.price?.final_total ?? null;
+  return cheapestOption(rt)?.agentPrice?.agent_room_total ?? null;
 }
 
 function sortRoomTypesByPrice(roomTypes: RoomTypeResult[]): RoomTypeResult[] {
@@ -776,14 +790,15 @@ function RoomTypeCard({
   } | null>(null);
 
   const cheapest = cheapestOption(rt);
-  const cheapestPerNight = cheapest?.price ? cheapest.price.final_total / cheapest.price.nights : null;
+  const cheapestPerNight =
+    cheapest?.agentPrice && cheapest.price ? cheapest.agentPrice.agent_room_total / cheapest.price.nights : null;
 
   const selectedMeal = rt.options.find((o) => o.mealCode === selectedMealCode) ?? null;
   const selectedTransfer = transferOptions.find((o) => o.option.transfer_type === selectedTransferType) ?? null;
   const selectedTransferTotal = selectedTransfer?.price?.total ?? null;
   const grandTotal =
-    selectedMeal?.price
-      ? selectedMeal.price.final_total + (selectedTransferTotal ?? 0) + (mandatoryTax?.total ?? 0)
+    selectedMeal?.agentPrice
+      ? selectedMeal.agentPrice.agent_room_total + (selectedTransferTotal ?? 0) + (mandatoryTax?.total ?? 0)
       : null;
 
   async function handleBookingSubmit(guest: GuestFormValues) {
@@ -894,7 +909,8 @@ function RoomTypeCard({
         <>
           <div className="divide-y divide-ink/5 border-t border-ink/5 px-4">
             {rt.options.map((opt) => {
-              const perNight = opt.price ? opt.price.final_total / opt.price.nights : null;
+              const perNight =
+                opt.agentPrice && opt.price ? opt.agentPrice.agent_room_total / opt.price.nights : null;
               const isSelected = selectedMealCode === opt.mealCode;
               return (
                 <div
@@ -906,7 +922,7 @@ function RoomTypeCard({
                   <span className="text-sm font-medium text-ink">{opt.mealName ?? opt.mealCode}</span>
 
                   <div className="flex shrink-0 items-center gap-3">
-                    {opt.price ? (
+                    {opt.price && opt.agentPrice ? (
                       <div className="text-right">
                         <p className="font-mono text-sm font-semibold text-ink">
                           {opt.price.currency}{" "}
@@ -915,7 +931,7 @@ function RoomTypeCard({
                         </p>
                         <p className="text-[11px] text-slate/50">
                           Итого за {opt.price.nights} ноч.: {opt.price.currency}{" "}
-                          {opt.price.final_total.toLocaleString("ru-RU")}
+                          {opt.agentPrice.agent_room_total.toLocaleString("ru-RU")}
                         </p>
                       </div>
                     ) : (
@@ -1250,6 +1266,8 @@ function HotelSearch({ onBack }: HotelSearchProps) {
 
     const token = localStorage.getItem("token");
     if (!token) return; // guarded above; satisfies TypeScript below
+    if (!user) return; // guarded by the render-time check below; narrows for TypeScript here
+    const agentId = user.id;
 
     setSearching(true);
     setSearchError(null);
@@ -1373,7 +1391,25 @@ function HotelSearch({ onBack }: HotelSearchProps) {
                         `/contract-engine/contracts/${contractId}/room-types/${rt.id}/price?${priceQuery.toString()}`,
                         token
                       );
-                      return { mealCode: mp.meal_code, mealName: mp.meal_name, price };
+                      // Decision 070: the raw Contract Engine net total (price
+                      // above) is never shown to the agent directly -- this
+                      // call must also succeed (same function create_booking
+                      // uses server-side) so the search preview can never
+                      // diverge from what a real booking would actually
+                      // charge. If it fails, the whole option falls through
+                      // to the catch block below, same as a price fetch
+                      // failure -- never display net alone.
+                      const agentPriceQuery = new URLSearchParams({
+                        agent_id: String(agentId),
+                        contract_id: String(contractId),
+                        room_net_total: String(price.final_total),
+                        nights: String(price.nights),
+                      });
+                      const agentPrice = await fetchJson<AgentPrice>(
+                        `/pricing-engine/agent-price?${agentPriceQuery.toString()}`,
+                        token
+                      );
+                      return { mealCode: mp.meal_code, mealName: mp.meal_name, price, agentPrice };
                     } catch (err) {
                       return {
                         mealCode: mp.meal_code,

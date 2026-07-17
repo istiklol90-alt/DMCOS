@@ -17,6 +17,7 @@ from app.engines.pricing.schemas import (
     AgentSummary,
     ContractExclusiveDiscountResponse,
     ContractExclusiveDiscountUpsert,
+    AgentPriceResponse,
 )
 
 router = APIRouter(prefix="/pricing-engine", tags=["Pricing Engine"])
@@ -136,3 +137,28 @@ def set_contract_discount(
 def clear_contract_discount(contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _require_admin(current_user)
     _run(lambda: service.clear_contract_exclusive_discount(db, contract_id))
+
+
+# ---------------------------------------------------------------------------
+# Agent-facing price preview (Decision 070)
+# ---------------------------------------------------------------------------
+
+@router.get("/agent-price", response_model=AgentPriceResponse)
+def get_agent_price(
+    agent_id: int,
+    contract_id: int,
+    room_net_total: float,
+    nights: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Thin wrapper around apply_agent_pricing -- no admin gating, unlike
+    every other endpoint in this router, since agents call this directly
+    from HotelSearch.tsx's search results (same trust level create_booking
+    already extends to a client-supplied agent_id). Exists so the search
+    preview and the real booking total can never diverge: this is the
+    exact same function create_booking calls server-side, not a
+    reimplementation.
+    """
+    return _run(lambda: service.apply_agent_pricing(db, agent_id, contract_id, room_net_total, nights))

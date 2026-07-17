@@ -93,15 +93,30 @@ interface ContractCoverage {
   roomTypeCount: number;
 }
 
+// Decision 069 (Pricing Engine): most contracts have no row at all, by
+// design -- undefined (not fetched yet) vs null (fetched, none configured)
+// vs a real object are all distinguishable, same convention as `coverage`
+// above.
+interface ContractExclusiveDiscount {
+  id: number;
+  contract_id: number;
+  discount_percent: number;
+}
+
 type Mode = "list" | "detail";
 
 // ---------------------------------------------------------------------------
 // Fetch helper — same pattern as ContractsAI.tsx/HotelSearch.tsx's fetchJson
 // ---------------------------------------------------------------------------
 
-async function fetchJson<T>(path: string, token: string): Promise<T> {
+async function fetchJson<T>(path: string, token: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
   });
   if (!response.ok) {
     let detail = `Ошибка запроса (${response.status})`;
@@ -113,6 +128,7 @@ async function fetchJson<T>(path: string, token: string): Promise<T> {
     }
     throw new Error(detail);
   }
+  if (response.status === 204) return undefined as unknown as T;
   return response.json() as Promise<T>;
 }
 
@@ -178,8 +194,17 @@ const Contracts = () => {
   // into a false "0 · 0", which would misrepresent a real error as a
   // confirmed empty contract.
   const [coverage, setCoverage] = useState<Record<number, ContractCoverage | null>>({});
+  // null means "fetched, no exclusive discount configured for this
+  // contract" (the expected default for most contracts) -- distinct from
+  // undefined ("not fetched yet"), same convention as coverage above.
+  const [exclusiveDiscounts, setExclusiveDiscounts] = useState<Record<number, ContractExclusiveDiscount | null>>({});
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
+
+  const [detailDiscount, setDetailDiscount] = useState<ContractExclusiveDiscount | null | undefined>(undefined);
+  const [discountInput, setDiscountInput] = useState("");
+  const [savingDiscount, setSavingDiscount] = useState(false);
+  const [discountError, setDiscountError] = useState<string | null>(null);
 
   const [detailContract, setDetailContract] = useState<Contract | null>(null);
   const [detailSeasons, setDetailSeasons] = useState<ContractSeason[]>([]);
@@ -226,6 +251,20 @@ const Contracts = () => {
         })
       );
       setCoverage(Object.fromEntries(coverageEntries));
+
+      // Decision 069: /pricing-engine returns 200 + null when a contract has
+      // no exclusive-discount row (the expected case for most contracts) --
+      // never throws, unlike coverage's own try/catch above.
+      const discountEntries = await Promise.all(
+        contractsData.map(async (c): Promise<[number, ContractExclusiveDiscount | null]> => {
+          const discount = await fetchJson<ContractExclusiveDiscount | null>(
+            `/pricing-engine/contracts/${c.id}/exclusive-discount`,
+            token
+          );
+          return [c.id, discount];
+        })
+      );
+      setExclusiveDiscounts(Object.fromEntries(discountEntries));
     } catch (err: any) {
       setListError(err.message || "Ошибка загрузки списка контрактов");
     } finally {
@@ -250,15 +289,19 @@ const Contracts = () => {
     setDetailRates([]);
     setDetailSupplementsByRate({});
     setDetailRoomTypes({});
+    setDetailDiscount(undefined);
+    setDiscountInput("");
+    setDiscountError(null);
     const token = localStorage.getItem("token") || "";
     try {
-      const [contract, seasons, mealPlans, transferOptions, ageCategories, rates] = await Promise.all([
+      const [contract, seasons, mealPlans, transferOptions, ageCategories, rates, discount] = await Promise.all([
         fetchJson<Contract>(`/contract-engine/contracts/${contractId}`, token),
         fetchJson<ContractSeason[]>(`/contract-engine/contracts/${contractId}/seasons`, token),
         fetchJson<ContractMealPlan[]>(`/contract-engine/contracts/${contractId}/meal-plans`, token),
         fetchJson<ContractTransferOption[]>(`/contract-engine/contracts/${contractId}/transfer-options`, token),
         fetchJson<ContractAgeCategory[]>(`/contract-engine/contracts/${contractId}/age-categories`, token),
         fetchJson<Rate[]>(`/contract-engine/contracts/${contractId}/rates`, token),
+        fetchJson<ContractExclusiveDiscount | null>(`/pricing-engine/contracts/${contractId}/exclusive-discount`, token),
       ]);
       setDetailContract(contract);
       setDetailSeasons(seasons);
@@ -266,6 +309,8 @@ const Contracts = () => {
       setDetailTransferOptions(transferOptions);
       setDetailAgeCategories(ageCategories);
       setDetailRates(rates);
+      setDetailDiscount(discount);
+      setDiscountInput(discount ? String(discount.discount_percent) : "");
 
       const [roomTypesData, supplementsEntries] = await Promise.all([
         fetchJson<RoomType[]>(`/hotel-engine/hotels/${contract.hotel_id}/room-types`, token),
@@ -291,6 +336,49 @@ const Contracts = () => {
       setDetailError(err.message || "Не удалось загрузить детали контракта");
     } finally {
       setDetailLoading(false);
+    }
+  }
+
+  async function handleSaveDiscount() {
+    if (!detailContract) return;
+    const value = parseFloat(discountInput);
+    if (isNaN(value) || value <= 0 || value >= 100) {
+      setDiscountError("Введите процент от 0 до 100 (не включительно)");
+      return;
+    }
+    const token = localStorage.getItem("token") || "";
+    try {
+      setSavingDiscount(true);
+      setDiscountError(null);
+      const updated = await fetchJson<ContractExclusiveDiscount>(
+        `/pricing-engine/contracts/${detailContract.id}/exclusive-discount`,
+        token,
+        { method: "PUT", body: JSON.stringify({ discount_percent: value }) }
+      );
+      setDetailDiscount(updated);
+    } catch (err: any) {
+      setDiscountError(err.message || "Не удалось сохранить скидку");
+    } finally {
+      setSavingDiscount(false);
+    }
+  }
+
+  async function handleClearDiscount() {
+    if (!detailContract) return;
+    if (!window.confirm("Убрать эксклюзивную скидку для этого контракта?")) return;
+    const token = localStorage.getItem("token") || "";
+    try {
+      setSavingDiscount(true);
+      setDiscountError(null);
+      await fetchJson(`/pricing-engine/contracts/${detailContract.id}/exclusive-discount`, token, {
+        method: "DELETE",
+      });
+      setDetailDiscount(null);
+      setDiscountInput("");
+    } catch (err: any) {
+      setDiscountError(err.message || "Не удалось убрать скидку");
+    } finally {
+      setSavingDiscount(false);
     }
   }
 
@@ -330,18 +418,20 @@ const Contracts = () => {
                   <th className="px-4 py-3 font-medium">Валюта</th>
                   <th className="px-4 py-3 font-medium">Статус</th>
                   <th className="px-4 py-3 font-medium">Охват</th>
+                  <th className="px-4 py-3 font-medium">Скидка (Excl.)</th>
                 </tr>
               </thead>
               <tbody>
                 {contracts.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-10 text-center text-sm text-slate/50">
+                    <td colSpan={7} className="px-4 py-10 text-center text-sm text-slate/50">
                       Контракты не найдены
                     </td>
                   </tr>
                 ) : (
                   contracts.map((c) => {
                     const cov = coverage[c.id];
+                    const discount = exclusiveDiscounts[c.id];
                     return (
                       <tr
                         key={c.id}
@@ -361,6 +451,15 @@ const Contracts = () => {
                           {cov === undefined && "—"}
                           {cov === null && <span className="text-red-600">Ошибка загрузки</span>}
                           {cov && `${cov.seasonCount} сезона(ов) · ${cov.roomTypeCount} тип(ов) номеров`}
+                        </td>
+                        <td className="px-4 py-3.5 text-slate/70">
+                          {discount ? (
+                            <span className="inline-flex items-center rounded-full bg-teal/15 px-2.5 py-1 text-xs font-medium text-teal">
+                              {discount.discount_percent}%
+                            </span>
+                          ) : (
+                            "—"
+                          )}
                         </td>
                       </tr>
                     );
@@ -414,6 +513,49 @@ const Contracts = () => {
                   {detailContract.currency} / чел. / ночь
                 </span>
               )}
+            </div>
+
+            {/* ===== Эксклюзивная скидка (Decision 069, Pricing Engine) ===== */}
+            <div className="mt-4 border-t border-ink/5 pt-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate/50">
+                Эксклюзивная скидка на цену номера
+              </p>
+              <p className="mt-1 text-xs text-slate/60">
+                Применяется только агентам из эксклюзивной категории на «Контрагенты», только к этому контракту.
+                Пусто — скидка не настроена для этого отеля.
+              </p>
+              <div className="mt-2.5 flex flex-wrap items-center gap-2.5">
+                <input
+                  type="number"
+                  min={0}
+                  max={99}
+                  step="0.1"
+                  placeholder="напр. 10"
+                  value={discountInput}
+                  onChange={(e) => setDiscountInput(e.target.value)}
+                  className="w-32 appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+                />
+                <span className="text-sm text-slate/60">%</span>
+                <button
+                  type="button"
+                  onClick={handleSaveDiscount}
+                  disabled={savingDiscount}
+                  className="appearance-none rounded-lg border-0 bg-coral px-4 py-2 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+                >
+                  {savingDiscount ? "..." : "Сохранить"}
+                </button>
+                {detailDiscount && (
+                  <button
+                    type="button"
+                    onClick={handleClearDiscount}
+                    disabled={savingDiscount}
+                    className="appearance-none rounded-lg border border-coral/40 bg-transparent px-4 py-2 text-sm font-medium text-coral transition-colors hover:bg-coral/10 disabled:opacity-50"
+                  >
+                    Убрать
+                  </button>
+                )}
+              </div>
+              {discountError && <p className="mt-2 text-sm text-red-600">{discountError}</p>}
             </div>
           </div>
 

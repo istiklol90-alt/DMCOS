@@ -57,3 +57,20 @@ class ContractExclusiveDiscountResponse(BaseModel):
 
 class ContractExclusiveDiscountUpsert(BaseModel):
     discount_percent: float
+
+
+class AgentPriceResponse(BaseModel):
+    """
+    Decision 070: the exact dict shape apply_agent_pricing already
+    returns (see docs/interface-contracts/pricing-booking.md), exposed
+    as-is for HotelSearch.tsx's price preview -- same calculation
+    create_booking uses server-side, so the search screen can never
+    diverge from what a real booking would actually charge.
+    """
+    room_net_total: float
+    is_exclusive: bool
+    contract_discount_percent: float
+    exclusive_discount_amount: float
+    markup_amount_per_night: float
+    markup_amount: float
+    agent_room_total: float

@@ -4435,6 +4435,110 @@ the UI, not before.
 
 ---
 
+# Decision 070
+
+Date: 2026-07-17
+
+Decision: Pricing Engine's frontend shipped -- the Admin Panel
+"Контрагенты" tab (`frontend/src/pages/Counteragents.tsx`, new file),
+`Contracts.tsx`'s exclusive-discount field, and (found and fixed in the
+same session, before this could be called complete) a critical
+price-consistency bug: `HotelSearch.tsx`'s search-results screen was
+still calling Contract Engine's `get_room_price` directly and
+displaying its raw `final_total` -- meaning agents searching saw the
+hotel's Net cost, not their real Sale price, while `create_booking`
+(Decision 069) already charged the correct marked-up/discounted total.
+Before Decision 069 this gap was invisible (no markup existed anywhere,
+so the two numbers were identical); after it, search and the real
+charge silently diverged -- a real trust-breaking bug, found by directly
+tracing which endpoint the search screen calls rather than assuming
+Decision 069's backend work was sufficient on its own.
+
+`Counteragents.tsx`: global markup setting (editable, `PUT
+/pricing-engine/settings`), Standard/Exclusive sub-tabs (`GET
+/pricing-engine/agents/standard` and `/exclusive`), an "Добавить" modal
+(search over the Standard list, `POST /pricing-engine/agents/exclusive`)
+and a "Вернуть в стандартные" button per Exclusive row (`DELETE
+/pricing-engine/agents/exclusive/{user_id}`) -- the removal path wasn't
+in the original spec but was added deliberately: an add-without-undo
+flow would be a real usability gap for a genuine business scenario
+(wrong agent added by mistake, or an arrangement ending), matching the
+project's standing principle that management happens through the UI,
+not direct database access. Wired into `AdminPanel.tsx` as a 6th tab.
+
+`Contracts.tsx`: a read-only "Скидка (Excl.)" column in the list view
+(per-contract fetch, same accepted pattern the list already uses for
+`coverage`), and an editable discount section in the detail view
+(input + Сохранить/Убрать, `PUT`/`DELETE
+/pricing-engine/contracts/{id}/exclusive-discount`) -- kept in the
+existing Contracts screen rather than a separate admin surface, per the
+explicit prior agreement to keep all of a contract's terms (rates,
+seasons, transfer, and now this) in one place. `fetchJson` extended
+with an optional `options` parameter (method/body) to support
+PUT/DELETE, matching `Counteragents.tsx`'s own copy of the same helper.
+
+The price-consistency fix: rejected the originally-sketched approach (a
+new Pricing Engine endpoint that internally calls Contract Engine's
+`get_room_price`) because it would re-couple Pricing Engine to Contract
+Engine's signatures -- exactly what Decision 069's
+`docs/interface-contracts/pricing-booking.md` Rule 1 deliberately
+avoided. Instead: a new, thin `GET /pricing-engine/agent-price`
+endpoint (query params `agent_id`, `contract_id`, `room_net_total`,
+`nights`) that does nothing but call the exact existing
+`apply_agent_pricing` function -- zero new business logic, not
+admin-gated (agents call it directly from search, same trust level
+`create_booking` already extends to a client-supplied `agent_id`).
+`HotelSearch.tsx`'s meal-plan price loop now makes this as a second
+call immediately after Contract Engine's price call, inside the same
+try block, so a raw net price can never display without the real agent
+price also having succeeded -- a failure in either call now falls
+through to the existing `priceError` path. `cheapestOption`,
+`cheapestOptionPrice`, the room-type card's `grandTotal`, and the
+per-meal-plan-option render all switched from `opt.price.final_total`
+to `opt.agentPrice.agent_room_total`; the raw `price` field is kept
+(not overwritten) alongside the new `agentPrice` field, so the two
+stay honestly distinguishable rather than silently merged.
+
+Reason: Frontend closes the loop on Decision 069's backend work --
+managers can now actually configure the markup/exclusive-discount
+system through the UI instead of direct database access, matching this
+session's standing principle. The price-consistency fix was treated as
+urgent, not deferred, because showing one price at search and charging
+a different one at actual booking creation is a correctness bug with
+real business trust implications, not a missing nice-to-have --
+confirmed as the highest-priority item the moment it was identified.
+
+Approved By: Daler
+
+Status: Implemented and verified. `tsc -b` clean across all touched
+files (`Counteragents.tsx`, `AdminPanel.tsx`, `Contracts.tsx`,
+`HotelSearch.tsx`), confirmed by fresh full-project type-check runs
+after every edit, not just the individual files. Live-verified end to
+end (no browser automation available, so verified via the exact same
+sequence of real HTTP calls the UI makes): added a test agent to
+Exclusive via the real API path the "Добавить" button calls, confirmed
+correct list placement; set Kandima's contract to an 8% discount via
+the same endpoint `Contracts.tsx` calls, confirmed a real booking
+through the full `create_booking` flow matched exactly ($1234.16,
+identical to Decision 069's own regression figure). For the search-fix
+specifically: Kandima's Sky Studio (2027-06-01 to 2027-06-05, 4 nights)
+showed $758.20 for a Standard agent (net $718.20 + $40 markup) and
+$700.74 for the same agent made Exclusive with the contract's 8%
+discount applied; a real booking created with identical parameters
+charged exactly $700.74 -- **byte-for-byte identical to the search
+preview**, confirming zero discrepancy between what agents see and what
+they're actually charged. All test bookings cancelled and hard-deleted,
+all test `ExclusiveAgent`/`ContractExclusiveDiscount` rows removed
+afterward (one exception, not part of this decision's test data: the
+project owner's own live UI testing left `user_id=2` in the Exclusive
+tier, left in place at their explicit request pending a separate
+decision). Pricing Engine remains **not yet LOCKED** -- the full
+surface has now been exercised end-to-end from the UI as Decision 069
+required before that review, so a TASK-006 LOCK decision is the natural
+next step, not yet taken by this decision.
+
+---
+
 # Decision Template
 
 Decision Number:
