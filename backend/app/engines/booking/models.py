@@ -57,7 +57,23 @@ class Booking(Base):
     # time — never recomputed later even if the contract's seasons/rates/
     # promotions change afterward (same "original price never changes"
     # principle 02_Logic_Rules.md #18 applies to contracts, extended here).
+    # As of Decision 069, this is Pricing Engine's agent_room_total, NOT
+    # Contract Engine's raw final_total -- it already includes the global
+    # markup and any exclusive-tier discount. The pre-markup net figure is
+    # never lost: it's recoverable as
+    # total_amount - agent_markup_amount + agent_exclusive_discount_amount.
     total_amount = Column(Float, nullable=False)
+    # Decision 069 (Pricing Engine): itemized breakdown of what Pricing
+    # Engine added/removed from Contract Engine's net room total to produce
+    # total_amount above -- same "separate column so Finance Engine can
+    # itemize later" precedent as transfer_total/mandatory_tax_total below.
+    # Both NULL only for bookings created before Decision 069 shipped (no
+    # backfill was done); zero for every real Pricing Engine calculation
+    # (Standard agents, or Exclusive agents at a contract with no
+    # ContractExclusiveDiscount) rather than NULL, so "0" and "not
+    # computed yet" stay distinguishable.
+    agent_markup_amount = Column(Float, nullable=True)
+    agent_exclusive_discount_amount = Column(Float, nullable=True)
     # Decision 022's Booking Engine integration: the agent's selected
     # ContractTransferOption.transfer_type (None if the contract doesn't
     # require one and the agent didn't add one), and its own frozen

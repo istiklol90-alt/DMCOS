@@ -99,6 +99,8 @@ class BookingResponse(BaseModel):
     status: str
     currency: str
     total_amount: float
+    agent_markup_amount: Optional[float] = None
+    agent_exclusive_discount_amount: Optional[float] = None
     transfer_type: Optional[str] = None
     transfer_total: Optional[float] = None
     mandatory_tax_total: Optional[float] = None

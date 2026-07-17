@@ -41,6 +41,11 @@ from app.engines.ai_core.models import (
     ModelProviderConfig,
     HumanGateDecision,
 )
+from app.engines.pricing.models import (
+    PricingSettings,
+    ExclusiveAgent,
+    ContractExclusiveDiscount,
+)
 
 def init_db():
     print("🔄 Создание таблиц...")

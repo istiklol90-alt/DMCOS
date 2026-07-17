@@ -64,6 +64,10 @@ from app.engines.booking.validators import (
 # Engines Booking Engine is allowed to reach into directly.
 from app.engines.hotel import service as hotel_service
 from app.engines.contract import service as contract_service
+# Decision 069, per docs/interface-contracts/pricing-booking.md — Pricing
+# Engine takes plain numbers (room_net_total, nights) already resolved via
+# Contract Engine above; zero code coupling to Contract Engine's signatures.
+from app.engines.pricing import service as pricing_service
 
 from models.user import User
 
@@ -161,6 +165,15 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
     contract that has no mandatory_tax_per_person_per_night configured, so
     this is a no-op for every contract except one that's actually been
     given a tax rate.
+
+    Decision 069: after get_room_price resolves Contract Engine's net room
+    total, pricing_service.apply_agent_pricing applies the global per-night
+    markup (and, for Exclusive-tier agents at a contract with a configured
+    ContractExclusiveDiscount, that contract's room-rate discount first) to
+    produce the actual total_amount stored below — total_amount is the
+    agent-facing price, not Contract Engine's raw net. transfer_total and
+    mandatory_tax_total are untouched by this step, per
+    docs/interface-contracts/pricing-booking.md Rule 3.
     """
     hotel_service.get_hotel(db, data.hotel_id)
     hotel_service.get_room_type(db, data.room_type_id)
@@ -219,6 +232,11 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
         db, contract.id, nights, data.adults, data.children
     )["total"]
 
+    # Decision 069: room-only, per docs/interface-contracts/pricing-booking.md.
+    agent_pricing = pricing_service.apply_agent_pricing(
+        db, data.agent_id, contract.id, price["final_total"], nights
+    )
+
     # Decision 048: reuses get_room_price's own applied_special_offer_ids
     # (never re-derived) -- only recorded when exactly one offer applied;
     # zero or multiple both stay NULL rather than guessing.
@@ -257,7 +275,9 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
             infants=data.infants,
             status="Pending",
             currency=price["currency"],
-            total_amount=price["final_total"],
+            total_amount=agent_pricing["agent_room_total"],
+            agent_markup_amount=agent_pricing["markup_amount"],
+            agent_exclusive_discount_amount=agent_pricing["exclusive_discount_amount"],
             transfer_type=data.transfer_type,
             transfer_total=transfer_total,
             mandatory_tax_total=mandatory_tax_total,

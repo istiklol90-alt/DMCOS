@@ -4235,6 +4235,206 @@ involved.
 
 ---
 
+# Decision 068
+
+Date: 2026-07-17
+
+Decision: AI Core Engine (`app/engines/ai_core/`) is now 🔒 LOCKED,
+closing its TASK-005/006 review. This is a deliberate exception to
+strict "one Engine at a time" sequencing (`CLAUDE.md`'s own escape
+hatch: "unless explicitly told otherwise by the project owner") --
+raised because a new Pricing Engine feature request arrived while AI
+Core Engine still showed `🚧 In progress, not LOCKED`, and rather than
+either block Pricing Engine indefinitely or silently start it out of
+sequence, the choice was surfaced explicitly. Owner's explicit choice:
+lock AI Core Engine now, treating the Mock-provider boundary as the
+locked implementation and a real Anthropic API connection as a future
+additive extension to an already-LOCKED engine -- the same pattern
+already used for every other post-lock extension in this project
+(Decisions 053/057/059 on Hotel/Contract Engine, etc.), not a lock
+blocker.
+
+TASK-005 review (re-verifying, not re-testing from scratch -- citing
+what earlier decisions already proved): Phase 1's full 8-entity
+taxonomy (`room_type → contract → {age_category, meal_plan, season} →
+transfer_option → rate → rate_supplement`) and Phase 2's SpecialOffer +
+4 sub-mechanism tables were each verified end-to-end against the real,
+live `dmc.db` (Decisions 041/042/043/061/062) -- not a test database --
+running the complete pipeline (`create_ingestion_job → run_extraction →
+record_extracted_field → submit_for_review → approve_job →
+contract_writer`'s real write-through) with `MockClaudeProvider`
+standing in for the real LLM call. Decision 061's verification is the
+strongest evidence: it confirmed real Contract Engine rows were created
+with exact expected values (2 `SpecialOffer` rows with the right
+`combinable_with_promotions` values, 3 `SpecialOfferRoomDiscount` rows
+with the right `discount_percent`, 2 `SpecialOfferTransferDiscount` rows
+with the right tier structure), confirmed the deliberately-fabricated
+`unmapped_offer_clause` produced *zero* Contract Engine rows (proving
+the "flag, don't guess, don't write" Human Gate boundary holds under a
+real write-through, not just in the prompt's own instructions), and
+regression-checked Kandima's real KM26_03 pricing was unaffected
+afterward. The Model Router abstraction (`providers.py`) was proven
+functionally complete: swapping `mock` for `claude` is already a
+`set_active_provider` **data** change today, not a code change --
+`ClaudeProvider` is fully built against the same `ModelProvider`
+Protocol, just never yet given a real API key. `pdf_extraction.py`
+(Decision 062) confirmed `document_text` is real extracted PDF text, not
+a placeholder filename. All verification runs' test artifacts (jobs,
+fields, audit rows, throwaway hotel/contract rows) were deleted
+afterward each time; the project's real data (Kandima, Siyam World, and
+the 2 real `ModelProviderConfig` rows) was left untouched throughout.
+
+Explicitly NOT covered by this lock, staying exactly as-built (empty
+scaffolding, gated by Decision 036's "AI Core Evolution Rule" as
+extended by Decision 061): `workflow.py`, `permissions.py`,
+`exceptions.py`, `constants.py`, `config.py`, `utils.py`, `events.py`,
+and the `ai/` subfolder's `assistant.py`/`automation.py`/`checker.py`/
+`learning.py`/`memory.py`/`rules.py` (Knowledge Base, Context Manager,
+Skills-as-plugins, Learning, Metrics). Locking the engine does not
+unlock these -- they remain governed by Decision 065's stricter gate
+("no production implementation until a real business workflow proves
+the need") exactly as before. Also explicitly NOT covered: `Promotion`,
+`BlackoutDate`, `CancellationPolicy`, `ContractFamilyRule` extraction
+(Phase 3, undesigned, same "build only once proven" discipline that
+deferred Phase 2 until Decision 061).
+
+Reason: The engine's core, shippable capability (upload a real contract
+PDF → extract structured data with confidence scoring → Human Gate
+review → real write-through into Hotel/Contract Engine) has been built
+and independently re-proven correct across 5+ separate verification
+runs spanning both real hotels in the system, meeting the same bar
+Hotel/Contract/Booking Engine were locked against (real end-to-end
+verification, no pytest suite, consistent with this project's
+established practice everywhere). Decision 065's proven-business-value
+gate is about *new* AI subsystems beyond this core (Knowledge Base,
+Learning, etc.), not a reason to leave an already-proven core
+perpetually unlocked -- conflating "provider is mocked" with
+"capability is unproven" would misread Decision 065's own intent, which
+targeted production AI code built *ahead* of proof, not a proof that
+happens to run through a deliberately-substituted mock provider by
+design.
+
+Approved By: Daler
+
+Status: AI Core Engine status changed to 🔒 LOCKED in `CLAUDE.md`.
+`ClaudeProvider`/real Anthropic API integration remains an open,
+explicitly future additive extension (needs `ANTHROPIC_API_KEY` in
+`backend/.env` and an explicit decision to start paying for usage) --
+not a blocker to this lock, and not scheduled by this decision. This
+lock clears the way for Pricing Engine (module #6/#7 depending on
+numbering) to begin its own TASK-000 baseline check next, per the
+Engine Development Rule's normal one-at-a-time sequencing.
+
+---
+
+# Decision 069
+
+Date: 2026-07-17
+
+Decision: Pricing Engine (`app/engines/pricing/`) built -- domain model,
+service, and API (TASK-001/002), plus an additive extension to LOCKED
+Booking Engine so real bookings actually reflect agent-facing pricing,
+not raw Contract Engine net cost. This is the project's first real
+implementation of `01_Modules_List.md` #6's Markup concept, scoped down
+from the Data Dictionary's original per-agent/per-rate vision to what
+the project owner explicitly specified: one global flat per-night
+markup, plus a per-contract (not global, not per-agent) exclusive-tier
+room-rate discount.
+
+Domain model: `PricingSettings` (single row, id=1, get-or-created --
+`standard_markup_amount_per_night`, default $10.00/night, no
+exclusive-discount field). `ExclusiveAgent` (one row per agent in the
+Exclusive tier; absence = Standard, so new agent registrations default
+to Standard with zero changes to the registration-approval code path).
+`ContractExclusiveDiscount` (one row per contract that actually offers
+an exclusive-agent arrangement -- most contracts will have none, by
+design; `discount_percent` varies per contract, manager-set, no global
+default). All three cross-engine references (`user_id`, `contract_id`,
+`assigned_by`, `created_by`) are plain Integers, no SQL ForeignKey, same
+decoupling convention as every other Engine.
+
+Design correction mid-session: the exclusive discount was originally
+specified as one global percentage applying everywhere ("regardless of
+which hotel/contract"). The owner corrected this before any code was
+written: only a handful of real hotels will ever offer this
+arrangement, the percentage varies per hotel, and it must be
+explicitly configured per contract with no row meaning no arrangement
+-- not defaulting to some global number. `ContractExclusiveDiscount`
+replaced what would have been a second field on `PricingSettings`.
+
+`service.apply_agent_pricing(db, agent_id, contract_id, room_net_total,
+nights)` -- documented in full in
+`docs/interface-contracts/pricing-booking.md` (new Interface Contract,
+per `CLAUDE.md`'s cross-Engine-dependency rule). Both conditions must
+hold for any discount: agent in `ExclusiveAgent` AND `contract_id` has a
+`ContractExclusiveDiscount` row -- an Exclusive-tier agent at a hotel
+with no such row pays net + markup only, identical to a Standard agent.
+Calculation order (owner-confirmed): discount the net total first (on
+the tactical-offer-already-discounted net Contract Engine returns),
+then add the flat per-night markup on top of that. Only the room total
+is touched -- transfer and mandatory tax are never modified by Pricing
+Engine, deliberately, since a transfer is a one-time charge with no
+"per night" concept and tax is a hotel-mandated pass-through. Pricing
+Engine never imports Contract Engine's `service.py` -- it operates on
+plain numbers the caller already resolved, a deliberately looser
+coupling than Booking/AI Core Engine's direct-import pattern.
+
+Booking Engine extension (LOCKED, additive): `create_booking` now calls
+`apply_agent_pricing` after `get_room_price` and before the `Booking`
+insert, using `agent_room_total` as `total_amount` (previously
+`price["final_total"]`, i.e. raw net -- meaning every booking in this
+project before this decision was invoiced at pure net cost with zero
+markup anywhere, a real gap this closes). Two new nullable columns,
+`agent_markup_amount`/`agent_exclusive_discount_amount`, itemize the
+breakdown -- same "separate column so Finance Engine can itemize later"
+precedent as `transfer_total`/`mandatory_tax_total` (Decisions 022/033).
+Both are NULL (not 0) on the 3 real bookings that predate this decision,
+keeping "not computed" distinguishable from "computed, zero."
+
+Verified: 3 isolated `apply_agent_pricing` cases (Standard; Exclusive
+with a configured contract discount; Exclusive at a contract with none,
+proving both conditions are genuinely required together, not agent tier
+alone) -- all passed. Regression against real bookings through the full
+`create_booking` flow: Kandima (Standard, net $1298.00 -> total
+$1338.00, exactly net + $40 markup for 4 nights), Kandima (same agent
+made Exclusive, contract given an 8% discount, net $1298.00 -> $1234.16,
+exactly 8% off net + $40 markup), Siyam World (same still-Exclusive
+agent, no `ContractExclusiveDiscount` row for this contract, net
+$4581.50 -> $4651.50, net + markup only -- confirming the discount
+doesn't leak across hotels for an Exclusive-tier agent). Siyam World's
+$4581.50 net matches Decision 056's independently-verified figure,
+confirming no regression. All 3 test bookings cancelled (releasing real
+allotment) and hard-deleted afterward; `ExclusiveAgent`/
+`ContractExclusiveDiscount` test rows removed; the 3 pre-existing real
+production bookings confirmed untouched.
+
+Reason: Closes a real, previously-undiscovered gap -- every booking ever
+created in this project was invoiced at raw Contract Engine net cost,
+with no markup mechanism anywhere, meaning the company had no
+systematic way to charge agents more than hotel net cost. Also
+implements the real, confirmed business need for a differentiated
+pricing tier for a small set of strategic/exclusive agent
+relationships, without touching Contract Engine's own SpecialOffer/
+Promotion mechanisms (which remain purely hotel-tactical, unaware of
+agent identity) or reusing them via a fake per-contract entry, the same
+anti-pattern Decision 057 already rejected for a different mechanism.
+
+Approved By: Daler
+
+Status: Backend implemented and verified (models, schemas, repository,
+service, api, Interface Contract doc, Booking Engine extension, DB
+migration -- 3 new tables plus 2 new nullable `bookings` columns).
+Frontend (Admin Panel "Контрагенты" tab, `Contracts.tsx`'s
+exclusive-discount field) not yet built -- **Pricing Engine is
+deliberately NOT marked LOCKED yet**, unlike Hotel/Contract/Booking's
+backend-only-by-explicit-decision precedent (Decision 007): frontend
+here isn't deferred by a deliberate scope decision, it's the immediate
+next task in this same session, so TASK-006 LOCK review will follow
+once it ships and the full surface has been exercised end-to-end from
+the UI, not before.
+
+---
+
 # Decision Template
 
 Decision Number:
