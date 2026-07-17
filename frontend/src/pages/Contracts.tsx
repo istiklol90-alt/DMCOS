@@ -93,13 +93,16 @@ interface ContractCoverage {
   roomTypeCount: number;
 }
 
-// Decision 069 (Pricing Engine): most contracts have no row at all, by
-// design -- undefined (not fetched yet) vs null (fetched, none configured)
-// vs a real object are all distinguishable, same convention as `coverage`
-// above.
+// Decision 069/071 (Pricing Engine): a contract can have zero, one, or many
+// rows -- room_type_id/meal_plan_id null means "applies to all", start_date/
+// end_date null means "always active". Most contracts have zero rows.
 interface ContractExclusiveDiscount {
   id: number;
   contract_id: number;
+  room_type_id: number | null;
+  meal_plan_id: number | null;
+  start_date: string | null;
+  end_date: string | null;
   discount_percent: number;
 }
 
@@ -194,15 +197,20 @@ const Contracts = () => {
   // into a false "0 · 0", which would misrepresent a real error as a
   // confirmed empty contract.
   const [coverage, setCoverage] = useState<Record<number, ContractCoverage | null>>({});
-  // null means "fetched, no exclusive discount configured for this
-  // contract" (the expected default for most contracts) -- distinct from
-  // undefined ("not fetched yet"), same convention as coverage above.
-  const [exclusiveDiscounts, setExclusiveDiscounts] = useState<Record<number, ContractExclusiveDiscount | null>>({});
+  // Empty array is the expected default for most contracts (no exclusive
+  // arrangement at all) -- distinct from undefined ("not fetched yet").
+  const [exclusiveDiscounts, setExclusiveDiscounts] = useState<Record<number, ContractExclusiveDiscount[]>>({});
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
 
-  const [detailDiscount, setDetailDiscount] = useState<ContractExclusiveDiscount | null | undefined>(undefined);
-  const [discountInput, setDiscountInput] = useState("");
+  const [detailDiscounts, setDetailDiscounts] = useState<ContractExclusiveDiscount[]>([]);
+  const [discountFormOpen, setDiscountFormOpen] = useState(false);
+  const [editingDiscountId, setEditingDiscountId] = useState<number | null>(null);
+  const [formPercent, setFormPercent] = useState("");
+  const [formRoomTypeId, setFormRoomTypeId] = useState("");
+  const [formMealPlanId, setFormMealPlanId] = useState("");
+  const [formStartDate, setFormStartDate] = useState("");
+  const [formEndDate, setFormEndDate] = useState("");
   const [savingDiscount, setSavingDiscount] = useState(false);
   const [discountError, setDiscountError] = useState<string | null>(null);
 
@@ -252,16 +260,16 @@ const Contracts = () => {
       );
       setCoverage(Object.fromEntries(coverageEntries));
 
-      // Decision 069: /pricing-engine returns 200 + null when a contract has
-      // no exclusive-discount row (the expected case for most contracts) --
-      // never throws, unlike coverage's own try/catch above.
+      // Decision 069/071: /pricing-engine returns an empty list when a
+      // contract has no exclusive-discount rows (the expected case for most
+      // contracts) -- never throws, unlike coverage's own try/catch above.
       const discountEntries = await Promise.all(
-        contractsData.map(async (c): Promise<[number, ContractExclusiveDiscount | null]> => {
-          const discount = await fetchJson<ContractExclusiveDiscount | null>(
-            `/pricing-engine/contracts/${c.id}/exclusive-discount`,
+        contractsData.map(async (c): Promise<[number, ContractExclusiveDiscount[]]> => {
+          const discounts = await fetchJson<ContractExclusiveDiscount[]>(
+            `/pricing-engine/contracts/${c.id}/exclusive-discounts`,
             token
           );
-          return [c.id, discount];
+          return [c.id, discounts];
         })
       );
       setExclusiveDiscounts(Object.fromEntries(discountEntries));
@@ -289,19 +297,20 @@ const Contracts = () => {
     setDetailRates([]);
     setDetailSupplementsByRate({});
     setDetailRoomTypes({});
-    setDetailDiscount(undefined);
-    setDiscountInput("");
+    setDetailDiscounts([]);
+    setDiscountFormOpen(false);
+    setEditingDiscountId(null);
     setDiscountError(null);
     const token = localStorage.getItem("token") || "";
     try {
-      const [contract, seasons, mealPlans, transferOptions, ageCategories, rates, discount] = await Promise.all([
+      const [contract, seasons, mealPlans, transferOptions, ageCategories, rates, discounts] = await Promise.all([
         fetchJson<Contract>(`/contract-engine/contracts/${contractId}`, token),
         fetchJson<ContractSeason[]>(`/contract-engine/contracts/${contractId}/seasons`, token),
         fetchJson<ContractMealPlan[]>(`/contract-engine/contracts/${contractId}/meal-plans`, token),
         fetchJson<ContractTransferOption[]>(`/contract-engine/contracts/${contractId}/transfer-options`, token),
         fetchJson<ContractAgeCategory[]>(`/contract-engine/contracts/${contractId}/age-categories`, token),
         fetchJson<Rate[]>(`/contract-engine/contracts/${contractId}/rates`, token),
-        fetchJson<ContractExclusiveDiscount | null>(`/pricing-engine/contracts/${contractId}/exclusive-discount`, token),
+        fetchJson<ContractExclusiveDiscount[]>(`/pricing-engine/contracts/${contractId}/exclusive-discounts`, token),
       ]);
       setDetailContract(contract);
       setDetailSeasons(seasons);
@@ -309,8 +318,7 @@ const Contracts = () => {
       setDetailTransferOptions(transferOptions);
       setDetailAgeCategories(ageCategories);
       setDetailRates(rates);
-      setDetailDiscount(discount);
-      setDiscountInput(discount ? String(discount.discount_percent) : "");
+      setDetailDiscounts(discounts);
 
       const [roomTypesData, supplementsEntries] = await Promise.all([
         fetchJson<RoomType[]>(`/hotel-engine/hotels/${contract.hotel_id}/room-types`, token),
@@ -339,23 +347,78 @@ const Contracts = () => {
     }
   }
 
-  async function handleSaveDiscount() {
+  async function refreshDetailDiscounts() {
     if (!detailContract) return;
-    const value = parseFloat(discountInput);
+    const token = localStorage.getItem("token") || "";
+    const discounts = await fetchJson<ContractExclusiveDiscount[]>(
+      `/pricing-engine/contracts/${detailContract.id}/exclusive-discounts`,
+      token
+    );
+    setDetailDiscounts(discounts);
+  }
+
+  function openNewDiscountForm() {
+    setEditingDiscountId(null);
+    setFormPercent("");
+    setFormRoomTypeId("");
+    setFormMealPlanId("");
+    setFormStartDate("");
+    setFormEndDate("");
+    setDiscountError(null);
+    setDiscountFormOpen(true);
+  }
+
+  function openEditDiscountForm(d: ContractExclusiveDiscount) {
+    setEditingDiscountId(d.id);
+    setFormPercent(String(d.discount_percent));
+    setFormRoomTypeId(d.room_type_id != null ? String(d.room_type_id) : "");
+    setFormMealPlanId(d.meal_plan_id != null ? String(d.meal_plan_id) : "");
+    setFormStartDate(d.start_date ?? "");
+    setFormEndDate(d.end_date ?? "");
+    setDiscountError(null);
+    setDiscountFormOpen(true);
+  }
+
+  function closeDiscountForm() {
+    setDiscountFormOpen(false);
+    setEditingDiscountId(null);
+  }
+
+  async function handleSaveDiscountForm() {
+    if (!detailContract) return;
+    const value = parseFloat(formPercent);
     if (isNaN(value) || value <= 0 || value >= 100) {
       setDiscountError("Введите процент от 0 до 100 (не включительно)");
       return;
     }
+    if (formStartDate && formEndDate && formStartDate > formEndDate) {
+      setDiscountError("Дата начала не может быть позже даты окончания");
+      return;
+    }
     const token = localStorage.getItem("token") || "";
+    const payload = {
+      discount_percent: value,
+      room_type_id: formRoomTypeId ? Number(formRoomTypeId) : null,
+      meal_plan_id: formMealPlanId ? Number(formMealPlanId) : null,
+      start_date: formStartDate || null,
+      end_date: formEndDate || null,
+    };
     try {
       setSavingDiscount(true);
       setDiscountError(null);
-      const updated = await fetchJson<ContractExclusiveDiscount>(
-        `/pricing-engine/contracts/${detailContract.id}/exclusive-discount`,
-        token,
-        { method: "PUT", body: JSON.stringify({ discount_percent: value }) }
-      );
-      setDetailDiscount(updated);
+      if (editingDiscountId) {
+        await fetchJson(`/pricing-engine/exclusive-discounts/${editingDiscountId}`, token, {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await fetchJson(`/pricing-engine/contracts/${detailContract.id}/exclusive-discounts`, token, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      }
+      await refreshDetailDiscounts();
+      closeDiscountForm();
     } catch (err: any) {
       setDiscountError(err.message || "Не удалось сохранить скидку");
     } finally {
@@ -363,20 +426,15 @@ const Contracts = () => {
     }
   }
 
-  async function handleClearDiscount() {
-    if (!detailContract) return;
-    if (!window.confirm("Убрать эксклюзивную скидку для этого контракта?")) return;
+  async function handleDeleteDiscount(id: number) {
+    if (!window.confirm("Удалить эту эксклюзивную скидку?")) return;
     const token = localStorage.getItem("token") || "";
     try {
       setSavingDiscount(true);
-      setDiscountError(null);
-      await fetchJson(`/pricing-engine/contracts/${detailContract.id}/exclusive-discount`, token, {
-        method: "DELETE",
-      });
-      setDetailDiscount(null);
-      setDiscountInput("");
+      await fetchJson(`/pricing-engine/exclusive-discounts/${id}`, token, { method: "DELETE" });
+      await refreshDetailDiscounts();
     } catch (err: any) {
-      setDiscountError(err.message || "Не удалось убрать скидку");
+      alert(err.message || "Не удалось удалить скидку");
     } finally {
       setSavingDiscount(false);
     }
@@ -431,7 +489,7 @@ const Contracts = () => {
                 ) : (
                   contracts.map((c) => {
                     const cov = coverage[c.id];
-                    const discount = exclusiveDiscounts[c.id];
+                    const discounts = exclusiveDiscounts[c.id];
                     return (
                       <tr
                         key={c.id}
@@ -453,9 +511,11 @@ const Contracts = () => {
                           {cov && `${cov.seasonCount} сезона(ов) · ${cov.roomTypeCount} тип(ов) номеров`}
                         </td>
                         <td className="px-4 py-3.5 text-slate/70">
-                          {discount ? (
+                          {discounts && discounts.length > 0 ? (
                             <span className="inline-flex items-center rounded-full bg-teal/15 px-2.5 py-1 text-xs font-medium text-teal">
-                              {discount.discount_percent}%
+                              {discounts.length === 1
+                                ? `${discounts[0].discount_percent}%`
+                                : `${discounts.length} скидки`}
                             </span>
                           ) : (
                             "—"
@@ -515,47 +575,163 @@ const Contracts = () => {
               )}
             </div>
 
-            {/* ===== Эксклюзивная скидка (Decision 069, Pricing Engine) ===== */}
+            {/* ===== Эксклюзивные скидки (Decision 069, extended by 071) ===== */}
             <div className="mt-4 border-t border-ink/5 pt-4">
-              <p className="text-xs font-medium uppercase tracking-wide text-slate/50">
-                Эксклюзивная скидка на цену номера
-              </p>
-              <p className="mt-1 text-xs text-slate/60">
-                Применяется только агентам из эксклюзивной категории на «Контрагенты», только к этому контракту.
-                Пусто — скидка не настроена для этого отеля.
-              </p>
-              <div className="mt-2.5 flex flex-wrap items-center gap-2.5">
-                <input
-                  type="number"
-                  min={0}
-                  max={99}
-                  step="0.1"
-                  placeholder="напр. 10"
-                  value={discountInput}
-                  onChange={(e) => setDiscountInput(e.target.value)}
-                  className="w-32 appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-                />
-                <span className="text-sm text-slate/60">%</span>
-                <button
-                  type="button"
-                  onClick={handleSaveDiscount}
-                  disabled={savingDiscount}
-                  className="appearance-none rounded-lg border-0 bg-coral px-4 py-2 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-                >
-                  {savingDiscount ? "..." : "Сохранить"}
-                </button>
-                {detailDiscount && (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate/50">
+                    Эксклюзивные скидки на цену номера
+                  </p>
+                  <p className="mt-1 text-xs text-slate/60">
+                    Применяются только агентам из эксклюзивной категории на «Контрагенты». Можно задать одну
+                    скидку на весь контракт, либо отдельные скидки по типу номера / типу питания / периоду
+                    заезда — пусто в поле означает «применяется ко всем».
+                  </p>
+                </div>
+                {!discountFormOpen && (
                   <button
                     type="button"
-                    onClick={handleClearDiscount}
-                    disabled={savingDiscount}
-                    className="appearance-none rounded-lg border border-coral/40 bg-transparent px-4 py-2 text-sm font-medium text-coral transition-colors hover:bg-coral/10 disabled:opacity-50"
+                    onClick={openNewDiscountForm}
+                    className="appearance-none rounded-lg border-0 bg-teal px-4 py-2 text-xs font-medium text-white transition-transform hover:-translate-y-0.5"
                   >
-                    Убрать
+                    Добавить скидку
                   </button>
                 )}
               </div>
-              {discountError && <p className="mt-2 text-sm text-red-600">{discountError}</p>}
+
+              {detailDiscounts.length === 0 && !discountFormOpen ? (
+                <p className="mt-3 text-sm text-slate/50">Скидки не настроены для этого контракта.</p>
+              ) : (
+                <div className="mt-3 space-y-2">
+                  {detailDiscounts.map((d) => (
+                    <div
+                      key={d.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ink/10 bg-sand/30 px-3.5 py-2.5"
+                    >
+                      <div className="text-sm text-ink">
+                        <span className="font-semibold text-coral">{d.discount_percent}%</span>{" "}
+                        <span className="text-slate/70">
+                          {d.room_type_id != null
+                            ? detailRoomTypes[d.room_type_id] ?? `тип #${d.room_type_id}`
+                            : "все типы номеров"}
+                          {" · "}
+                          {d.meal_plan_id != null ? mealPlanCode(d.meal_plan_id) : "все типы питания"}
+                          {" · "}
+                          {d.start_date || d.end_date
+                            ? `${d.start_date ? formatDate(d.start_date) : "…"} → ${
+                                d.end_date ? formatDate(d.end_date) : "…"
+                              }`
+                            : "всегда активна"}
+                        </span>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openEditDiscountForm(d)}
+                          className="appearance-none rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-slate/70 transition-colors hover:bg-sand/60"
+                        >
+                          Изменить
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteDiscount(d.id)}
+                          disabled={savingDiscount}
+                          className="appearance-none rounded-lg border border-coral/40 bg-transparent px-3 py-1.5 text-xs font-medium text-coral transition-colors hover:bg-coral/10 disabled:opacity-50"
+                        >
+                          Удалить
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {discountFormOpen && (
+                <div className="mt-3 rounded-xl border border-coral/20 bg-coral/5 p-3.5">
+                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
+                    <label className="text-xs text-slate/60">
+                      Тип номера
+                      <select
+                        value={formRoomTypeId}
+                        onChange={(e) => setFormRoomTypeId(e.target.value)}
+                        className="mt-1 w-full appearance-none rounded-lg border border-ink/15 bg-white px-2.5 py-2 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+                      >
+                        <option value="">Все типы номеров</option>
+                        {Object.entries(detailRoomTypes).map(([id, name]) => (
+                          <option key={id} value={id}>
+                            {name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-xs text-slate/60">
+                      Тип питания
+                      <select
+                        value={formMealPlanId}
+                        onChange={(e) => setFormMealPlanId(e.target.value)}
+                        className="mt-1 w-full appearance-none rounded-lg border border-ink/15 bg-white px-2.5 py-2 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+                      >
+                        <option value="">Все типы питания</option>
+                        {detailMealPlans.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.meal_code}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-xs text-slate/60">
+                      Дата с
+                      <input
+                        type="date"
+                        value={formStartDate}
+                        onChange={(e) => setFormStartDate(e.target.value)}
+                        className="mt-1 w-full appearance-none rounded-lg border border-ink/15 bg-white px-2.5 py-2 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+                      />
+                    </label>
+                    <label className="text-xs text-slate/60">
+                      Дата по
+                      <input
+                        type="date"
+                        value={formEndDate}
+                        onChange={(e) => setFormEndDate(e.target.value)}
+                        className="mt-1 w-full appearance-none rounded-lg border border-ink/15 bg-white px-2.5 py-2 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+                      />
+                    </label>
+                    <label className="text-xs text-slate/60">
+                      Скидка, %
+                      <input
+                        type="number"
+                        min={0}
+                        max={99}
+                        step="0.1"
+                        placeholder="напр. 10"
+                        value={formPercent}
+                        onChange={(e) => setFormPercent(e.target.value)}
+                        className="mt-1 w-full appearance-none rounded-lg border border-ink/15 bg-white px-2.5 py-2 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+                      />
+                    </label>
+                  </div>
+                  <div className="mt-3 flex gap-2.5">
+                    <button
+                      type="button"
+                      onClick={handleSaveDiscountForm}
+                      disabled={savingDiscount}
+                      className="appearance-none rounded-lg border-0 bg-coral px-4 py-2 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+                    >
+                      {savingDiscount ? "..." : editingDiscountId ? "Сохранить изменения" : "Добавить"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={closeDiscountForm}
+                      disabled={savingDiscount}
+                      className="appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2 text-sm font-medium text-slate/70 transition-colors hover:bg-sand/60 disabled:opacity-50"
+                    >
+                      Отмена
+                    </button>
+                  </div>
+                  {discountError && <p className="mt-2 text-sm text-red-600">{discountError}</p>}
+                </div>
+              )}
             </div>
           </div>
 

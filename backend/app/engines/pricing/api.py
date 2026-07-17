@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
@@ -16,7 +18,8 @@ from app.engines.pricing.schemas import (
     ExclusiveAgentCreate,
     AgentSummary,
     ContractExclusiveDiscountResponse,
-    ContractExclusiveDiscountUpsert,
+    ContractExclusiveDiscountCreate,
+    ContractExclusiveDiscountUpdate,
     AgentPriceResponse,
 )
 
@@ -111,36 +114,58 @@ def remove_exclusive_agent(user_id: int, db: Session = Depends(get_db), current_
 
 
 # ---------------------------------------------------------------------------
-# Per-contract exclusive discount
+# Per-contract exclusive discount (Decision 071: list-based, one contract
+# can have multiple rows at different room-type/meal-plan/date specificity)
 # ---------------------------------------------------------------------------
 
-@router.get("/contracts/{contract_id}/exclusive-discount", response_model=ContractExclusiveDiscountResponse | None)
-def get_contract_discount(contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+@router.get("/contracts/{contract_id}/exclusive-discounts", response_model=list[ContractExclusiveDiscountResponse])
+def get_contract_discounts(contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _require_admin(current_user)
-    return service.get_contract_exclusive_discount(db, contract_id)
+    return service.list_contract_exclusive_discounts(db, contract_id)
 
 
-@router.put("/contracts/{contract_id}/exclusive-discount", response_model=ContractExclusiveDiscountResponse)
-def set_contract_discount(
+@router.post(
+    "/contracts/{contract_id}/exclusive-discounts",
+    response_model=ContractExclusiveDiscountResponse,
+    status_code=201,
+)
+def create_contract_discount(
     contract_id: int,
-    data: ContractExclusiveDiscountUpsert,
+    data: ContractExclusiveDiscountCreate,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     _require_admin(current_user)
-    return _run(lambda: service.set_contract_exclusive_discount(
-        db, contract_id, data.discount_percent, created_by=current_user.id
+    return _run(lambda: service.create_contract_exclusive_discount(
+        db, contract_id, data.discount_percent, created_by=current_user.id,
+        room_type_id=data.room_type_id, meal_plan_id=data.meal_plan_id,
+        start_date=data.start_date, end_date=data.end_date,
     ))
 
 
-@router.delete("/contracts/{contract_id}/exclusive-discount", status_code=204)
-def clear_contract_discount(contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+@router.put("/exclusive-discounts/{discount_id}", response_model=ContractExclusiveDiscountResponse)
+def update_contract_discount(
+    discount_id: int,
+    data: ContractExclusiveDiscountUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
     _require_admin(current_user)
-    _run(lambda: service.clear_contract_exclusive_discount(db, contract_id))
+    return _run(lambda: service.update_contract_exclusive_discount(
+        db, discount_id, data.discount_percent,
+        room_type_id=data.room_type_id, meal_plan_id=data.meal_plan_id,
+        start_date=data.start_date, end_date=data.end_date,
+    ))
+
+
+@router.delete("/exclusive-discounts/{discount_id}", status_code=204)
+def delete_contract_discount(discount_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _require_admin(current_user)
+    _run(lambda: service.delete_contract_exclusive_discount(db, discount_id))
 
 
 # ---------------------------------------------------------------------------
-# Agent-facing price preview (Decision 070)
+# Agent-facing price preview (Decision 070, extended by 071)
 # ---------------------------------------------------------------------------
 
 @router.get("/agent-price", response_model=AgentPriceResponse)
@@ -149,6 +174,9 @@ def get_agent_price(
     contract_id: int,
     room_net_total: float,
     nights: int,
+    room_type_id: int,
+    meal_plan_id: int,
+    check_in: date,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -161,4 +189,6 @@ def get_agent_price(
     exact same function create_booking calls server-side, not a
     reimplementation.
     """
-    return _run(lambda: service.apply_agent_pricing(db, agent_id, contract_id, room_net_total, nights))
+    return _run(lambda: service.apply_agent_pricing(
+        db, agent_id, contract_id, room_net_total, nights, room_type_id, meal_plan_id, check_in
+    ))

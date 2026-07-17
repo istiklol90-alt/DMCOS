@@ -66,21 +66,22 @@ def delete_exclusive_agent(db: Session, row: ExclusiveAgent) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ContractExclusiveDiscount
+# ContractExclusiveDiscount -- Decision 071: list-based, no longer one row
+# per contract.
 # ---------------------------------------------------------------------------
 
-def get_contract_exclusive_discount(db: Session, contract_id: int) -> Optional[ContractExclusiveDiscount]:
+def list_contract_exclusive_discounts(db: Session, contract_id: int) -> list[ContractExclusiveDiscount]:
     return db.query(ContractExclusiveDiscount).filter(
         ContractExclusiveDiscount.contract_id == contract_id
-    ).first()
+    ).all()
 
 
-def create_contract_exclusive_discount(
-    db: Session, contract_id: int, discount_percent: float, created_by: int
-) -> ContractExclusiveDiscount:
-    row = ContractExclusiveDiscount(
-        contract_id=contract_id, discount_percent=discount_percent, created_by=created_by
-    )
+def get_contract_exclusive_discount_by_id(db: Session, discount_id: int) -> Optional[ContractExclusiveDiscount]:
+    return db.query(ContractExclusiveDiscount).filter(ContractExclusiveDiscount.id == discount_id).first()
+
+
+def create_contract_exclusive_discount(db: Session, **fields) -> ContractExclusiveDiscount:
+    row = ContractExclusiveDiscount(**fields)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -88,9 +89,10 @@ def create_contract_exclusive_discount(
 
 
 def update_contract_exclusive_discount(
-    db: Session, row: ContractExclusiveDiscount, discount_percent: float
+    db: Session, row: ContractExclusiveDiscount, **fields
 ) -> ContractExclusiveDiscount:
-    row.discount_percent = discount_percent
+    for key, value in fields.items():
+        setattr(row, key, value)
     db.commit()
     db.refresh(row)
     return row

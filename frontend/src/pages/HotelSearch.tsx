@@ -1404,6 +1404,9 @@ function HotelSearch({ onBack }: HotelSearchProps) {
                         contract_id: String(contractId),
                         room_net_total: String(price.final_total),
                         nights: String(price.nights),
+                        room_type_id: String(rt.id),
+                        meal_plan_id: String(price.meal_plan_id),
+                        check_in: checkIn,
                       });
                       const agentPrice = await fetchJson<AgentPrice>(
                         `/pricing-engine/agent-price?${agentPriceQuery.toString()}`,

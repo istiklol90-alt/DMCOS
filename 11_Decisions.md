@@ -4539,6 +4539,99 @@ next step, not yet taken by this decision.
 
 ---
 
+# Decision 071
+
+Date: 2026-07-17
+
+Decision: Two real business extensions to `ContractExclusiveDiscount`
+(Decision 069): (1) date-scoped discounts -- nullable `start_date`/
+`end_date`, NULL on both meaning always active, so a discount can be
+configured to apply only within a specific booking window (e.g.
+Kandima's 10% only 10 Jan - 15 May); (2) room-type/meal-plan-specific
+discounts -- nullable `room_type_id`/`meal_plan_id`, NULL meaning
+"applies to all," the same wildcard convention Contract Engine's own
+`SpecialOfferRoomDiscount.room_type_id` already established, so a
+manager can choose a flat contract-wide % (both NULL), or granular
+per-room-type/meal-plan %s, or both coexisting on the same contract at
+different specificity. The `unique` constraint on `contract_id` was
+dropped -- a contract can now have zero, one, or many
+`ContractExclusiveDiscount` rows.
+
+Selection logic: new `find_contract_exclusive_discount(db, contract_id,
+room_type_id, meal_plan_id, check_in)` replaces the old single-row
+lookup. A row is a candidate only if its non-NULL `room_type_id`/
+`meal_plan_id` match exactly and `check_in` falls inside its date
+window (if any). Among candidates, most-specific-wins: the row matching
+the most of `{room_type_id, meal_plan_id}` is selected; ties (a config
+edge case, not expected in practice) prefer a row with an explicit date
+window over an always-active one. Same tier-selection discipline as
+Decisions 051/053.
+
+`apply_agent_pricing`'s signature gained `room_type_id`, `meal_plan_id`,
+`check_in` -- all three already sat in scope at both existing call
+sites (`create_booking` and `HotelSearch.tsx`'s `agent-price` request),
+so no new lookups were needed anywhere to wire this through.
+
+API reshaped from a single-resource-per-contract pattern to a
+collection: `GET`/`POST /pricing-engine/contracts/{id}/exclusive-
+discounts` (plural) and `PUT`/`DELETE /pricing-engine/exclusive-
+discounts/{discount_id}` (by row id, not contract id). `Contracts.tsx`'s
+detail view was rebuilt from a single input+Сохранить/Убрать into a
+list of existing discount rows (room type / meal plan / date window /
+% / Изменить / Удалить) plus an add/edit form with dropdowns sourced
+from the contract's own already-loaded room types and meal plans; the
+list view's column now shows a count (`N скидки`) when a contract has
+more than one row, or the single percentage when it has exactly one.
+
+Migration: the table already held one real, live row (the project
+owner's own manual test via `Contracts.tsx`: Kandima, 10%, no
+restrictions) -- preserved during the rebuild as a contract-wide,
+always-active row under the new schema, not discarded.
+
+Bug found and fixed during this session's own verification, before any
+of this could be called done: the first table rebuild's raw DDL (SQLite
+requires a full rebuild to drop a `UNIQUE` constraint, no `ALTER
+COLUMN`) omitted `DEFAULT CURRENT_TIMESTAMP` on `created_at`/
+`updated_at`, so a fresh `POST` inserted a row with `NULL` timestamps
+and crashed FastAPI's response serialization with a 500 --
+`ResponseValidationError: Input should be a valid datetime`. Caught
+immediately by this decision's own live-API verification pass (not a
+theoretical review), fixed with a second rebuild carrying the correct
+`DEFAULT (CURRENT_TIMESTAMP)` clause, and the affected row's timestamps
+backfilled rather than left `NULL`.
+
+Reason: Both extensions reflect real, confirmed hotel contract terms --
+tactical discounts are commonly windowed to specific booking periods,
+and a hotel may want to reward Exclusive agents differently by room
+category or meal plan rather than a single blanket percentage. Building
+this as a flexible, nullable-wildcard schema (rather than two separate
+mechanisms, or forcing every row to specify every field) follows the
+exact same "flexible core" precedent Contract Engine's own
+`SpecialOfferRoomDiscount` already established, avoiding a second,
+inconsistent modeling convention for what is fundamentally the same
+kind of scoping problem.
+
+Approved By: Daler
+
+Status: Implemented and verified. Isolated: 6 tests covering the
+regression baseline (contract-wide, no dates, reproducing the exact
+$700.74 figure), date-window in/out of range, exact room+meal match
+beating a coexisting wildcard, a different room type falling back to
+the wildcard, and a room-only wildcard matching any meal plan -- all
+passed. Real end-to-end via actual HTTP API against the live Kandima
+contract (carrying the project owner's own real 10% wildcard row): a
+Sky Studio+BB-specific 20% override was added alongside it, and a real
+booking through the full `create_booking` flow confirmed the specific
+row wins ($614.56, exactly $718.20 × 0.80 + $40 markup) while a
+different room type correctly fell back to the wildcard ($686.38,
+exactly $718.20 × 0.90 + $40). All test rows/bookings removed
+afterward; the project owner's original 10% wildcard row and their
+`user_id=2` Exclusive-tier status were both confirmed untouched.
+`tsc -b` clean across `Contracts.tsx`/`HotelSearch.tsx`. Pricing Engine
+remains not yet LOCKED, unchanged from Decision 070's status.
+
+---
+
 # Decision Template
 
 Decision Number:

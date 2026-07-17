@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from pydantic import BaseModel
@@ -46,6 +46,10 @@ class ExclusiveAgentCreate(BaseModel):
 class ContractExclusiveDiscountResponse(BaseModel):
     id: int
     contract_id: int
+    room_type_id: Optional[int] = None
+    meal_plan_id: Optional[int] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
     discount_percent: float
     created_by: int
     created_at: datetime
@@ -55,8 +59,20 @@ class ContractExclusiveDiscountResponse(BaseModel):
         from_attributes = True
 
 
-class ContractExclusiveDiscountUpsert(BaseModel):
+class ContractExclusiveDiscountCreate(BaseModel):
     discount_percent: float
+    room_type_id: Optional[int] = None
+    meal_plan_id: Optional[int] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+
+
+class ContractExclusiveDiscountUpdate(BaseModel):
+    discount_percent: float
+    room_type_id: Optional[int] = None
+    meal_plan_id: Optional[int] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
 
 
 class AgentPriceResponse(BaseModel):
