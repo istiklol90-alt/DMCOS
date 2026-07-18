@@ -86,7 +86,25 @@ class AgentPriceResponse(BaseModel):
     room_net_total: float
     is_exclusive: bool
     contract_discount_percent: float
+    discounted_nights: int
+    standard_nights: int
     exclusive_discount_amount: float
     markup_amount_per_night: float
     markup_amount: float
     agent_room_total: float
+
+
+class NightlyPriceResponse(BaseModel):
+    """
+    Decision 074: one entry per calendar night, from
+    build_nightly_breakdown -- the same per-night computation
+    apply_agent_pricing sums to produce AgentPriceResponse's aggregate
+    figures, so the two can never disagree.
+    """
+    date: date
+    base_rate: float
+    markup: float
+    discount_applied: bool
+    discount_percent: float
+    discount_amount: float
+    final_price: float

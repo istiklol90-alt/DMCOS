@@ -4632,6 +4632,245 @@ remains not yet LOCKED, unchanged from Decision 070's status.
 
 ---
 
+# Decision 072
+
+Date: 2026-07-18
+
+Decision: Fixed a real bug in `find_contract_exclusive_discount`'s date
+matching (Decision 071): it checked whether the stay's `check_in` date
+fell inside the discount's `[start_date, end_date]` window. The correct
+rule, confirmed by the project owner with a concrete example (a
+10.02-30.03 window, a 08.02-15.02 stay), is whether the stay's date
+range **overlaps** the window at all -- a stay that starts before the
+window but still spans nights inside it must still get the discount
+applied, not be skipped because `check_in` itself falls outside the
+window. Changed to a standard half-open interval overlap check:
+`check_out > start_date AND check_in < end_date` (NULL on either side
+of the window is unbounded on that side). `find_contract_exclusive_discount`
+and `apply_agent_pricing` both gained a `check_out` parameter (both
+call sites -- `create_booking` and `HotelSearch.tsx`'s `agent-price`
+request -- already had it in scope, so no new lookups were needed).
+
+Reason: The previous "check_in only" rule silently denied a real,
+configured discount to any booking that merely started before the
+window opened, even if most of the stay was inside it -- a direct
+under-delivery of a confirmed contract term.
+
+Approved By: Daler
+
+Status: Implemented and verified. 5 isolated cases (the exact reported
+overlap case; a stay entirely before the window; entirely after;
+entirely within, as a regression; and a stay starting inside and ending
+after) all passed. Regression against Decisions 069/071's
+$700.74/$614.56/$686.38 figures confirmed unaffected (none of those
+scenarios used a date window). **Immediately superseded by Decision
+073** below, in the same session, once a further owner-provided example
+showed this "whole stay if any overlap" rule was itself still
+incomplete -- logged here regardless, as the real, tested, intermediate
+state this project actually went through, not silently skipped from the
+record.
+
+---
+
+# Decision 073
+
+Date: 2026-07-18
+
+Decision: Corrects Decision 072 -- **supersedes its "any overlap
+discounts the whole stay" rule.** The real requirement, confirmed by
+the project owner with a precise example (a 10-night stay from
+05.02-15.02, discount window starting 13.02: nights 05-12 Feb, 8
+nights, must price at the standard rate; nights 13-14 Feb, 2 nights,
+must get the exclusive discount; the two segments summed into one
+total), is genuine per-night proration, not a whole-stay binary
+decision gated by any overlap.
+
+Verified first against Contract Engine's real code (not just the
+interface-contract doc's paraphrase): `get_room_price` picks
+`season = seasons[0]` (covering `check_in` only) and computes
+`base_total = rate.base_price * nights` -- one rate for the whole
+stay, no per-night breakdown exposed anywhere in its response. Given
+this, `room_net_total / nights` is the most faithful per-night
+proration available without new Contract Engine capability -- Pricing
+Engine cannot re-derive true nightly rates that Contract Engine itself
+doesn't compute, so this is a proration of the one blended total, not a
+re-pricing.
+
+New `_count_discounted_nights` (later folded into Decision 074's
+`build_nightly_breakdown`) counts how many of the stay's individual
+calendar nights fall inside the matched row's window.
+`apply_agent_pricing` splits `room_net_total` into a standard segment
+and a discounted segment by night-count, applies `discount_percent`
+only to the discounted segment, then sums both before adding the
+global per-night markup. A row with no date window still covers every
+night, so a whole-stay discount remains correct and unchanged for that
+case -- this is a behavior change only when a stay partially overlaps a
+*dated* window.
+
+Reason: Decision 072's fix, while correcting the direction of the
+original bug (under-delivering the discount), still over-delivered it
+in the opposite way for any partial-overlap stay -- discounting nights
+that were never actually inside the configured window. Per-night
+proration is the only rule that matches real hotel-contract billing
+practice for a rate that changes mid-stay.
+
+Approved By: Daler
+
+Status: Implemented and verified. Isolated: the exact reported example
+(8 standard + 2 discounted nights -> $1080.00 on a $1000/10-night test
+stay, hand-verified) and a mirror end-boundary case (5+5 nights ->
+$1050.00) both passed. Regression against $700.74/$614.56/$686.38
+confirmed unaffected (`discounted_nights == total nights` in all three,
+since none had a date window). **Deployment gap found and fixed during
+this same session's live-data verification, not a logic bug:** after
+implementing this fix, the running backend process was never restarted,
+so a real user-reported discrepancy ($236/night shown instead of an
+expected figure) traced back entirely to the *old*, pre-073 process
+still serving requests -- confirmed by the API response missing the
+new `discounted_nights`/`standard_nights` fields entirely. Restarted
+and re-traced the exact real scenario (Kandima Sky Studio, real
+20.02-20.03 discount window, agent `istiklol90`): a 4-night stay
+17.02-21.02 correctly split 3 standard nights + 1 discounted night
+(20.02) -> $1020.85, not the $945.40 the stale whole-stay-era code had
+produced.
+
+---
+
+# Decision 074
+
+Date: 2026-07-18
+
+Decision: Added a per-night price breakdown, on demand, for
+`HotelSearch.tsx`'s search results -- so an agent can see exactly why a
+stay's total is what it is when it spans an exclusive-discount date
+boundary, rather than only a blended average. New
+`build_nightly_breakdown(db, agent_id, contract_id, room_net_total,
+nights, room_type_id, meal_plan_id, check_in, check_out)` returns one
+entry per calendar night (`date`, `base_rate`, `markup`,
+`discount_applied`, `discount_percent`, `discount_amount`,
+`final_price`) and is now the **single source of truth** for per-night
+pricing -- `apply_agent_pricing` was refactored to derive its aggregate
+figures (`discounted_nights`, `exclusive_discount_amount`,
+`agent_room_total`, etc.) by summing this same list, rather than
+computing the split twice in parallel, so the aggregate total and the
+nightly detail can never drift apart.
+
+Verified first whether Contract Engine's existing "one season for the
+whole stay" simplification meant a stay spanning a real season boundary
+already prices incorrectly, separately from the exclusive-discount
+case -- confirmed yes, directly in `get_room_price`'s real code (see
+Decision 073). Deliberately scoped this feature to the exclusive-
+discount split only: `base_rate` shown per night is the stay's blended
+average (honest to what Contract Engine actually computed), not a
+fabricated season-aware nightly rate that doesn't exist in the
+underlying data. The season-boundary gap remains flagged, separate, and
+unfixed -- not silently addressed as a side effect of this feature.
+
+New endpoint `GET /pricing-engine/agent-price/nightly`, deliberately
+**separate** from the existing `/agent-price` endpoint rather than
+embedding the array in every response -- `HotelSearch.tsx` already
+makes one `/agent-price` call per meal-plan-option per room-type per
+hotel (an already N+1-heavy search flow), and most agents will never
+expand the breakdown, so lazy-loading on demand avoids bloating the
+default search payload. `HotelSearch.tsx` gained a "Показать цены по
+ночам" toggle under each meal-plan option (only rendered when
+`nights > 1`), lazy-fetching this endpoint on first expand, with local
+per-option state (`nightlyOpen`/`nightlyData`/`nightlyLoading`/
+`nightlyError`, keyed by `mealCode`) scoped inside `RoomTypeCard`,
+matching this file's existing per-option state conventions.
+
+Reason: Closes a real transparency gap -- once a stay could legitimately
+span a discount boundary (Decision 073), an agent seeing only one
+blended average had no way to understand or verify why a search total
+came out the way it did.
+
+Approved By: Daler
+
+Status: Implemented and verified. Refactor consistency confirmed by
+construction: sum of `build_nightly_breakdown`'s `final_price` entries
+for the Decision 073 split example reproduced `apply_agent_pricing`'s
+own aggregate exactly ($1080.00 both ways). Live-verified via real HTTP
+calls against the real Kandima Sky Studio scenario: the 4-night stay
+(17.02-21.02) correctly showed 3 nights at $261.50 and 1 night (20.02)
+at $236.35, summing to $1020.85 exactly matching the aggregate; the
+3-night stay (17.02-20.02, entirely before the window) correctly showed
+all 3 nights undiscounted at $261.50. `tsc -b` clean. No leftover test
+data -- only the project owner's own real discount row and Exclusive
+status remain in the live database.
+
+---
+
+# Decision 075
+
+Date: 2026-07-18
+
+Decision: Pricing Engine (`app/engines/pricing/`) is now 🔒 LOCKED,
+closing its TASK-005/006 review -- same discipline as every other
+Engine in this project (Authentication, Hotel, Contract, Booking, AI
+Core). Frontend shipped and exercised end-to-end from the UI (Decision
+070's stated precondition for this review), and the mechanism has since
+been extended and hardened through real, owner-reported issues rather
+than only synthetic tests (Decisions 071-074).
+
+TASK-005 review, verified end-to-end today across the full mechanism:
+
+- **Global standard markup** (`PricingSettings`, editable via the
+  Контрагенты tab) -- applied per night to every booking's room total,
+  confirmed via multiple real bookings (`create_booking`) and the live
+  search preview (`HotelSearch.tsx`).
+- **Agent categories** (`ExclusiveAgent`, Standard/Exclusive) -- absence
+  means Standard by construction; adding/removing via the real
+  "Добавить"/"Вернуть в стандартные" UI flow verified live, including
+  against the project owner's own real account (`user_id=2`).
+- **Per-contract exclusive discounts**, both flat (contract-wide,
+  `room_type_id`/`meal_plan_id` NULL) and granular (specific
+  room-type/meal-plan combinations) -- verified a specific row
+  correctly outranks a coexisting wildcard, and a non-matching room
+  type correctly falls back to the wildcard, both via real bookings
+  against the live Kandima contract.
+- **Date-windowed discounts with correct per-night proration**
+  (Decisions 071-074) -- verified a stay partially overlapping a
+  window splits into standard and discounted night-segments exactly as
+  a real hotel contract would bill it, confirmed against the project
+  owner's own live-configured window (20.02-20.03) and a real booking
+  spanning it.
+- **Discount base confirmed clean**: `apply_agent_pricing`/
+  `build_nightly_breakdown` only ever operate on `room_net_total` --
+  `transfer_total` and `mandatory_tax_total` (e.g. Kandima's Green Tax)
+  are never touched by Pricing Engine at any point, per
+  `docs/interface-contracts/pricing-booking.md` Rule 3, unchanged since
+  Decision 069 and re-confirmed by inspection of every code path added
+  since.
+
+Explicitly NOT covered by this lock, staying exactly as-built (empty
+scaffolding): `validators.py`, `workflow.py`, `permissions.py`,
+`exceptions.py`, `constants.py`, `config.py`, `utils.py`, `events.py`,
+`ai/` -- same reasoning as every other Engine's unbuilt advanced
+components, build only once a real, proven need exists.
+
+Known, explicitly accepted limitations carried forward, not fixed by
+this lock: (1) the season-boundary gap in Contract Engine's own
+`get_room_price` (Decision 073/074) -- a real, separate, pre-existing
+issue in a different, already-LOCKED Engine, deliberately out of scope
+here; (2) `apply_agent_pricing`/`find_contract_exclusive_discount`
+still don't validate `agent_id`/`contract_id` existence, trusting the
+caller, same accepted simplification as Decision 069; (3) every
+endpoint duplicates JWT-decode logic locally, per Decision 006 -- the
+7th Engine repeating this.
+
+Approved By: Daler
+
+Status: `CLAUDE.md`'s Pricing Engine section updated to 🔒 LOCKED.
+Future work (e.g. real Anthropic-style provider integration is
+irrelevant here, but a genuinely new pricing mechanism, a new agent
+tier, or Finance Engine consuming the itemized `agent_markup_amount`/
+`agent_exclusive_discount_amount` columns) is a future additive
+extension to this now-LOCKED engine, same pattern as every other
+LOCKED engine's post-lock extensions in this project -- not a reason
+this lock was premature.
+
+---
+
 # Decision Template
 
 Decision Number:

@@ -21,6 +21,7 @@ from app.engines.pricing.schemas import (
     ContractExclusiveDiscountCreate,
     ContractExclusiveDiscountUpdate,
     AgentPriceResponse,
+    NightlyPriceResponse,
 )
 
 router = APIRouter(prefix="/pricing-engine", tags=["Pricing Engine"])
@@ -177,6 +178,7 @@ def get_agent_price(
     room_type_id: int,
     meal_plan_id: int,
     check_in: date,
+    check_out: date,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -190,5 +192,32 @@ def get_agent_price(
     reimplementation.
     """
     return _run(lambda: service.apply_agent_pricing(
-        db, agent_id, contract_id, room_net_total, nights, room_type_id, meal_plan_id, check_in
+        db, agent_id, contract_id, room_net_total, nights, room_type_id, meal_plan_id, check_in, check_out
+    ))
+
+
+@router.get("/agent-price/nightly", response_model=list[NightlyPriceResponse])
+def get_agent_price_nightly(
+    agent_id: int,
+    contract_id: int,
+    room_net_total: float,
+    nights: int,
+    room_type_id: int,
+    meal_plan_id: int,
+    check_in: date,
+    check_out: date,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Decision 074: on-demand per-night breakdown, separate from
+    /agent-price (which stays lean for the default search response) --
+    only called when an agent expands "Показать цены по ночам" for a
+    specific meal-plan option. Thin wrapper around
+    build_nightly_breakdown, the same per-night computation
+    apply_agent_pricing itself sums, so this can never disagree with the
+    aggregate total already shown.
+    """
+    return _run(lambda: service.build_nightly_breakdown(
+        db, agent_id, contract_id, room_net_total, nights, room_type_id, meal_plan_id, check_in, check_out
     ))

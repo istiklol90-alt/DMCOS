@@ -201,6 +201,20 @@ type AgentPrice = {
   agent_room_total: number;
 };
 
+// Decision 074: one entry per calendar night, lazy-fetched only when an
+// agent expands "Показать цены по ночам" -- same build_nightly_breakdown
+// computation apply_agent_pricing itself sums, so it can't disagree with
+// the aggregate AgentPrice already shown.
+type NightlyPrice = {
+  date: string;
+  base_rate: number;
+  markup: number;
+  discount_applied: boolean;
+  discount_percent: number;
+  discount_amount: number;
+  final_price: number;
+};
+
 type MealPlanOption = {
   mealCode: string;
   mealName: string | null;
@@ -789,6 +803,57 @@ function RoomTypeCard({
     guestWarning: string | null;
   } | null>(null);
 
+  // Decision 074: per-meal-plan-option nightly breakdown, lazy-loaded on
+  // toggle -- keyed by mealCode since this component is already scoped to
+  // one room type.
+  const [nightlyOpen, setNightlyOpen] = useState<Record<string, boolean>>({});
+  const [nightlyData, setNightlyData] = useState<Record<string, NightlyPrice[]>>({});
+  const [nightlyLoading, setNightlyLoading] = useState<Record<string, boolean>>({});
+  const [nightlyError, setNightlyError] = useState<Record<string, string>>({});
+
+  async function toggleNightly(opt: MealPlanOption) {
+    const isOpen = nightlyOpen[opt.mealCode] ?? false;
+    if (isOpen) {
+      setNightlyOpen((prev) => ({ ...prev, [opt.mealCode]: false }));
+      return;
+    }
+    setNightlyOpen((prev) => ({ ...prev, [opt.mealCode]: true }));
+    if (nightlyData[opt.mealCode] || !opt.price) return;
+
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    setNightlyLoading((prev) => ({ ...prev, [opt.mealCode]: true }));
+    setNightlyError((prev) => {
+      const next = { ...prev };
+      delete next[opt.mealCode];
+      return next;
+    });
+    try {
+      const query = new URLSearchParams({
+        agent_id: String(agentId),
+        contract_id: String(opt.price.contract_id),
+        room_net_total: String(opt.price.final_total),
+        nights: String(opt.price.nights),
+        room_type_id: String(rt.id),
+        meal_plan_id: String(opt.price.meal_plan_id),
+        check_in: checkIn,
+        check_out: checkOut,
+      });
+      const nightly = await fetchJson<NightlyPrice[]>(
+        `/pricing-engine/agent-price/nightly?${query.toString()}`,
+        token
+      );
+      setNightlyData((prev) => ({ ...prev, [opt.mealCode]: nightly }));
+    } catch (err) {
+      setNightlyError((prev) => ({
+        ...prev,
+        [opt.mealCode]: err instanceof Error ? err.message : "Не удалось загрузить цены по ночам",
+      }));
+    } finally {
+      setNightlyLoading((prev) => ({ ...prev, [opt.mealCode]: false }));
+    }
+  }
+
   const cheapest = cheapestOption(rt);
   const cheapestPerNight =
     cheapest?.agentPrice && cheapest.price ? cheapest.agentPrice.agent_room_total / cheapest.price.nights : null;
@@ -912,44 +977,91 @@ function RoomTypeCard({
               const perNight =
                 opt.agentPrice && opt.price ? opt.agentPrice.agent_room_total / opt.price.nights : null;
               const isSelected = selectedMealCode === opt.mealCode;
+              const isNightlyOpen = nightlyOpen[opt.mealCode] ?? false;
               return (
-                <div
-                  key={opt.mealCode}
-                  className={`flex flex-wrap items-center justify-between gap-3 py-2.5 ${
-                    isSelected ? "rounded-lg bg-coral/5 px-2" : ""
-                  }`}
-                >
-                  <span className="text-sm font-medium text-ink">{opt.mealName ?? opt.mealCode}</span>
+                <div key={opt.mealCode} className="py-2.5">
+                  <div
+                    className={`flex flex-wrap items-center justify-between gap-3 ${
+                      isSelected ? "rounded-lg bg-coral/5 px-2 py-1" : ""
+                    }`}
+                  >
+                    <span className="text-sm font-medium text-ink">{opt.mealName ?? opt.mealCode}</span>
 
-                  <div className="flex shrink-0 items-center gap-3">
-                    {opt.price && opt.agentPrice ? (
-                      <div className="text-right">
-                        <p className="font-mono text-sm font-semibold text-ink">
-                          {opt.price.currency}{" "}
-                          {perNight!.toLocaleString("ru-RU", { maximumFractionDigits: 0 })}
-                          <span className="ml-1 text-xs font-normal text-slate/50">/ ночь</span>
-                        </p>
-                        <p className="text-[11px] text-slate/50">
-                          Итого за {opt.price.nights} ноч.: {opt.price.currency}{" "}
-                          {opt.agentPrice.agent_room_total.toLocaleString("ru-RU")}
-                        </p>
-                      </div>
-                    ) : (
-                      <span className="text-xs font-medium text-slate/50">
-                        {opt.priceError ?? "Цена недоступна"}
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      disabled={!opt.price}
-                      onClick={() => setSelectedMealCode(opt.mealCode)}
-                      className={`rounded-lg px-3.5 py-2 text-xs font-medium transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 ${
-                        isSelected ? "bg-coral text-white" : "bg-ink text-white"
-                      }`}
-                    >
-                      {isSelected ? "Выбрано" : "Выбрать"}
-                    </button>
+                    <div className="flex shrink-0 items-center gap-3">
+                      {opt.price && opt.agentPrice ? (
+                        <div className="text-right">
+                          <p className="font-mono text-sm font-semibold text-ink">
+                            {opt.price.currency}{" "}
+                            {perNight!.toLocaleString("ru-RU", { maximumFractionDigits: 0 })}
+                            <span className="ml-1 text-xs font-normal text-slate/50">/ ночь</span>
+                          </p>
+                          <p className="text-[11px] text-slate/50">
+                            Итого за {opt.price.nights} ноч.: {opt.price.currency}{" "}
+                            {opt.agentPrice.agent_room_total.toLocaleString("ru-RU")}
+                          </p>
+                        </div>
+                      ) : (
+                        <span className="text-xs font-medium text-slate/50">
+                          {opt.priceError ?? "Цена недоступна"}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        disabled={!opt.price}
+                        onClick={() => setSelectedMealCode(opt.mealCode)}
+                        className={`rounded-lg px-3.5 py-2 text-xs font-medium transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 ${
+                          isSelected ? "bg-coral text-white" : "bg-ink text-white"
+                        }`}
+                      >
+                        {isSelected ? "Выбрано" : "Выбрать"}
+                      </button>
+                    </div>
                   </div>
+
+                  {opt.price && opt.price.nights > 1 && (
+                    <div className="mt-1.5">
+                      <button
+                        type="button"
+                        onClick={() => toggleNightly(opt)}
+                        className="appearance-none border-0 bg-transparent p-0 text-xs font-medium text-teal underline decoration-dotted hover:text-teal/70"
+                      >
+                        {isNightlyOpen ? "Скрыть цены по ночам" : "Показать цены по ночам"}
+                      </button>
+
+                      {isNightlyOpen && (
+                        <div className="mt-1.5 rounded-lg border border-ink/10 bg-sand/30 p-2.5">
+                          {nightlyLoading[opt.mealCode] && (
+                            <p className="text-xs text-slate/50">Загрузка...</p>
+                          )}
+                          {nightlyError[opt.mealCode] && (
+                            <p className="text-xs text-red-600">{nightlyError[opt.mealCode]}</p>
+                          )}
+                          {nightlyData[opt.mealCode] && (
+                            <div className="space-y-0.5">
+                              {nightlyData[opt.mealCode].map((n) => (
+                                <div
+                                  key={n.date}
+                                  className="flex items-center justify-between gap-3 text-xs text-slate/70"
+                                >
+                                  <span>
+                                    {new Date(n.date).toLocaleDateString("ru-RU")}
+                                    {n.discount_applied && (
+                                      <span className="ml-1.5 inline-flex items-center rounded-full bg-teal/15 px-1.5 py-0.5 text-[10px] font-medium text-teal">
+                                        -{n.discount_percent}%
+                                      </span>
+                                    )}
+                                  </span>
+                                  <span className="font-mono font-medium text-ink">
+                                    {opt.price!.currency} {n.final_price.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1407,6 +1519,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
                         room_type_id: String(rt.id),
                         meal_plan_id: String(price.meal_plan_id),
                         check_in: checkIn,
+                        check_out: checkOut,
                       });
                       const agentPrice = await fetchJson<AgentPrice>(
                         `/pricing-engine/agent-price?${agentPriceQuery.toString()}`,

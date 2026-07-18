@@ -232,10 +232,10 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
         db, contract.id, nights, data.adults, data.children
     )["total"]
 
-    # Decision 069/071: room-only, per docs/interface-contracts/pricing-booking.md.
+    # Decision 069/071/072: room-only, per docs/interface-contracts/pricing-booking.md.
     agent_pricing = pricing_service.apply_agent_pricing(
         db, data.agent_id, contract.id, price["final_total"], nights,
-        data.room_type_id, price["meal_plan_id"], data.arrival_date,
+        data.room_type_id, price["meal_plan_id"], data.arrival_date, data.departure_date,
     )
 
     # Decision 048: reuses get_room_price's own applied_special_offer_ids

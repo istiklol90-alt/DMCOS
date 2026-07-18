@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -162,19 +162,27 @@ def delete_contract_exclusive_discount(db: Session, discount_id: int) -> None:
 
 
 def find_contract_exclusive_discount(
-    db: Session, contract_id: int, room_type_id: int, meal_plan_id: int, check_in: date
+    db: Session, contract_id: int, room_type_id: int, meal_plan_id: int, check_in: date, check_out: date
 ) -> ContractExclusiveDiscount | None:
     """
     Most-specific-match-wins selection among a contract's
-    ContractExclusiveDiscount rows (Decision 071), mirroring Decisions
-    051/053's tier-selection precedent. A row is a candidate only if its
-    room_type_id/meal_plan_id are either NULL (wildcard) or match exactly,
-    AND check_in falls within its start_date/end_date (NULL on either
-    means unbounded on that side). Among candidates, the one matching the
-    most of {room_type_id, meal_plan_id} wins; ties (a config edge case,
-    not expected in practice) prefer whichever candidate has an explicit
-    date window over an always-active one, since setting a window is more
-    deliberate manager intent than the default.
+    ContractExclusiveDiscount rows (Decision 071, date logic corrected by
+    072), mirroring Decisions 051/053's tier-selection precedent. A row
+    is a candidate only if its room_type_id/meal_plan_id are either NULL
+    (wildcard) or match exactly, AND the stay [check_in, check_out)
+    OVERLAPS its start_date/end_date window at all (NULL on either side
+    means unbounded on that side) -- not "check_in falls inside the
+    window," which incorrectly excluded a stay that starts before the
+    window but still spans nights inside it (e.g. a window of 10.02-30.03
+    with a 08.02-15.02 stay: check_in itself is outside the window, but
+    nights 10-14 Feb are inside it, so the discount must still apply to
+    the whole booking, not be skipped or prorated). Standard interval-
+    overlap check: check_out > start_date AND check_in < end_date. Among
+    candidates, the one matching the most of {room_type_id, meal_plan_id}
+    wins; ties (a config edge case, not expected in practice) prefer
+    whichever candidate has an explicit date window over an always-active
+    one, since setting a window is more deliberate manager intent than
+    the default.
     """
     candidates = []
     for row in repository.list_contract_exclusive_discounts(db, contract_id):
@@ -182,9 +190,9 @@ def find_contract_exclusive_discount(
             continue
         if row.meal_plan_id is not None and row.meal_plan_id != meal_plan_id:
             continue
-        if row.start_date is not None and row.start_date > check_in:
+        if row.start_date is not None and check_out <= row.start_date:
             continue
-        if row.end_date is not None and row.end_date < check_in:
+        if row.end_date is not None and check_in >= row.end_date:
             continue
         candidates.append(row)
 
@@ -204,6 +212,73 @@ def find_contract_exclusive_discount(
 # Core pricing calculation -- see docs/interface-contracts/pricing-booking.md
 # ---------------------------------------------------------------------------
 
+def build_nightly_breakdown(
+    db: Session,
+    agent_id: int,
+    contract_id: int,
+    room_net_total: float,
+    nights: int,
+    room_type_id: int,
+    meal_plan_id: int,
+    check_in: date,
+    check_out: date,
+) -> list[dict]:
+    """
+    Decision 074: one entry per calendar night in [check_in, check_out),
+    each shaped {date, base_rate, markup, discount_applied,
+    discount_percent, discount_amount, final_price}. This is the single
+    source of truth for per-night pricing -- apply_agent_pricing sums
+    this list rather than recomputing the same split separately, so the
+    aggregate total and the nightly breakdown can never drift apart.
+
+    base_rate is room_net_total split evenly across nights (Contract
+    Engine itself prices the whole stay off one season's rate for
+    check_in, with no per-night breakdown exposed -- see
+    docs/interface-contracts/pricing-booking.md and
+    contract/service.py's get_room_price docstring for this known,
+    separate, pre-existing simplification, NOT fixed by this decision).
+    If the stay also crosses a real season boundary, every night's
+    base_rate shown here is still the stay's blended average, honestly
+    reflecting what Contract Engine actually computed -- not a
+    fabricated season-aware nightly rate that doesn't exist in the
+    underlying data.
+    """
+    settings = get_pricing_settings(db)
+    excl = is_exclusive(db, agent_id)
+    contract_discount = find_contract_exclusive_discount(
+        db, contract_id, room_type_id, meal_plan_id, check_in, check_out
+    )
+    applies = excl and contract_discount is not None
+    pct = contract_discount.discount_percent if applies else 0.0
+    per_night_net = room_net_total / nights
+    markup = settings.standard_markup_amount_per_night
+
+    breakdown = []
+    night = check_in
+    while night < check_out:
+        discounted = applies and (
+            (contract_discount.start_date is None or night >= contract_discount.start_date)
+            and (contract_discount.end_date is None or night < contract_discount.end_date)
+        )
+        if discounted:
+            night_discount_amount = per_night_net * (pct / 100)
+            night_net = per_night_net - night_discount_amount
+        else:
+            night_discount_amount = 0.0
+            night_net = per_night_net
+        breakdown.append({
+            "date": night,
+            "base_rate": per_night_net,
+            "markup": markup,
+            "discount_applied": discounted,
+            "discount_percent": pct if discounted else 0.0,
+            "discount_amount": night_discount_amount,
+            "final_price": night_net + markup,
+        })
+        night += timedelta(days=1)
+    return breakdown
+
+
 def apply_agent_pricing(
     db: Session,
     agent_id: int,
@@ -213,6 +288,7 @@ def apply_agent_pricing(
     room_type_id: int,
     meal_plan_id: int,
     check_in: date,
+    check_out: date,
 ) -> dict:
     """
     Computes the agent-facing room price from Contract Engine's already-
@@ -221,32 +297,31 @@ def apply_agent_pricing(
     contract_id exist -- trusts the caller (Booking Engine's create_booking
     already calls _require_agent and has a real contract.id by this point).
 
-    Discount only applies when BOTH hold: agent_id is in ExclusiveAgent,
-    AND find_contract_exclusive_discount finds a matching row for this
-    exact room_type_id/meal_plan_id/check_in (Decision 071). Order:
-    discount the net total first, then add the flat global per-night
+    Decision 074: derives its aggregate figures by summing
+    build_nightly_breakdown's per-night entries -- the single source of
+    truth for the per-night split first introduced in Decision 073
+    (superseding Decision 072's "any overlap discounts the whole stay"
+    rule). Order: discount first, then add the flat global per-night
     markup on top of the (possibly discounted) net -- owner-confirmed
-    calculation order.
+    calculation order, unchanged since Decision 069.
     """
+    nightly = build_nightly_breakdown(
+        db, agent_id, contract_id, room_net_total, nights, room_type_id, meal_plan_id, check_in, check_out
+    )
     settings = get_pricing_settings(db)
     excl = is_exclusive(db, agent_id)
-    contract_discount = find_contract_exclusive_discount(db, contract_id, room_type_id, meal_plan_id, check_in)
-
-    if excl and contract_discount is not None:
-        pct = contract_discount.discount_percent
-        discounted_room = room_net_total * (1 - pct / 100)
-    else:
-        pct = 0.0
-        discounted_room = room_net_total
-
-    exclusive_discount_amount = room_net_total - discounted_room
-    markup_amount = settings.standard_markup_amount_per_night * nights
-    agent_room_total = discounted_room + markup_amount
+    pct = next((n["discount_percent"] for n in nightly if n["discount_applied"]), 0.0)
+    discounted_nights = sum(1 for n in nightly if n["discount_applied"])
+    exclusive_discount_amount = sum(n["discount_amount"] for n in nightly)
+    markup_amount = sum(n["markup"] for n in nightly)
+    agent_room_total = sum(n["final_price"] for n in nightly)
 
     return {
         "room_net_total": room_net_total,
         "is_exclusive": excl,
         "contract_discount_percent": pct,
+        "discounted_nights": discounted_nights,
+        "standard_nights": nights - discounted_nights,
         "exclusive_discount_amount": exclusive_discount_amount,
         "markup_amount_per_night": settings.standard_markup_amount_per_night,
         "markup_amount": markup_amount,
