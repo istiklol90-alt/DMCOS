@@ -19,6 +19,7 @@ interface Invoice {
   currency: string;
   total: number;
   status: string;
+  email_sent_at: string | null;
 }
 
 interface Hotel {
@@ -96,6 +97,7 @@ const Finance = () => {
   const [invoicesLoading, setInvoicesLoading] = useState(true);
   const [invoicesError, setInvoicesError] = useState<string | null>(null);
   const [voidingId, setVoidingId] = useState<number | null>(null);
+  const [approvingId, setApprovingId] = useState<number | null>(null);
 
   async function loadInvoices() {
     const token = localStorage.getItem("token") || "";
@@ -125,6 +127,20 @@ const Finance = () => {
       alert(err.message || "Не удалось аннулировать счёт");
     } finally {
       setVoidingId(null);
+    }
+  }
+
+  async function handleApproveAndSend(id: number) {
+    if (!window.confirm("Одобрить и отправить счёт агенту?")) return;
+    const token = localStorage.getItem("token") || "";
+    try {
+      setApprovingId(id);
+      await fetchJson<Invoice>(`/finance-engine/invoices/${id}/approve-and-send`, token, { method: "POST" });
+      await loadInvoices();
+    } catch (err: any) {
+      alert(err.message || "Не удалось одобрить и отправить счёт");
+    } finally {
+      setApprovingId(null);
     }
   }
 
@@ -252,13 +268,14 @@ const Finance = () => {
                     <th className="px-5 py-3 font-medium">Дата</th>
                     <th className="px-5 py-3 font-medium">Сумма</th>
                     <th className="px-5 py-3 font-medium">Статус</th>
+                    <th className="px-5 py-3 font-medium">Email</th>
                     <th className="px-5 py-3 font-medium"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {invoices.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-5 py-10 text-center text-sm text-slate/50">
+                      <td colSpan={9} className="px-5 py-10 text-center text-sm text-slate/50">
                         Счетов пока нет
                       </td>
                     </tr>
@@ -274,17 +291,36 @@ const Finance = () => {
                         <td className="px-5 py-3.5">
                           <StatusBadge status={inv.status} />
                         </td>
-                        <td className="px-5 py-3.5 text-right">
-                          {inv.status !== "Void" && (
-                            <button
-                              type="button"
-                              onClick={() => handleVoid(inv.id)}
-                              disabled={voidingId === inv.id}
-                              className="appearance-none rounded-lg border border-coral/40 bg-transparent px-3.5 py-1.5 text-xs font-medium text-coral transition-colors hover:bg-coral/10 disabled:opacity-50"
-                            >
-                              {voidingId === inv.id ? "..." : "Аннулировать"}
-                            </button>
+                        <td className="whitespace-nowrap px-5 py-3.5 text-slate/70">
+                          {inv.email_sent_at ? (
+                            new Date(inv.email_sent_at).toLocaleString("ru-RU")
+                          ) : (
+                            <span className="text-slate/40">не отправлено</span>
                           )}
+                        </td>
+                        <td className="px-5 py-3.5 text-right">
+                          <div className="flex justify-end gap-2">
+                            {inv.status === "Draft" && (
+                              <button
+                                type="button"
+                                onClick={() => handleApproveAndSend(inv.id)}
+                                disabled={approvingId === inv.id}
+                                className="appearance-none rounded-lg border-0 bg-teal px-3.5 py-1.5 text-xs font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+                              >
+                                {approvingId === inv.id ? "..." : "Одобрить и отправить"}
+                              </button>
+                            )}
+                            {inv.status !== "Void" && (
+                              <button
+                                type="button"
+                                onClick={() => handleVoid(inv.id)}
+                                disabled={voidingId === inv.id}
+                                className="appearance-none rounded-lg border border-coral/40 bg-transparent px-3.5 py-1.5 text-xs font-medium text-coral transition-colors hover:bg-coral/10 disabled:opacity-50"
+                              >
+                                {voidingId === inv.id ? "..." : "Аннулировать"}
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))

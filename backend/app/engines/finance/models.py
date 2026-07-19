@@ -58,6 +58,17 @@ class Invoice(Base):
     status = Column(String(20), nullable=False, default="Draft")
     created_by = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Decision 081: set only when send_real_email actually returns True
+    # (real SMTP configured and the send succeeded) -- stays NULL when
+    # it fell back to console-log-only (this project's current real
+    # state -- no SMTP configured anywhere in this environment yet),
+    # same NULL-vs-real-value audit precedent as agent_markup_amount
+    # etc. Distinguishes "Issued" (accounting approved it) from
+    # "actually delivered to the agent" -- approve_and_send_invoice
+    # flips status regardless of send success, matching every other
+    # email call site in this project (email is always best-effort,
+    # never blocks the real action).
+    email_sent_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class CreditNote(Base):

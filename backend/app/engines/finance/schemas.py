@@ -24,6 +24,7 @@ class InvoiceResponse(BaseModel):
     status: str
     created_by: int
     created_at: Optional[datetime] = None
+    email_sent_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

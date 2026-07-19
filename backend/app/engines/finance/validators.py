@@ -22,6 +22,16 @@ def validate_invoice_issued(invoice) -> None:
         )
 
 
+def validate_invoice_draft(invoice) -> None:
+    """approve_and_send_invoice only applies to a Draft invoice --
+    already-Issued means it was already approved and sent, Void means
+    it was nullified before ever reaching accounting review."""
+    if invoice.status != "Draft":
+        raise ValueError(
+            f"Invoice {invoice.id} is not Draft (status={invoice.status}), cannot approve and send it"
+        )
+
+
 def validate_credit_note_amount(invoice, existing_credit_notes: list, amount: float) -> None:
     """
     A real gap found reviewing this Engine's own service.py, not a

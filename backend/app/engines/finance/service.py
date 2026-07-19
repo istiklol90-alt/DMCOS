@@ -21,7 +21,7 @@ module (Invoice/AgentStatement generation) builds on it rather than
 recomputing its own version.
 """
 
-from datetime import date
+from datetime import date, datetime
 import uuid
 
 from sqlalchemy.orm import Session
@@ -36,10 +36,15 @@ from app.engines.finance.models import (
     HotelCashbackFulfillment,
 )
 from app.engines.booking.models import Booking
+from models.user import User
+from services import email_service
 
 # Read-only cross-engine dependency, same pattern as Booking Engine's own
 # imports of Hotel/Contract Engine's service.py.
 from app.engines.booking import service as booking_service
+# Decision 081: same read-only pattern -- only needed to resolve
+# hotel_name for approve_and_send_invoice's email content.
+from app.engines.hotel import service as hotel_service
 
 # Booking Engine's validators.TERMINAL_STATUSES -- deliberately not
 # imported (validators.py isn't the cross-engine contract surface,
@@ -199,6 +204,60 @@ def void_invoice(db: Session, invoice_id: int) -> Invoice:
     invoice = get_invoice(db, invoice_id)
     validators.validate_invoice_not_void(invoice)
     return repository.update_invoice(db, invoice, status="Void")
+
+
+def approve_and_send_invoice(db: Session, invoice_id: int) -> Invoice:
+    """
+    Decision 081 (Stage B): "Одобрить и отправить" -- the single
+    accounting action that flips Draft -> Issued and emails the agent
+    a plain-text summary (real PDF is Stage C, not built yet). Only
+    valid from Draft (validators.validate_invoice_draft).
+
+    Requires the invoice's agent to resolve to a real User with a real
+    email -- sending is meaningless without one, so this is a hard
+    ValueError here, unlike every other Finance Engine function, which
+    (per Decision 078's known limitation) trusts agent_id/hotel_id
+    without validating existence at all.
+
+    Status flips to Issued regardless of whether the email actually
+    sent -- matching every other email call site in this project
+    (send_booking_confirmation_email, registration emails), where
+    email is always best-effort and never blocks the real action.
+    email_sent_at is set only when send_real_email genuinely returns
+    True; with no SMTP configured anywhere in this project today, that
+    means it stays NULL for every real invoice until real credentials
+    exist -- an honest, visible signal, not a silent failure.
+    """
+    invoice = get_invoice(db, invoice_id)
+    validators.validate_invoice_draft(invoice)
+
+    agent = db.query(User).filter(User.id == invoice.agent_id).first()
+    if agent is None or not agent.email:
+        raise ValueError(f"Agent {invoice.agent_id} has no resolvable email -- cannot send invoice")
+
+    booking = booking_service.get_booking(db, invoice.booking_id)
+    hotel = hotel_service.get_hotel(db, invoice.hotel_id)
+
+    sent = email_service.send_invoice_email({
+        "invoice_number": invoice.invoice_number,
+        "hotel_name": hotel.hotel_name,
+        "booking_number": booking.booking_number,
+        "issue_date": invoice.issue_date,
+        "subtotal": invoice.subtotal,
+        "discount": invoice.discount,
+        "commission": invoice.commission,
+        "tax": invoice.tax,
+        "total": invoice.total,
+        "currency": invoice.currency,
+        "agent_name": agent.name,
+        "agent_email": agent.email,
+    })
+
+    return repository.update_invoice(
+        db, invoice,
+        status="Issued",
+        email_sent_at=datetime.utcnow() if sent else None,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -103,6 +103,12 @@ def void_invoice(invoice_id: int, db: Session = Depends(get_db), current_user=De
     return _run(lambda: service.void_invoice(db, invoice_id))
 
 
+@router.post("/invoices/{invoice_id}/approve-and-send", response_model=InvoiceResponse)
+def approve_and_send_invoice(invoice_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _require_admin(current_user)
+    return _run(lambda: service.approve_and_send_invoice(db, invoice_id))
+
+
 # ---------------------------------------------------------------------------
 # CreditNote
 # ---------------------------------------------------------------------------

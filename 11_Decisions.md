@@ -4955,6 +4955,22 @@ Status: Implemented and verified live -- claiming a fresh booking produces a Dra
 
 ---
 
+# Decision 081
+
+Date: 2026-07-20
+
+Decision: Stage B -- a single "Одобрить и отправить" action/button that atomically flips a Draft invoice to Issued and emails the agent a plain-text summary (`POST /finance-engine/invoices/{invoice_id}/approve-and-send`). New `service.approve_and_send_invoice`: validates the invoice is `Draft` (new `validators.validate_invoice_draft`), resolves the agent's real `User`/email (hard `ValueError` if missing -- the one function in this Engine that validates agent existence, since sending is meaningless without a real destination, unlike every other function here which trusts `agent_id` per Decision 078's accepted simplification), resolves `booking_number`/`hotel_name` for the email body (new read-only `app.engines.hotel.service` import, same cross-engine pattern as `app.engines.booking.service`), calls new `email_service.send_invoice_email` (plain-text, reuses `send_booking_confirmation_email`'s exact `_render_text_table` pattern, deliberately mentions no bank details or PDF attachment -- both are Stage C, not built yet, and this email must never imply something that doesn't exist), then flips `status="Issued"`.
+
+New nullable `Invoice.email_sent_at` column (added to the existing SQLite table via a plain `ALTER TABLE ... ADD COLUMN`, no rebuild needed since it's nullable) records when `send_real_email` genuinely returned `True`. The status flip happens **regardless** of the email result, matching every other email call site already in this project (`send_booking_confirmation_email`, registration emails) where email is always best-effort and never blocks the real action -- `email_sent_at` stays `NULL` whenever it falls back to console-log-only, which is every real invoice today, since no SMTP is configured anywhere in this project (`backend/.env` doesn't exist). This NULL is a real, visible, honest signal, not a silent failure: `Finance.tsx`'s invoice table now shows a dedicated "Email" column, "не отправлено" in muted gray when `email_sent_at` is null, the real timestamp otherwise -- verified live.
+
+Reason: Accounting needs one explicit, combined action to approve and notify, per the project owner's workflow requirement -- and the email's honesty about today's real SMTP-less state (both in what it says and in what the UI shows) matters more than looking superficially "done."
+
+Approved By: Daler
+
+Status: Implemented and verified live end-to-end -- approved a real Draft invoice, confirmed `status: "Issued"`, confirmed `email_sent_at: null` (matching this project's actual current SMTP-less state, not a bug), confirmed the console received the plain-text email content via `send_real_email`'s existing fallback, and confirmed the Финансы table renders "не отправлено" for that row.
+
+---
+
 # Decision Template
 
 Decision Number:

@@ -204,3 +204,42 @@ def send_booking_confirmation_email(data: dict) -> bool:
         "С уважением,\nDMC OS"
     )
     return send_real_email(data["agent_email"], subject, body)
+
+
+def send_invoice_email(data: dict) -> bool:
+    """
+    Decision 081 (Finance Engine Stage B): plain-text summary sent when
+    accounting clicks "Одобрить и отправить" on a Draft invoice --
+    same reuse of send_real_email/_render_text_table as
+    send_booking_confirmation_email above, same graceful console-log
+    fallback (no SMTP configured anywhere in this project yet), same
+    "never raises, always best-effort" contract. Deliberately does NOT
+    mention bank details or a PDF attachment -- both are Stage C's job,
+    not built yet; this email is honest about what actually exists
+    today; it never implies an attachment that isn't there.
+
+    Every value in `data` is pre-resolved by the caller
+    (finance/service.py's approve_and_send_invoice), same
+    caller-resolves/function-only-formats-and-sends split as
+    send_booking_confirmation_email.
+    """
+    rows = [
+        ("№ счёта", data["invoice_number"]),
+        ("Отель", data["hotel_name"]),
+        ("Дата выставления", data["issue_date"]),
+        ("Сумма номера (нетто)", data["subtotal"]),
+        ("Скидка", data["discount"]),
+        ("Комиссия", data["commission"]),
+        ("Налог", data["tax"]),
+        ("ИТОГО К ОПЛАТЕ", f"{data['total']} {data['currency']}"),
+    ]
+
+    subject = f"Счёт {data['invoice_number']} — {data['hotel_name']}"
+    body = (
+        f"Здравствуйте, {data['agent_name']}!\n\n"
+        f"Ваш счёт по бронированию {data['booking_number']} утверждён.\n\n"
+        f"{_render_text_table(rows)}\n\n"
+        "Подробности доступны в личном кабинете.\n\n"
+        "С уважением,\nDMC OS"
+    )
+    return send_real_email(data["agent_email"], subject, body)
