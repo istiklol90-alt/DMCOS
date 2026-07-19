@@ -5056,6 +5056,48 @@ Status: Implemented, `tsc -b` clean, all migrations applied. Verified via a full
 
 ---
 
+# Decision 086
+
+Date: 2026-07-20
+
+Decision: Real, downloadable `.xlsx` export of one agent's invoices over one date range -- "give me agent X's full 2025 balance." Checked before picking a library: nothing generates any document format anywhere in this project (`requirements.txt`, `package.json`, and a full-repo grep for `xlsx`/`openpyxl`/`exceljs`/`SheetJS` all came back empty; `pdfplumber` only *reads* PDFs for AI Core Engine's contract ingestion). Chose `openpyxl` (pure Python, MIT-licensed, no compiled dependency), generated backend-side rather than as a new frontend library, since the date-range+agent query needed to exist server-side regardless (today's `list_invoices_by_agent` had no date filter at all).
+
+New `repository.list_invoices_by_agent_in_range(db, agent_id, start_date, end_date)` filters on `issue_date` (an accounting-period export, not a travel calendar -- deliberately not `arrival_date`). New `service.build_agent_invoice_export` resolves each invoice's `booking_number`/hotel name/dates via the already-imported `booking_service`/`hotel_service` (same read-only cross-engine pattern this Engine already uses), builds a real workbook (bold header row, auto-sized columns), returns raw bytes. New endpoint `GET /finance-engine/agents/{agent_id}/invoices/export?start_date=...&end_date=...`, no fixed `response_model`, returns a `Response` with the real spreadsheet MIME type and a `Content-Disposition: attachment` header. Frontend: an agent-picker + date-range panel in `Finance.tsx`'s Invoices subtab (agent list reuses the already-fetched `/users` data, filtered to `role === "agent"`), with a raw `fetch().blob()` download handler -- deliberately not `fetchJson`, which assumes a JSON response.
+
+**Deliberately NOT the same mechanism as `AgentStatement`** (Decision 077/078), which already does "agent + date range" but aggregates bookings into locked net/sale/profit rollups and has never had any frontend built for it. This export's requested columns (booking number, hotel, dates, invoice number, issue date, amount, currency, status) are invoice-shaped, not that rollup shape -- flagged explicitly so two similarly-scoped "agent + period" mechanisms existing in this Engine isn't mistaken for an oversight later.
+
+**Explicit deferral, logged so it isn't forgotten:** no paid/unpaid status or running-balance-owed tracking in this export. This is a clean statement of "here's what was invoiced in this period," not a payment reconciliation -- genuinely blocked on Payment Engine (not yet started, per Decision 008), which doesn't exist to have any real payment data to reference. Revisit only once Payment Engine exists.
+
+Reason: Real accounting/audit use needs a document that leaves the app, not just an on-screen list -- and a specific agent-and-period cut, not just "whatever's currently visible" (the CSV export's scope).
+
+Approved By: Daler
+
+Status: Implemented, `openpyxl==3.1.5` added to `requirements.txt` and installed in the committed `.venv`, `tsc -b` clean. Verified live: downloaded a real export for `istiklol90` covering `2026-07-18`-`2026-07-19`, confirmed the file opens as a genuinely valid `.xlsx` (`openpyxl.load_workbook`, 17 rows including header, bold header row, auto-sized columns), and cross-checked the first row byte-for-byte against direct API lookups of both the invoice and its booking -- exact match.
+
+---
+
+# Decision 087
+
+Date: 2026-07-20
+
+Decision: Major navigation/scale restructure of the Финансы feature, based on realistic future volume (100 agents x 100 bookings = 10,000+ rows) -- the flat "Финансы" tab with everything crammed into subtabs (built through Decisions 078-086) doesn't hold up at that scale. Replaced with three separate top-level `AdminPanel` tabs -- "Счета" (`Invoices.tsx`), "Баланс" (`Balance.tsx`), "Кэшбэк" (`Cashback.tsx`, promoted to its own tab for consistency even though hotel count doesn't have the same scale problem agent count does, per explicit project-owner confirmation) -- with room left for future items (Входящие/Исходящие платежи, once Payment Engine exists).
+
+**Real gaps found in already-shipped code while planning this, not just future risk:** `GET /users` returned every user unconditionally, no search/filter/limit at all -- both the just-built `.xlsx`-export agent dropdown and every `userNames`-based name resolution (list columns, `InvoiceDetailModal`'s audit lines) already depended on fetching everyone. No single-user-lookup endpoint existed either, so even resolving 1-3 specific actor names in the detail modal went through the same full-list fetch. Both fixed as part of this restructure, not left as-is:
+- `GET /users` gained optional `search` (case-insensitive partial name match), `role` (case-insensitive exact match), and `limit` params -- all additive, omitting them preserves the original full-list behavior every existing caller (AdminPanel's own user-management table, `Reservations.tsx`'s agent-name resolution) already relies on.
+- New `GET /users/{user_id}` -- single lookup, for `InvoiceDetailModal`'s at-most-3 actor-name resolutions, replacing its old `userNames` prop entirely.
+- `GET /finance-engine/agents/{agent_id}/invoices` gained optional `start_date`/`end_date` -- omitted falls back to the original unbounded per-agent list ("Счета"); both given reuses the already-built `list_invoices_by_agent_in_range` ("Баланс"), so the on-screen summary and the `.xlsx` export can never disagree about what "this agent, this period" means.
+- New `GET /finance-engine/invoices/urgent` (declared before `/invoices/{invoice_id}` in `api.py` -- same route-ordering class of bug as the documented `/agent-registrations/stats` issue) -- the one "list many invoices unscoped by agent" query kept safe at real scale, by construction: `review_flag IS NOT NULL AND flag_acknowledged_at IS NULL AND status != 'Void'` should be a small set, not proportional to total invoice count. This resolves the real tension between "never load everyone" and "triage needs to see what's urgent without already knowing which agent to search for" -- a small, always-visible panel at the top of "Счета", populated by this bounded query, shown before any agent search.
+
+**New shared frontend module `financeShared.tsx`** (a deliberate departure from this codebase's usual per-page-self-contained convention, justified because `Invoices.tsx`/`Balance.tsx`/`Cashback.tsx` are facets of one restructured feature built together, not unrelated pages) holds `InvoiceDetailModal`, `isUrgentFlag`, `voidLabel`, `StatusBadge`, the `Invoice`/`AgentOption` types, and the new `AgentSearchSelect` component -- a debounced (300ms, minimum 2 characters) autocomplete against the new `/users` search params, never loading the full agent list, used identically by both "Счета" and "Баланс". Old `Finance.tsx` fully deleted (not left as unreferenced dead code) once nothing imported it anymore.
+
+Reason: A flat list that loads or requires loading "everyone" (agents, invoices) is a correctness and performance trap at any real scale beyond this project's current 1-2 real hotels/agents -- catching and fixing it now, while the fix is small, is cheaper than after real volume makes it a production incident.
+
+Approved By: Daler
+
+Status: Implemented, `tsc -b` clean project-wide (only the same 9 pre-existing, unrelated errors in `App.tsx`/`Header.tsx`/`AgentDashboard.tsx`/`router.tsx` remain, confirmed via `git status` untouched by this work). Verified live via real HTTP: the urgent endpoint returns exactly the one genuinely-flagged test invoice and nothing else; agent search for "ist" returns exactly `istiklol90`; the new scoped per-agent endpoint's result count (17) matches a manual filter of the full invoice list by `agent_id` (17) exactly, confirming the restructure doesn't silently change what data is shown, only how it's fetched.
+
+---
+
 # Decision Template
 
 Decision Number:

@@ -37,8 +37,43 @@ def get_db():
 # ============================
 
 @router.get("/users", response_model=list[UserResponse])
-def get_users(db: Session = Depends(get_db)):
-    return db.query(User).all()
+def get_users(
+    search: Optional[str] = None,
+    role: Optional[str] = None,
+    limit: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Decision 087: search/role/limit are all optional and additive --
+    omitting them preserves the original full-list behavior every
+    existing caller (AdminPanel's user table, Reservations.tsx's
+    agent-name resolution, etc.) already relies on. Added specifically
+    so Finance Engine's agent-search autocomplete never has to fetch
+    every user just to filter client-side -- a real anti-pattern found
+    in code already shipped this session, not a hypothetical one.
+    search is a case-insensitive partial match on name; role is a
+    case-insensitive exact match (role casing is inconsistent across
+    this project -- see CLAUDE.md).
+    """
+    query = db.query(User)
+    if search:
+        query = query.filter(User.name.ilike(f"%{search}%"))
+    if role:
+        query = query.filter(User.role.ilike(role))
+    if limit:
+        query = query.limit(limit)
+    return query.all()
+
+
+@router.get("/users/{user_id}", response_model=UserResponse)
+def get_user(user_id: int, db: Session = Depends(get_db)):
+    """Decision 087: single-user lookup, added so InvoiceDetailModal can
+    resolve created_by/approved_by/voided_by (at most 3 ids per open)
+    without depending on a full-list fetch."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    return user
 
 
 @router.post("/users", response_model=UserResponse)

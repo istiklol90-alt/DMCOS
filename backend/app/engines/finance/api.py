@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
@@ -80,6 +82,17 @@ def get_all_invoices(db: Session = Depends(get_db), current_user=Depends(get_cur
     return service.list_invoices(db)
 
 
+@router.get("/invoices/urgent", response_model=list[InvoiceResponse])
+def get_urgent_invoices(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Decision 087: MUST stay declared before /invoices/{invoice_id} --
+    same route-ordering class of bug documented for
+    /agent-registrations/stats in CLAUDE.md. If this were declared
+    after the parameterized route, "urgent" would be parsed as an
+    attempted invoice_id and fail instead of matching this endpoint."""
+    _require_admin(current_user)
+    return service.list_urgent_invoices(db)
+
+
 @router.get("/invoices/{invoice_id}", response_model=InvoiceResponse)
 def get_invoice(invoice_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _require_admin(current_user)
@@ -93,9 +106,47 @@ def get_booking_invoice(booking_id: int, db: Session = Depends(get_db), current_
 
 
 @router.get("/agents/{agent_id}/invoices", response_model=list[InvoiceResponse])
-def get_agent_invoices(agent_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+def get_agent_invoices(
+    agent_id: int,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Decision 087: start_date/end_date are optional -- omitted (Счета's
+    full per-agent history) falls back to the original unbounded
+    behavior; both given (Баланс's period scope) reuses the same
+    list_invoices_by_agent_in_range the .xlsx export already uses, so
+    the two can never disagree about what "this agent, this period"
+    means."""
     _require_admin(current_user)
+    if start_date is not None and end_date is not None:
+        return service.list_invoices_by_agent_in_range(db, agent_id, start_date, end_date)
     return service.list_invoices_by_agent(db, agent_id)
+
+
+@router.get("/agents/{agent_id}/invoices/export")
+def export_agent_invoices(
+    agent_id: int,
+    start_date: date,
+    end_date: date,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Decision 086: real .xlsx download, not JSON -- no fixed response_model,
+    returns a Response with the real spreadsheet content-type and an
+    attachment filename so the browser downloads it directly.
+    """
+    _require_admin(current_user)
+    content = _run(lambda: service.build_agent_invoice_export(db, agent_id, start_date, end_date))
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="agent_{agent_id}_invoices_{start_date}_{end_date}.xlsx"'
+        },
+    )
 
 
 @router.post("/bookings/{booking_id}/flag-for-review")

@@ -22,8 +22,11 @@ recomputing its own version.
 """
 
 from datetime import date, datetime
+import io
 import uuid
 
+from openpyxl import Workbook
+from openpyxl.styles import Font
 from sqlalchemy.orm import Session
 
 from app.engines.finance import repository
@@ -222,6 +225,65 @@ def list_invoices(db: Session) -> list[Invoice]:
 
 def list_invoices_by_agent(db: Session, agent_id: int) -> list[Invoice]:
     return repository.list_invoices_by_agent(db, agent_id)
+
+
+def list_invoices_by_agent_in_range(db: Session, agent_id: int, start_date: date, end_date: date) -> list[Invoice]:
+    return repository.list_invoices_by_agent_in_range(db, agent_id, start_date, end_date)
+
+
+def list_urgent_invoices(db: Session) -> list[Invoice]:
+    return repository.list_urgent_invoices(db)
+
+
+def build_agent_invoice_export(db: Session, agent_id: int, start_date: date, end_date: date) -> bytes:
+    """
+    Decision 086: a real, downloadable .xlsx statement of "here's what
+    was invoiced" for one agent over one period -- deliberately a
+    separate, simpler mechanism from AgentStatement (Decision 077/078),
+    which aggregates bookings into net/sale/profit rollups as a formal
+    lockable document and has never had any frontend built for it. This
+    is a raw, unaggregated list of real Invoice rows (filtered by
+    issue_date, not booking dates -- an accounting-period export, not a
+    travel calendar), matching what a real business document handed to
+    an agent would show.
+
+    Deliberately excludes any paid/unpaid or running-balance-owed
+    tracking -- that requires Payment Engine (not yet started) to have
+    any real payment data to reference. This is a clean statement of
+    invoiced amounts, not a payment reconciliation.
+    """
+    invoices = repository.list_invoices_by_agent_in_range(db, agent_id, start_date, end_date)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Invoices"
+    headers = ["Booking №", "Отель", "Заезд", "Выезд", "№ счёта", "Дата выставления", "Сумма", "Валюта", "Статус"]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+
+    for invoice in invoices:
+        booking = booking_service.get_booking(db, invoice.booking_id)
+        hotel = hotel_service.get_hotel(db, invoice.hotel_id)
+        ws.append([
+            booking.booking_number,
+            hotel.hotel_name,
+            booking.arrival_date.isoformat(),
+            booking.departure_date.isoformat(),
+            invoice.invoice_number,
+            invoice.issue_date.isoformat(),
+            invoice.total,
+            invoice.currency,
+            invoice.status,
+        ])
+
+    for column_cells in ws.columns:
+        max_length = max(len(str(cell.value)) for cell in column_cells)
+        ws.column_dimensions[column_cells[0].column_letter].width = max_length + 2
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
 
 
 def void_invoice(db: Session, invoice_id: int, voided_by: int) -> Invoice:

@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -40,6 +41,27 @@ def list_invoices(db: Session) -> list[Invoice]:
 
 def list_invoices_by_agent(db: Session, agent_id: int) -> list[Invoice]:
     return db.query(Invoice).filter(Invoice.agent_id == agent_id).all()
+
+
+def list_invoices_by_agent_in_range(db: Session, agent_id: int, start_date: date, end_date: date) -> list[Invoice]:
+    return db.query(Invoice).filter(
+        Invoice.agent_id == agent_id,
+        Invoice.issue_date >= start_date,
+        Invoice.issue_date <= end_date,
+    ).all()
+
+
+def list_urgent_invoices(db: Session) -> list[Invoice]:
+    """Decision 087: the one 'list many at once, unscoped by agent'
+    query that stays safe at real scale, by construction -- a Draft
+    invoice with an unacknowledged review_flag should be rare, not
+    proportional to total invoice count. If it isn't rare, that's a
+    real operational signal, not a reason to hide the list."""
+    return db.query(Invoice).filter(
+        Invoice.review_flag.isnot(None),
+        Invoice.flag_acknowledged_at.is_(None),
+        Invoice.status != "Void",
+    ).all()
 
 
 def create_invoice(db: Session, **fields) -> Invoice:

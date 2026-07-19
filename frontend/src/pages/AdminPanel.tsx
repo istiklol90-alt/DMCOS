@@ -5,11 +5,22 @@ import Contracts from "./Contracts";
 import ContractsAI from "./ContractsAI";
 import PriceCalculator from "./PriceCalculator";
 import Counteragents from "./Counteragents";
-import Finance from "./Finance";
+import Invoices from "./Invoices";
+import Balance from "./Balance";
+import Cashback from "./Cashback";
 
 type StatKey = "all" | "agent" | "admin" | "active" | "never_logged" | "inactive";
 type RegStatus = "pending" | "approved" | "rejected";
-type AdminTab = "users" | "reservations" | "contracts" | "contracts-ai" | "price-calculator" | "counteragents" | "finance";
+type AdminTab =
+  | "users"
+  | "reservations"
+  | "contracts"
+  | "contracts-ai"
+  | "price-calculator"
+  | "counteragents"
+  | "invoices"
+  | "balance"
+  | "cashback";
 
 const statusBadgeClasses: Record<RegStatus, string> = {
   pending: "bg-coral/15 text-coral",
@@ -219,20 +230,44 @@ const AdminPanel = () => {
             Контрагенты
           </button>
           <button
-            onClick={() => setActiveTab("finance")}
+            onClick={() => setActiveTab("invoices")}
             className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === "finance"
+              activeTab === "invoices"
                 ? "border-coral text-ink"
                 : "border-transparent text-slate/60 hover:text-ink"
             }`}
           >
-            Финансы
+            Счета
+          </button>
+          <button
+            onClick={() => setActiveTab("balance")}
+            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+              activeTab === "balance"
+                ? "border-coral text-ink"
+                : "border-transparent text-slate/60 hover:text-ink"
+            }`}
+          >
+            Баланс
+          </button>
+          <button
+            onClick={() => setActiveTab("cashback")}
+            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+              activeTab === "cashback"
+                ? "border-coral text-ink"
+                : "border-transparent text-slate/60 hover:text-ink"
+            }`}
+          >
+            Кэшбэк
           </button>
         </div>
 
         {activeTab === "counteragents" && <Counteragents />}
 
-        {activeTab === "finance" && <Finance />}
+        {activeTab === "invoices" && <Invoices />}
+
+        {activeTab === "balance" && <Balance />}
+
+        {activeTab === "cashback" && <Cashback />}
 
         {activeTab === "reservations" && (
           <div className="mt-6">
