@@ -46,6 +46,14 @@ from app.engines.pricing.models import (
     ExclusiveAgent,
     ContractExclusiveDiscount,
 )
+from app.engines.finance.models import (
+    Invoice,
+    CreditNote,
+    AgentStatement,
+    AgentStatementLine,
+    HotelCashbackArrangement,
+    HotelCashbackFulfillment,
+)
 
 def init_db():
     print("🔄 Создание таблиц...")

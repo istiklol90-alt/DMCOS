@@ -14,6 +14,8 @@ from app.engines.booking.api import router as booking_router
 from app.engines.ai_core.api import router as ai_core_router
 # TASK-002: Pricing Engine domain model, schemas, repository, service, and API.
 from app.engines.pricing.api import router as pricing_router
+# TASK-002/003: Finance Engine domain model, schemas, repository, service, and API.
+from app.engines.finance.api import router as finance_router
 
 app = FastAPI(title="DMC OS API")
 
@@ -52,6 +54,9 @@ app.include_router(ai_core_router)
 
 # Pricing Engine API
 app.include_router(pricing_router)
+
+# Finance Engine API
+app.include_router(finance_router)
 
 
 @app.get("/")

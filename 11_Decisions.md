@@ -4871,6 +4871,56 @@ this lock was premature.
 
 ---
 
+# Decision 076
+
+Date: 2026-07-18
+
+Decision: Finance Engine's TASK-000/002 scope, confirmed against `01_Modules_List.md` §11 rather than assumed: Invoice, Credit Notes, Agent Statements, plus Decision 009's manually-recorded hotel cashback tracking. Two deliberate exclusions from this build: (1) Payment Engine (Decision 008's online-payment requirement) stays a fully separate, not-yet-started Engine -- the docs themselves list Payments (module 10) and Finance (module 11) as distinct modules, and Payment Engine's real online-payment-processor integration is a significantly larger, separate undertaking deserving its own dedicated design pass, not folded in. (2) Voucher and Supplier Payments (2 of §11's 5 listed items) are deferred, not built -- the project owner's explicit scoping for this build named only Invoice/Credit Notes/Agent Statements, same "build only once proven" precedent as every other Engine's unbuilt pieces.
+
+Reason: `01_Modules_List.md` lists 5 items under Finance; the project owner's TASK-002 scoping instruction named 3 of them plus Decision 009's cashback mechanism. Logging the gap explicitly (rather than silently either including or excluding Voucher/Supplier Payments) so a future session doesn't mistake the omission for an oversight.
+
+Approved By: Daler
+
+Status: TASK-002 domain model built on this scope -- see Decision 077.
+
+---
+
+# Decision 077
+
+Date: 2026-07-18
+
+Decision: Finance Engine's domain model is 6 tables: `Invoice`, `CreditNote`, `AgentStatement`, `AgentStatementLine`, `HotelCashbackArrangement`, `HotelCashbackFulfillment`. `Invoice`'s field set combines `03_Domain_Model.md` #40's list (subtotal/tax/discount/total) with `02_Logic_Rules.md` #53's list (Agent/Hotel/Commission) -- the two docs don't fully overlap, neither is treated as more authoritative than the other. `CreditNote`/`AgentStatement`/`AgentStatementLine` are not documented in either doc at all (module-list names only) and were designed fresh from standard DMC/travel-finance conventions. Invoice generation is a manual, Finance-side action (`create_invoice_for_booking`) rather than automatic on a Booking status change, specifically so LOCKED Booking Engine's `service.py` never needs modification for this Engine to exist.
+
+`service.compute_booking_financials` is the single source of truth for Net/Sale/Profit, derived purely from `Booking`'s own frozen columns (`total_amount`, `agent_markup_amount`, `agent_exclusive_discount_amount`, `transfer_total`, `mandatory_tax_total`) -- no re-pricing, no calls into Contract/Pricing Engine. `total = subtotal - discount + commission + tax` reconciles exactly to `Booking.total_amount + transfer_total + mandatory_tax_total` by construction, verified against a real Kandima booking created through the actual `booking_service.create_booking` flow (not hand-set fields): agent `istiklol90@gmail.com` (real Exclusive-tier agent), a real 10%-off `ContractExclusiveDiscount` window, producing `total=1609.05` end to end, matching exactly. `agent_markup_amount`/`agent_exclusive_discount_amount` being `NULL` together (any booking predating Decision 069) is carried through as `profit=None` ("not computed"), never silently defaulted to `0` ("a real zero-margin sale") -- verified against a real pre-069 booking.
+
+Real, not hypothetical, finding surfaced while building this: `Reservations.tsx`'s existing inline Net/Sale/Profit display (`frontend/src/pages/Reservations.tsx` ~line 1626) still shows `Net == Sale` and a hardcoded Profit placeholder with a stale Decision-009 tooltip -- it predates Decision 069's Pricing Engine integration and was never updated. Flagged, not fixed, by this Engine (explicitly out of scope per the project owner) -- `compute_booking_financials` is the correct replacement whenever that frontend fix happens.
+
+Also real, not a bug: a booking's `profit` can be genuinely negative when an Exclusive-tier discount exceeds the flat per-night markup (verified on the same real test booking: -$45.45, discount $75.45 > markup $30). Finance Engine surfaces this accurately rather than hiding it.
+
+Reason: Grounding the model in what the docs actually specify (where they specify anything) rather than inventing fields, and building the one genuinely new calculation this Engine needs on top of already-verified Pricing Engine output rather than re-deriving pricing logic.
+
+Approved By: Daler
+
+Status: TASK-002/003 (models, repository, service, schemas, api) built and verified via real HTTP calls against a real Kandima booking -- see Decision 078 for the LOCK.
+
+---
+
+# Decision 078
+
+Date: 2026-07-19
+
+Decision: Finance Engine LOCKED. `models.py` (6 tables), `repository.py` (thin CRUD), `service.py` (`compute_booking_financials` plus Invoice/CreditNote/AgentStatement/HotelCashbackArrangement/HotelCashbackFulfillment orchestration), `schemas.py`, and `api.py` (15 authenticated REST endpoints under `/finance-engine`, admin-gated -- no distinct "Finance" role exists in Authentication Engine yet) are built and verified end-to-end via real HTTP calls against a real Kandima booking created through the actual Booking Engine flow, including invoice generation, credit note creation, agent statement generation/finalization, and cashback arrangement/fulfillment recording. `validators.py` was populated (unlike Pricing Engine's, which stayed empty) because reviewing this Engine's own `service.py` surfaced two real, not speculative, correctness gaps: `create_credit_note` had no check against an invoice's remaining creditable balance (multiple credit notes could sum past the invoice total), and `generate_agent_statement` had no check for an existing statement with an overlapping period for the same agent/currency (silent double-counting of the same bookings across two statements). Both fixed and verified against real data before lock. `workflow.py` stays empty scaffolding -- no Engine in this project has ever populated it, including AI Core Engine's genuine 12-step ingestion state machine, which lives in its own `service.py` instead.
+
+Test artifacts from verification (bookings 5 and 6, both Kandima/Sky Studio/exclusive-agent) were properly cancelled through the real `booking_service.cancel_booking`/`POST /booking-engine/bookings/{id}/cancel` path, not deleted directly -- confirmed via a real allotments-table before/after query that room type 3 (Sky Studio) has no per-day allotment rows configured for March 2027 at all, so under Decision 044's permissive mode neither booking ever held tracked inventory to begin with. Their generated Invoice/CreditNote/AgentStatement rows were confirmed to hold no live resource of their own (no allotment/inventory calls anywhere in this Engine) and were deliberately left in place as real reference examples, per the project owner's explicit choice.
+
+Known, explicitly accepted limitations carried forward, not fixed by this lock: (1) Voucher and Supplier Payments (`01_Modules_List.md` §11) remain unbuilt, per Decision 076's explicit scoping; (2) Payment Engine (Decision 008) remains fully separate and not started; (3) `Reservations.tsx`'s stale Net/Sale/Profit calculation (Decision 077) is flagged, not fixed, by this Engine; (4) every endpoint duplicates JWT-decode logic locally, per Decision 006 -- the 8th Engine repeating this; (5) `create_invoice_for_booking`/`create_cashback_arrangement`/etc. don't validate that the calling admin has any particular relationship to the hotel/agent/booking beyond being an admin -- no finer-grained permission model exists yet, same simplification every other Engine's admin-gated surface already makes.
+
+Approved By: Daler
+
+Status: `CLAUDE.md`'s Finance Engine section added, status 🔒 LOCKED. Future work (Voucher, Supplier Payments, a real Finance role distinct from Admin, or consuming these itemized figures from a future Reporting/Dashboard surface) is a future additive extension to this now-LOCKED engine, same pattern as every other LOCKED engine's post-lock extensions in this project -- not a reason this lock was premature.
+
+---
+
 # Decision Template
 
 Decision Number:
