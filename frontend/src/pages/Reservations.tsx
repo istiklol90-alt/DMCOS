@@ -129,6 +129,14 @@ interface MandatoryTaxBreakdown {
   currency: string;
 }
 
+interface InvoiceInfo {
+  id: number;
+  invoice_number: string;
+  total: number;
+  currency: string;
+  status: string;
+}
+
 type SortKey = "created_at" | "arrival_date" | "status" | "net";
 type SortDir = "asc" | "desc";
 
@@ -138,6 +146,11 @@ export interface Permissions {
   canEditFlights: boolean;
   canCancel: boolean;
   canClaim: boolean;
+  // Decision 079: gates the entire invoice button/badge block below --
+  // Draft invoices are accounting-only, not agent-visible, so an agent
+  // must not see the "Создать счёт" button or any invoice info at all
+  // (not just a disabled version of it).
+  canManageInvoices: boolean;
 }
 
 export type Scope = { type: "all" } | { type: "agent"; agentId: number };
@@ -938,6 +951,46 @@ function BookingDetail({
   const [claimSubmitting, setClaimSubmitting] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
 
+  const [invoice, setInvoice] = useState<InvoiceInfo | null>(null);
+  const [invoiceLoading, setInvoiceLoading] = useState(true);
+  const [invoiceSubmitting, setInvoiceSubmitting] = useState(false);
+  const [invoiceError, setInvoiceError] = useState<string | null>(null);
+
+  // A 400 here just means "not yet invoiced" (the common case) --
+  // treated the same as BookingCorrespondence's fetch above, not
+  // surfaced as an error. Gated on canManageInvoices so a view without
+  // that permission (e.g. the agent's own dashboard) never even fires
+  // the request -- the endpoint is admin-only server-side anyway, but
+  // there's no reason to make a doomed call.
+  useEffect(() => {
+    if (!permissions.canManageInvoices) {
+      setInvoiceLoading(false);
+      return;
+    }
+    const token = localStorage.getItem("token") || "";
+    setInvoiceLoading(true);
+    fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/invoice`, token)
+      .then(setInvoice)
+      .catch(() => setInvoice(null))
+      .finally(() => setInvoiceLoading(false));
+  }, [booking.id, permissions.canManageInvoices]);
+
+  async function handleCreateInvoice() {
+    const token = localStorage.getItem("token") || "";
+    setInvoiceSubmitting(true);
+    setInvoiceError(null);
+    try {
+      const created = await fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/invoice`, token, {
+        method: "POST",
+      });
+      setInvoice(created);
+    } catch (err: any) {
+      setInvoiceError(err.message || "Не удалось создать счёт");
+    } finally {
+      setInvoiceSubmitting(false);
+    }
+  }
+
   async function handleClaimSubmit() {
     const token = localStorage.getItem("token") || "";
     setClaimSubmitting(true);
@@ -947,6 +1000,26 @@ function BookingDetail({
         method: "POST",
       });
       onBookingUpdated(updated);
+      // Decision 080: claiming auto-creates a Draft invoice as a
+      // second, best-effort request -- frontend orchestration only,
+      // calling the same unmodified /finance-engine endpoint the
+      // fallback "Создать счёт" button below already uses. A failure
+      // here (e.g. one already exists) must never undo or fail the
+      // claim itself, which has already succeeded above -- it
+      // surfaces as a non-blocking error, and the fallback button
+      // (still rendered whenever !invoice) stays as the recovery path.
+      if (permissions.canManageInvoices && !invoice) {
+        try {
+          const created = await fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/invoice`, token, {
+            method: "POST",
+          });
+          setInvoice(created);
+        } catch (invoiceErr: any) {
+          setInvoiceError(
+            invoiceErr.message || "Не удалось автоматически создать счёт — используйте кнопку «Создать счёт» ниже"
+          );
+        }
+      }
     } catch (err: any) {
       setClaimError(err.message || "Не удалось взять бронирование в работу");
     } finally {
@@ -1305,8 +1378,28 @@ function BookingDetail({
                 Отменить бронь
               </button>
             )}
+            {permissions.canManageInvoices && !invoiceLoading && !invoice && booking.status !== "Cancelled" && booking.status !== "Rejected" && (
+              <button
+                type="button"
+                onClick={handleCreateInvoice}
+                disabled={invoiceSubmitting}
+                className="rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {invoiceSubmitting ? "Создание..." : "Создать счёт"}
+              </button>
+            )}
           </div>
         </div>
+
+        {permissions.canManageInvoices && invoice && (
+          <div className="mt-3 rounded-lg bg-ink/5 px-3 py-2 text-xs text-slate/70">
+            Счёт <strong className="text-ink">{invoice.invoice_number}</strong> ({invoice.status}) на{" "}
+            <strong className="text-ink">{formatMoney(invoice.total, invoice.currency)}</strong>
+          </div>
+        )}
+        {invoiceError && (
+          <div className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{invoiceError}</div>
+        )}
 
         {claimError && (
           <div className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{claimError}</div>

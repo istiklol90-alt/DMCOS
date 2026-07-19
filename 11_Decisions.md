@@ -4921,6 +4921,40 @@ Status: `CLAUDE.md`'s Finance Engine section added, status 🔒 LOCKED. Future w
 
 ---
 
+# Decision 079
+
+Date: 2026-07-20
+
+Decision: `Invoice.status`'s meaning changed, post-lock, on already-LOCKED Finance Engine (Decision 078). Project owner defined a 4-stage plan for a real accounting-review workflow: (1) the existing manual "Создать счёт" button now creates an invoice in `"Draft"` status instead of `"Issued"` -- no automatic trigger, no change to LOCKED Booking Engine, per the owner's explicit choice to keep this a fast mechanical button-click rather than risk modifying a locked financial engine's core booking-creation path; (2) PDF generation (deferred -- owner still needs to supply real company bank details and a logo before this can use real data, not placeholder values); (3) agent-side invoice visibility in `AgentDashboard_v2.tsx`, gated on `Issued` status only; (4) a new `approve_and_send_invoice` action ("Одобрить и отправить") that atomically generates the PDF, emails it to the agent, and flips `Draft -> Issued` (making it agent-visible) -- all three together, never as separate steps. Only stage 1 is implemented by this decision; stages 2-4 are designed but not built.
+
+No schema change was needed -- `Draft`/`Issued`/`Void` already existed as the column's intended value set (Decision 077/078's own docstrings), just with `Draft` previously treated as "effectively unreachable" since `create_invoice_for_booking` always wrote `Issued` directly. `Draft` now means "created, awaiting accounting review, not agent-visible, no PDF/email side effects"; `Issued` now means "reviewed, approved, PDF'd, emailed, agent-visible" (set only by the not-yet-built stage 4 action). `create_credit_note`'s existing requirement that a credit note's target invoice be `Issued` (`validators.validate_invoice_issued`) needed no change -- under the new semantics this is more correct than before, since it's now impossible to credit-note an invoice the agent hasn't even seen yet. `void_invoice` also needed no change -- it was already unrestricted by source status (only blocks re-voiding an already-`Void` invoice), so `Draft -> Void` already worked, letting accounting kill a wrongly-created draft before it's ever reviewed.
+
+Two real gaps found by grepping every `"Issued"` check in the codebase before making this change, both fixed as part of this same decision, not scope creep: (1) `Reservations.tsx`'s `BookingDetail` component -- where this session's own earlier UI work added the invoice button/badge -- is rendered inside **both** `AdminPanel.tsx` and `AgentDashboard_v2.tsx` (agent-facing), and the button/badge had no permission gate at all. As shipped (uncommitted at the time this was caught), an agent viewing their own booking would already see the "Создать счёт" button and any invoice badge, regardless of Draft/Issued -- a direct violation of "must not be visible to the agent" that predated this decision's status-semantics change but was only surfaced by reviewing this change's blast radius. Fixed with a new `Permissions.canManageInvoices` flag (`true` in `AdminPanel.tsx`, `false` in `AgentDashboard_v2.tsx`), gating both the fetch-on-mount `useEffect` and the rendered button/badge -- an agent's view now fires zero invoice-related requests and renders nothing invoice-related, not even a disabled control. (2) `Finance.tsx`'s admin invoice table gated its Void button on `status === "Issued"`, so a Draft invoice -- now a real, common state -- would show no Void action at all, contradicting the backend's own allowed transition. Widened to `status !== "Void"`.
+
+Reason: Real accounting review must happen before an agent sees a charge or the company sends a PDF/email, per the project owner's explicit workflow requirement -- an auto-created-and-immediately-issued invoice (the pre-Decision-079 behavior) skipped this entirely.
+
+Approved By: Daler
+
+Status: Stage 1 implemented and verified (models.py/service.py docstrings updated to reflect the new status semantics; `Reservations.tsx`/`AdminPanel.tsx`/`AgentDashboard_v2.tsx`/`Finance.tsx` updated). Stages 2-4 (PDF generation, agent-side visibility, `approve_and_send_invoice`) remain future work, blocked on the project owner supplying real bank/logo assets for stage 2.
+
+---
+
+# Decision 080
+
+Date: 2026-07-20
+
+Decision: Claiming a booking ("Взять в работу") now auto-creates its Draft invoice as part of the same click, via **frontend orchestration only** -- `Reservations.tsx`'s `handleClaimSubmit` calls the existing `POST /booking-engine/bookings/{id}/claim` first (unchanged), and on success immediately fires a second, best-effort request to the existing `POST /finance-engine/bookings/{id}/invoice` (unchanged, still produces `Draft` per Decision 079). Neither backend endpoint was modified -- this is a pure client-side change to what one click triggers, deliberately preserving Decision 079's reasoning for keeping invoice creation off LOCKED Booking Engine's own code path.
+
+If the second call fails (most likely because an invoice already exists via the standalone fallback button), the claim itself is never affected -- it already succeeded by that point. The failure surfaces as a non-blocking error via the existing `invoiceError` state/banner, explicitly pointing at the fallback button as the recovery action. The standalone "Создать счёт" button is deliberately **kept**, not removed (a real, close-together contradiction in the project owner's own instructions during this session -- first "keep as fallback," then "remove entirely" in the next message -- resolved by re-confirming with the owner rather than silently picking one): removing it would leave the non-blocking error message with no actual recovery action to point to, a dead end. No logic change was needed to keep it working as a fallback -- its existing gate (`!invoice`) already naturally hides it the instant either path (claim-triggered or manual) sets `invoice`.
+
+Reason: Project owner wants one click on "Взять в работу" to produce both outcomes (claim + Draft invoice) with no separate manual step, while explicitly wanting to avoid the risk of modifying a LOCKED financial engine's core booking-claim path.
+
+Approved By: Daler
+
+Status: Implemented and verified live -- claiming a fresh booking produces a Draft invoice with zero additional clicks, confirmed via real HTTP end-to-end and visible in the Финансы tab's invoice list.
+
+---
+
 # Decision Template
 
 Decision Number:

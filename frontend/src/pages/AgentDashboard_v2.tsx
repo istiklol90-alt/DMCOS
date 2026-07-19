@@ -380,7 +380,7 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
           <h2 className="mb-3 font-display text-lg font-semibold text-ink">Мои бронирования</h2>
           <BookingsList
             scope={{ type: "agent", agentId: user.id }}
-            permissions={{ canChangeDates: true, canEditGuestDetails: true, canEditFlights: true, canCancel: true, canClaim: false }}
+            permissions={{ canChangeDates: true, canEditGuestDetails: true, canEditFlights: true, canCancel: true, canClaim: false, canManageInvoices: false }}
           />
         </div>
 

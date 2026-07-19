@@ -73,10 +73,22 @@ def create_invoice(booking_id: int, db: Session = Depends(get_db), current_user=
     return _run(lambda: service.create_invoice_for_booking(db, booking_id, created_by=current_user.id))
 
 
+@router.get("/invoices", response_model=list[InvoiceResponse])
+def get_all_invoices(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _require_admin(current_user)
+    return service.list_invoices(db)
+
+
 @router.get("/invoices/{invoice_id}", response_model=InvoiceResponse)
 def get_invoice(invoice_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _require_admin(current_user)
     return _run(lambda: service.get_invoice(db, invoice_id))
+
+
+@router.get("/bookings/{booking_id}/invoice", response_model=InvoiceResponse)
+def get_booking_invoice(booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _require_admin(current_user)
+    return _run(lambda: service.get_invoice_by_booking(db, booking_id))
 
 
 @router.get("/agents/{agent_id}/invoices", response_model=list[InvoiceResponse])

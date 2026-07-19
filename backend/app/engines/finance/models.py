@@ -51,6 +51,10 @@ class Invoice(Base):
     # (02_Logic_Rules.md #54's Payment Workflow) -- that status belongs
     # to the separate, not-yet-built Payment Engine, kept out of scope
     # per this session's explicit Payment-vs-Finance Engine split.
+    # Decision 079: Draft now means "created, awaiting accounting
+    # review, not agent-visible" (creation writes Draft, not Issued);
+    # Issued means "reviewed, approved, PDF'd, emailed, agent-visible"
+    # (set only by a future approve_and_send_invoice action).
     status = Column(String(20), nullable=False, default="Draft")
     created_by = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -122,12 +122,25 @@ def _generate_invoice_number() -> str:
 def create_invoice_for_booking(db: Session, booking_id: int, created_by: int) -> Invoice:
     """
     Manually-triggered Invoice generation. Raises if a booking's already
-    been invoiced -- one Invoice per booking, no duplicates. Status is
-    set to "Issued" immediately, not left at the model's "Draft"
-    default: generating an Invoice IS the issuing action here, there's
-    no separate draft-then-issue workflow (same "column default is
-    effectively unreachable through the real flow" shape as
-    Booking.status's own "Draft" default).
+    been invoiced -- one Invoice per booking, no duplicates.
+
+    Decision 079: status is now set to "Draft", not "Issued" -- Draft
+    means "created, awaiting accounting review," deliberately NOT
+    agent-visible and with no PDF/email side effects yet. Only a future
+    approve_and_send_invoice action (not built yet) moves Draft ->
+    Issued, atomically generating the PDF, emailing it to the agent,
+    and making it agent-visible -- all three happen together, not as
+    separate steps. This reverses this function's original behavior
+    (previously wrote "Issued" immediately, treating Draft as
+    unreachable); the docstring's old claim that Draft was "effectively
+    unreachable" no longer holds.
+
+    issue_date is still set to today's date at creation time, same as
+    before -- Stage 4 (approve_and_send_invoice) hasn't been designed
+    yet, so whether "issue_date" should instead mean the actual
+    approval/send date (requiring issue_date to become nullable, or a
+    separate approved_at/sent_at field) is an open question left for
+    that stage, not decided here.
     """
     booking = booking_service.get_booking(db, booking_id)
     if repository.get_invoice_by_booking(db, booking_id) is not None:
@@ -147,7 +160,7 @@ def create_invoice_for_booking(db: Session, booking_id: int, created_by: int) ->
         commission=financials["commission_amount"],
         tax=financials["tax_amount"],
         total=financials["sale_total"],
-        status="Issued",
+        status="Draft",
         created_by=created_by,
     )
 
@@ -157,6 +170,25 @@ def get_invoice(db: Session, invoice_id: int) -> Invoice:
     if invoice is None:
         raise ValueError(f"Invoice {invoice_id} not found")
     return invoice
+
+
+def get_invoice_by_booking(db: Session, booking_id: int) -> Invoice:
+    """So a caller (Reservations.tsx's invoice button) can distinguish
+    "not yet invoiced" from "already invoiced" without guessing --
+    raises the same as get_invoice rather than returning None, matching
+    this Engine's uniform ValueError-to-400 convention."""
+    invoice = repository.get_invoice_by_booking(db, booking_id)
+    if invoice is None:
+        raise ValueError(f"Booking {booking_id} has no invoice")
+    return invoice
+
+
+def list_invoices(db: Session) -> list[Invoice]:
+    """Admin-wide, unfiltered -- for the Финансы tab's invoice table.
+    No pagination yet, same simplification Pricing Engine's
+    list_exclusive_agents already makes at this project's current data
+    volume."""
+    return repository.list_invoices(db)
 
 
 def list_invoices_by_agent(db: Session, agent_id: int) -> list[Invoice]:

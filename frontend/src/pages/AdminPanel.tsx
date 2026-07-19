@@ -5,10 +5,11 @@ import Contracts from "./Contracts";
 import ContractsAI from "./ContractsAI";
 import PriceCalculator from "./PriceCalculator";
 import Counteragents from "./Counteragents";
+import Finance from "./Finance";
 
 type StatKey = "all" | "agent" | "admin" | "active" | "never_logged" | "inactive";
 type RegStatus = "pending" | "approved" | "rejected";
-type AdminTab = "users" | "reservations" | "contracts" | "contracts-ai" | "price-calculator" | "counteragents";
+type AdminTab = "users" | "reservations" | "contracts" | "contracts-ai" | "price-calculator" | "counteragents" | "finance";
 
 const statusBadgeClasses: Record<RegStatus, string> = {
   pending: "bg-coral/15 text-coral",
@@ -217,15 +218,27 @@ const AdminPanel = () => {
           >
             Контрагенты
           </button>
+          <button
+            onClick={() => setActiveTab("finance")}
+            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+              activeTab === "finance"
+                ? "border-coral text-ink"
+                : "border-transparent text-slate/60 hover:text-ink"
+            }`}
+          >
+            Финансы
+          </button>
         </div>
 
         {activeTab === "counteragents" && <Counteragents />}
+
+        {activeTab === "finance" && <Finance />}
 
         {activeTab === "reservations" && (
           <div className="mt-6">
             <BookingsList
               scope={{ type: "all" }}
-              permissions={{ canChangeDates: true, canEditGuestDetails: true, canEditFlights: true, canCancel: true, canClaim: true }}
+              permissions={{ canChangeDates: true, canEditGuestDetails: true, canEditFlights: true, canCancel: true, canClaim: true, canManageInvoices: true }}
             />
           </div>
         )}
