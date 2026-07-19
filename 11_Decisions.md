@@ -4971,6 +4971,31 @@ Status: Implemented and verified live end-to-end -- approved a real Draft invoic
 
 ---
 
+# Decision 082
+
+Date: 2026-07-20
+
+Decision: Fixed a real, separate, pre-existing bug found while planning Finance Engine's Requirement 2 (stale-invoice flagging): `change_booking_dates` (LOCKED Booking Engine, Decision 029) wrote Contract Engine's raw net price (`price["final_total"]`) directly into `total_amount`, never calling Pricing Engine's `apply_agent_pricing` at all. This predates Decision 069 (Pricing Engine didn't exist when `change_booking_dates` was built) and was never updated when Decision 069 added markup to `create_booking` -- meaning every date change on every booking with agent markup/exclusive-discount silently stripped both, reverting `total_amount` to pure net cost, while `agent_markup_amount`/`agent_exclusive_discount_amount` stayed frozen at their original (now-orphaned, inconsistent) values. A real, active financial-accuracy bug, independent of anything Finance Engine is building -- `total_amount` is what the agent is actually charged.
+
+Fix: after Contract Engine's re-price (`get_room_price`) and `new_nights` are computed, `change_booking_dates` now also calls `pricing_service.apply_agent_pricing(db, booking.agent_id, new_contract.id, price["final_total"], new_nights, booking.room_type_id, price["meal_plan_id"], data.new_arrival_date, data.new_departure_date)` -- same call shape `create_booking` already uses, deliberately against `new_contract.id` (not the old one), since a date change can land in a different contract/season and `ContractExclusiveDiscount` rows are contract-specific. `total_amount`/`agent_markup_amount`/`agent_exclusive_discount_amount` are now all written from this call's result, not from Contract Engine's raw output. `pricing_service` was already imported at the top of `booking/service.py` (Decision 069) -- no new import needed. Same additive-extension pattern as every other LOCKED-engine follow-on in this project; no Pricing Engine code changed.
+
+Reason: `Booking.total_amount` is the actual agent-facing charge, not an internal accounting figure -- silently dropping markup/discount on any date change is a direct, active correctness bug the project owner chose to fix immediately rather than defer, independent of today's Finance Engine work.
+
+Approved By: Daler
+
+Status: Implemented and verified with 3 isolated tests plus full regression against every previously-verified Pricing Engine figure, all real HTTP against real data, all test artifacts cleaned up afterward (confirmed byte-identical `contract_exclusive_discounts`/`exclusive_agents`/`pricing_settings` rows before and after):
+
+- **Isolated 1 (baseline):** Kandima Sky Studio, 2027-03-01 to 2027-03-04, real Exclusive agent + real 10% window discount -> `total_amount: 709.05`, `agent_markup_amount: 30.0`, `agent_exclusive_discount_amount: 75.45`.
+- **Isolated 2 (date change, still inside window):** same booking, dates changed to 2027-03-10 to 2027-03-13 (same season/rate) -> identical `709.05`/`30.0`/`75.45`, freshly recalculated for the new dates, not a stale carry-over (same underlying rate for both ranges, confirmed by inspection).
+- **Isolated 3 (date change, moved outside window):** same booking, dates changed to 2027-04-01 to 2027-04-04 -> `total_amount: 784.5` (net $754.5 + markup $30, no discount), `agent_markup_amount: 30.0`, `agent_exclusive_discount_amount: 0.0` -- proves genuine date-sensitivity, discount correctly disappears while markup persists.
+- **Regression, per-night proration (Decisions 073/074, using the real, untouched persisting discount row):** 2027-02-17 to 2027-02-21 (4 nights, 3 standard + 1 discounted) -> `total_amount: 1020.85`, exact match; nightly breakdown confirmed 3 nights at `$261.50` and the discounted night (2027-02-20) at `$236.35`, byte-identical to Decision 074's documented result. 2027-02-17 to 2027-02-20 (3 nights, entirely before the window) -> `total_amount: 784.5` = `$261.50 x 3`, `agent_exclusive_discount_amount: 0.0`, matching the documented "all undiscounted" case.
+- **Regression, Decision 070's $700.74 (temporary 8% flat discount, June window, no real row touched):** Kandima Sky Studio, 2027-06-01 to 2027-06-05, raw Contract Engine net confirmed `$718.20` first -> `total_amount: 700.744`, exact match.
+- **Regression, Decision 071's $614.56/$686.38 (temporary 10% wildcard + 20% Sky-Studio-specific override, June window):** specific row matching Sky Studio+BB -> `total_amount: 614.56`, exact match; same booking after retargeting the specific row to a different room type (falls back to the 10% wildcard) -> `total_amount: 686.38`, exact match.
+
+All temporary discount rows and test bookings removed after use; the two real, permanent `ContractExclusiveDiscount` rows (Kandima's Sky-Studio/BB Feb-Mar window, and a second hotel's contract-8 row) and `user_id=2`'s real Exclusive-tier status confirmed byte-identical before and after (same row ids, same timestamps).
+
+---
+
 # Decision Template
 
 Decision Number:

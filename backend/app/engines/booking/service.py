@@ -432,10 +432,25 @@ def change_booking_dates(db: Session, booking_id: int, data: BookingDateChangeRe
        selected, get_transfer_price for the new dates too. All raise
        before any write on a real problem (capacity, no season, transfer
        option not active on the new contract).
+    5b. Decision 082: re-applies Pricing Engine's markup/exclusive-
+       discount via apply_agent_pricing, against the NEW contract (may
+       differ from the old one) and the NEW dates — same call shape
+       create_booking itself uses. Fixes a real, previously-shipped bug:
+       this function predates Decision 069 (Pricing Engine didn't exist
+       yet), and after Decision 069 added markup to create_booking, this
+       function was never updated to match — it kept writing Contract
+       Engine's raw net total directly into total_amount, silently
+       stripping markup/exclusive-discount on every date change for
+       every booking, while agent_markup_amount/agent_exclusive_discount_amount
+       stayed frozen at their original (now-orphaned) values. Fixed the
+       same additive way every other LOCKED-engine extension in this
+       project has been: a new call site, no change to Pricing Engine
+       itself.
     6. reserve_allotment on the NEW dates first. If this fails, nothing
        has changed — the OLD dates are still held. Only once that
        succeeds does this release the OLD dates and write the updated
        booking row (new dates, nights, contract_id, rate_id, total_amount,
+       agent_markup_amount, agent_exclusive_discount_amount,
        transfer_total, mandatory_tax_total, date_change_reason,
        dates_changed_at).
 
@@ -509,6 +524,14 @@ def change_booking_dates(db: Session, booking_id: int, data: BookingDateChangeRe
         db, new_contract.id, new_nights, booking.adults, booking.children
     )["total"]
 
+    # Decision 082: re-derive the agent-facing price for the new dates,
+    # same call shape create_booking uses -- new_contract.id since a
+    # date change can land in a different contract/season.
+    agent_pricing = pricing_service.apply_agent_pricing(
+        db, booking.agent_id, new_contract.id, price["final_total"], new_nights,
+        booking.room_type_id, price["meal_plan_id"], data.new_arrival_date, data.new_departure_date,
+    )
+
     contract_service.reserve_allotment(
         db, new_contract.id, booking.room_type_id, data.new_arrival_date, data.new_departure_date
     )
@@ -525,7 +548,9 @@ def change_booking_dates(db: Session, booking_id: int, data: BookingDateChangeRe
             nights=new_nights,
             contract_id=new_contract.id,
             rate_id=price["rate_id"],
-            total_amount=price["final_total"],
+            total_amount=agent_pricing["agent_room_total"],
+            agent_markup_amount=agent_pricing["markup_amount"],
+            agent_exclusive_discount_amount=agent_pricing["exclusive_discount_amount"],
             transfer_total=transfer_total,
             mandatory_tax_total=mandatory_tax_total,
             date_change_reason=data.reason,
