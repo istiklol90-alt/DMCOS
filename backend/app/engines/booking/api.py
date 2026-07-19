@@ -263,7 +263,7 @@ def cancel_booking(
     """Dedicated cancellation flow: computes cancellation_fee via Contract Engine's get_cancellation_policy, releases the reserved allotment, and records the cancellation atomically. Requires a reason (02_Logic_Rules.md #49)."""
     existing = _run(lambda: service.get_booking(db, booking_id))
     _require_owner_or_admin(current_user, existing)
-    return _run(lambda: service.cancel_booking(db, booking_id, data))
+    return _run(lambda: service.cancel_booking(db, booking_id, data, cancelled_by=current_user.id))
 
 
 @router.post("/bookings/{booking_id}/claim", response_model=BookingResponse)

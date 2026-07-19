@@ -188,6 +188,30 @@ def get_invoice_by_booking(db: Session, booking_id: int) -> Invoice:
     return invoice
 
 
+def flag_invoice_for_review(db: Session, booking_id: int, reason: str) -> Invoice | None:
+    """
+    Decision 083 (Requirement 2): called via frontend orchestration from
+    Reservations.tsx's date-change handler, best-effort, after
+    change_booking_dates already succeeded -- mirrors Decision 080's
+    claim-auto-invoice shape exactly, for the same reason (avoids a
+    circular import: this module already imports booking_service, so
+    Booking Engine calling back into Finance Engine at module level
+    would break at import time).
+
+    Silently no-ops (returns None, not an error) in the overwhelmingly
+    common case of no invoice existing yet for this booking, and also
+    when an invoice exists but isn't Draft -- an already-Issued
+    invoice's staleness is a Credit Note's job, not this flag's; a Void
+    invoice is already dead. Never raises for either case, since the
+    caller's date-change action must never appear to fail because of
+    this best-effort side effect.
+    """
+    invoice = repository.get_invoice_by_booking(db, booking_id)
+    if invoice is None or invoice.status != "Draft":
+        return None
+    return repository.update_invoice(db, invoice, review_flag=reason)
+
+
 def list_invoices(db: Session) -> list[Invoice]:
     """Admin-wide, unfiltered -- for the Финансы tab's invoice table.
     No pagination yet, same simplification Pricing Engine's
@@ -200,13 +224,15 @@ def list_invoices_by_agent(db: Session, agent_id: int) -> list[Invoice]:
     return repository.list_invoices_by_agent(db, agent_id)
 
 
-def void_invoice(db: Session, invoice_id: int) -> Invoice:
+def void_invoice(db: Session, invoice_id: int, voided_by: int) -> Invoice:
     invoice = get_invoice(db, invoice_id)
     validators.validate_invoice_not_void(invoice)
-    return repository.update_invoice(db, invoice, status="Void")
+    return repository.update_invoice(
+        db, invoice, status="Void", voided_by=voided_by, voided_at=datetime.utcnow()
+    )
 
 
-def approve_and_send_invoice(db: Session, invoice_id: int) -> Invoice:
+def approve_and_send_invoice(db: Session, invoice_id: int, approved_by: int) -> Invoice:
     """
     Decision 081 (Stage B): "Одобрить и отправить" -- the single
     accounting action that flips Draft -> Issued and emails the agent
@@ -227,9 +253,17 @@ def approve_and_send_invoice(db: Session, invoice_id: int) -> Invoice:
     True; with no SMTP configured anywhere in this project today, that
     means it stays NULL for every real invoice until real credentials
     exist -- an honest, visible signal, not a silent failure.
+
+    Decision 085: approved_by/approved_at are set unconditionally (who
+    and when this action happened, regardless of email/flag state).
+    flag_acknowledged_at is set only if review_flag was populated --
+    the narrower "a flagged invoice was reviewed and approved anyway"
+    signal the frontend uses to stop treating it as urgent, distinct
+    from the unconditional approval record.
     """
     invoice = get_invoice(db, invoice_id)
     validators.validate_invoice_draft(invoice)
+    had_flag = invoice.review_flag is not None
 
     agent = db.query(User).filter(User.id == invoice.agent_id).first()
     if agent is None or not agent.email:
@@ -253,10 +287,14 @@ def approve_and_send_invoice(db: Session, invoice_id: int) -> Invoice:
         "agent_email": agent.email,
     })
 
+    now = datetime.utcnow()
     return repository.update_invoice(
         db, invoice,
         status="Issued",
-        email_sent_at=datetime.utcnow() if sent else None,
+        email_sent_at=now if sent else None,
+        approved_by=approved_by,
+        approved_at=now,
+        flag_acknowledged_at=now if had_flag else None,
     )
 
 

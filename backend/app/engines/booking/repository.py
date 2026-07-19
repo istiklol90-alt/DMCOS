@@ -74,12 +74,15 @@ def update_booking_status(db: Session, booking: Booking, status: str) -> Booking
     return booking
 
 
-def cancel_booking(db: Session, booking: Booking, reason: str, cancellation_fee: Optional[float]) -> Booking:
-    """Set status="Cancelled" together with cancellation_reason, cancelled_at, and cancellation_fee in one write, since these fields only ever change together as part of the same cancellation event (02_Logic_Rules.md #49: "every cancellation must have reason")."""
+def cancel_booking(
+    db: Session, booking: Booking, reason: str, cancellation_fee: Optional[float], cancelled_by: int
+) -> Booking:
+    """Set status="Cancelled" together with cancellation_reason, cancelled_at, cancellation_fee, and (Decision 084) cancelled_by in one write, since these fields only ever change together as part of the same cancellation event (02_Logic_Rules.md #49: "every cancellation must have reason")."""
     booking.status = "Cancelled"
     booking.cancellation_reason = reason
     booking.cancelled_at = datetime.utcnow()
     booking.cancellation_fee = cancellation_fee
+    booking.cancelled_by = cancelled_by
     booking.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(booking)

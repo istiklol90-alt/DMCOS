@@ -25,9 +25,19 @@ class InvoiceResponse(BaseModel):
     created_by: int
     created_at: Optional[datetime] = None
     email_sent_at: Optional[datetime] = None
+    review_flag: Optional[str] = None
+    flag_acknowledged_at: Optional[datetime] = None
+    approved_by: Optional[int] = None
+    approved_at: Optional[datetime] = None
+    voided_by: Optional[int] = None
+    voided_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
+
+
+class FlagForReviewRequest(BaseModel):
+    reason: str
 
 
 # ---------------------------------------------------------------------------

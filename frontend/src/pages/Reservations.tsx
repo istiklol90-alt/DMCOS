@@ -37,6 +37,7 @@ interface Booking {
   cancellation_reason: string | null;
   cancelled_at: string | null;
   cancellation_fee: number | null;
+  cancelled_by: number | null;
   date_change_reason: string | null;
   dates_changed_at: string | null;
   claimed_by: number | null;
@@ -1074,6 +1075,8 @@ function BookingDetail({
       return;
     }
     const token = localStorage.getItem("token") || "";
+    const oldArrival = booking.arrival_date;
+    const oldDeparture = booking.departure_date;
     setChangeDatesSubmitting(true);
     setChangeDatesError(null);
     try {
@@ -1088,6 +1091,22 @@ function BookingDetail({
       onBookingUpdated(updated);
       setChangeDatesOpen(false);
       setChangeDatesReason("");
+      // Decision 083 (Requirement 2): best-effort, frontend-only side
+      // effect -- flags a still-Draft invoice for this booking as
+      // needing review, same shape as Decision 080's claim-auto-invoice.
+      // Silently no-ops server-side if no Draft invoice exists (the
+      // common case) or the invoice already moved past Draft. Never
+      // affects the date change itself, which already succeeded above.
+      if (permissions.canManageInvoices) {
+        fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/flag-for-review`, token, {
+          method: "POST",
+          body: JSON.stringify({
+            reason: `Даты изменены после создания счёта: ${oldArrival} – ${oldDeparture} → ${newCheckIn} – ${newCheckOut}. Суммы могли устареть.`,
+          }),
+        }).catch(() => {
+          // Best-effort -- nothing to recover here even if this fails.
+        });
+      }
     } catch (err: any) {
       setChangeDatesError(err.message || "Не удалось изменить даты");
     } finally {
@@ -1405,7 +1424,13 @@ function BookingDetail({
           <div className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{claimError}</div>
         )}
 
-        {booking.status === "Pending" && booking.claimed_by !== null && (
+        {/* Requirement (audit trail): claimed_by/claimed_at are permanent
+            facts -- "X claimed this at time Y" stays true forever, so this
+            display no longer disappears once the booking leaves Pending
+            (e.g. gets cancelled). Previously gated on status === "Pending",
+            which hid this from view (though never from the database) the
+            moment a booking moved past Pending. */}
+        {booking.claimed_by !== null && (
           <div className="mt-3 rounded-lg bg-ink/5 p-3 text-sm">
             <p className="text-slate/70">
               В работе: <strong className="text-ink">{claimerNames[booking.claimed_by] ?? `#${booking.claimed_by}`}</strong>
@@ -1790,6 +1815,9 @@ function BookingDetail({
             <p className="font-medium text-ink">Отмена</p>
             <p className="mt-1 text-slate/70">Причина: {booking.cancellation_reason || "—"}</p>
             <p className="text-slate/70">Дата отмены: {booking.cancelled_at ? formatDate(booking.cancelled_at) : "—"}</p>
+            <p className="text-slate/70">
+              Отменил: <strong className="text-ink">{booking.cancelled_by !== null ? (claimerNames[booking.cancelled_by] ?? `#${booking.cancelled_by}`) : "—"}</strong>
+            </p>
             <p className="text-slate/70">Штраф: {formatMoney(booking.cancellation_fee, booking.currency)}</p>
           </div>
         )}

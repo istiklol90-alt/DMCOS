@@ -114,6 +114,7 @@ class BookingResponse(BaseModel):
     cancellation_reason: Optional[str] = None
     cancelled_at: Optional[datetime] = None
     cancellation_fee: Optional[float] = None
+    cancelled_by: Optional[int] = None
     date_change_reason: Optional[str] = None
     dates_changed_at: Optional[datetime] = None
     claimed_by: Optional[int] = None

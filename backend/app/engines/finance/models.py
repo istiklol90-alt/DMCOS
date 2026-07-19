@@ -69,6 +69,39 @@ class Invoice(Base):
     # email call site in this project (email is always best-effort,
     # never blocks the real action).
     email_sent_at = Column(DateTime(timezone=True), nullable=True)
+    # Decision 083 (Requirement 2): NULL = clean; non-NULL = both the
+    # "needs review" signal and the human-readable reason in one field
+    # (e.g. "Даты изменены после создания счёта: ..."), set via
+    # frontend orchestration from Reservations.tsx's date-change
+    # handler -- same pattern as Decision 080's claim-auto-invoice,
+    # avoiding both a circular import (Finance already imports Booking
+    # Engine's service.py) and any touch of LOCKED Booking Engine.
+    # Only ever set on a Draft invoice -- an already-Issued invoice's
+    # staleness is a Credit Note's job, not this flag's. Never
+    # auto-cleared: the recovery path for a genuinely-wrong flagged
+    # Draft is Void + recreate (reruns compute_booking_financials
+    # against the booking's current state), not an in-place edit.
+    review_flag = Column(String(500), nullable=True)
+    # Decision 085: set only when approve_and_send_invoice runs while
+    # review_flag is populated -- the "this was reviewed and
+    # acknowledged" signal, distinct from review_flag's text (which
+    # never changes, permanent history). Used by the frontend to stop
+    # rendering a flagged-but-approved invoice as urgent (red row,
+    # sort-to-top, badge), without ever hiding or clearing the
+    # underlying reason.
+    flag_acknowledged_at = Column(DateTime(timezone=True), nullable=True)
+    # Decision 085 (audit-trail completeness, Requirement raised via
+    # live project-owner review): who approved/voided this invoice, and
+    # when. Previously only created_by/created_at existed -- who took
+    # the approve or void action was never captured at all. approved_at/
+    # voided_at are unconditional (always set on their respective
+    # action), deliberately separate from flag_acknowledged_at (which
+    # only fires when a flag existed) -- these answer "when was this
+    # approved" even for the common case of an invoice with no flag.
+    approved_by = Column(Integer, nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    voided_by = Column(Integer, nullable=True)
+    voided_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class CreditNote(Base):

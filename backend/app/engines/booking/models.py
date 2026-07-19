@@ -108,6 +108,12 @@ class Booking(Base):
     cancellation_reason = Column(Text, nullable=True)
     cancelled_at = Column(DateTime, nullable=True)
     cancellation_fee = Column(Float, nullable=True)
+    # Decision 084: who cancelled it -- same plain-Integer,
+    # not-a-ForeignKey convention as claimed_by/created_by (validated
+    # against models.user.User directly). A real, previously-open audit
+    # gap: cancellation_reason/cancelled_at/cancellation_fee were always
+    # captured, but WHO clicked cancel was never recorded anywhere.
+    cancelled_by = Column(Integer, nullable=True)
     # Date-change audit fields (Decision 029/Stage 1) — mirror the
     # cancellation fields' shape exactly. Only the LATEST change's reason/
     # timestamp is retained (no history table) if dates are changed more

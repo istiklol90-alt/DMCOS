@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -11,6 +11,7 @@ from app.engines.finance import service
 from app.engines.finance.repository import get_db
 from app.engines.finance.schemas import (
     InvoiceResponse,
+    FlagForReviewRequest,
     CreditNoteResponse,
     CreditNoteCreate,
     AgentStatementResponse,
@@ -97,16 +98,31 @@ def get_agent_invoices(agent_id: int, db: Session = Depends(get_db), current_use
     return service.list_invoices_by_agent(db, agent_id)
 
 
+@router.post("/bookings/{booking_id}/flag-for-review")
+def flag_invoice_for_review(
+    booking_id: int, data: FlagForReviewRequest, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """No fixed response_model -- deliberately returns either 204 (no
+    Draft invoice exists for this booking, the common case) or the
+    flagged InvoiceResponse, matching service.flag_invoice_for_review's
+    silent-no-op contract exactly."""
+    _require_admin(current_user)
+    result = service.flag_invoice_for_review(db, booking_id, data.reason)
+    if result is None:
+        return Response(status_code=204)
+    return InvoiceResponse.model_validate(result)
+
+
 @router.post("/invoices/{invoice_id}/void", response_model=InvoiceResponse)
 def void_invoice(invoice_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _require_admin(current_user)
-    return _run(lambda: service.void_invoice(db, invoice_id))
+    return _run(lambda: service.void_invoice(db, invoice_id, voided_by=current_user.id))
 
 
 @router.post("/invoices/{invoice_id}/approve-and-send", response_model=InvoiceResponse)
 def approve_and_send_invoice(invoice_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _require_admin(current_user)
-    return _run(lambda: service.approve_and_send_invoice(db, invoice_id))
+    return _run(lambda: service.approve_and_send_invoice(db, invoice_id, approved_by=current_user.id))
 
 
 # ---------------------------------------------------------------------------

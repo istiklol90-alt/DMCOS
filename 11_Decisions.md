@@ -4996,6 +4996,66 @@ All temporary discount rows and test bookings removed after use; the two real, p
 
 ---
 
+# Decision 083
+
+Date: 2026-07-20
+
+Decision: Requirements 1 and 2 from live project-owner review, built on top of Decision 082's now-correct `change_booking_dates`.
+
+**Requirement 1 -- invoice detail modal.** New "Подробнее" button per invoice row in `Finance.tsx`, opening `InvoiceDetailModal` (frontend-only, no new backend calculation): fetches the booking (`GET /booking-engine/bookings/{id}`), room type name (`GET /hotel-engine/room-types/{id}`), meal plan label (`GET /contract-engine/contracts/{id}/meal-plans`, filtered), and the exact same three Contract Engine breakdown calls `Reservations.tsx`'s `BookingDetail` already makes (`get_room_price`/`get_transfer_price`/`get_mandatory_tax`) for the booking's *current* fields. Shows two panels: "Зафиксировано в счёте" (the invoice's own frozen `subtotal`/`discount`/`commission`/`tax`/`total`) and "Текущее состояние брони" (the live breakdown).
+
+**Real bug caught during this same session's own verification, fixed before being shown as done:** the live-total comparison initially used `roomBreakdown.final_total` (Contract Engine's raw net, pre-Pricing-Engine) against `invoice.total` (the agent-facing, post-markup/discount price) -- these can never match for any invoice with real markup/discount, which would have shown a false "stale" warning on essentially every invoice, all the time, defeating the entire point of the indicator. Fixed to use `booking.total_amount` (already the current agent-facing price, kept fresh by Decision 082) for the comparison instead -- verified both directions: a freshly-invoiced, unchanged booking now correctly shows **no** mismatch (`709.05 + 828 + 72 = 1609.05`, exact match), and the same booking after a real date change correctly **does** show one (`784.5 + 828 + 72 = 1684.5` vs. the invoice's frozen `1609.05`, a real $75.45 gap -- exactly the lost discount). `roomBreakdown.base_total`/`supplements_total` are still shown as informational line items (labeled "нетто"), alongside the booking's current `agent_markup_amount`/`agent_exclusive_discount_amount`, so the current-state panel is a fair line-by-line match against the invoice panel, not just a lone total.
+
+**Requirement 2 -- staleness review flag.** New nullable `Invoice.review_flag` (String(500)) -- NULL means clean, non-NULL carries both the "needs review" signal and the human-readable reason in one field, added to the existing SQLite table via a plain `ALTER TABLE ADD COLUMN`. New `service.flag_invoice_for_review(db, booking_id, reason)`, silently no-op (`None`) if no invoice exists for the booking or it's not `Draft` (an already-`Issued` invoice's staleness is a Credit Note's job, not this flag's) -- new endpoint `POST /finance-engine/bookings/{booking_id}/flag-for-review`, deliberately no fixed `response_model` since it returns either `204` (no-op) or the flagged `InvoiceResponse`.
+
+**Trigger is frontend orchestration, same shape as Decision 080's claim-auto-invoice, for the same reason:** `Reservations.tsx`'s `handleChangeDatesSubmit` fires a best-effort second call to this endpoint after `change-dates` already succeeded, capturing the old dates before they're overwritten by `onBookingUpdated`. Calling Booking Engine's `change_booking_dates` into Finance Engine directly at the backend would create a genuine circular import (Finance already imports `booking_service` at module level) -- not just a style preference this time, an actual blocking technical constraint.
+
+**At approval:** `approve_and_send_invoice` stays unblocked server-side by design (a flag accounting already reviewed and confirmed fine shouldn't get stuck with no recovery path) -- verified directly: approving a flagged Draft succeeded, and `review_flag` persists unchanged afterward (never auto-cleared, consistent with "the invoice's history is its own record"). `Finance.tsx`'s "Одобрить и отправить" click now shows an explicit extra confirmation with the flag's exact reason when one is set, forcing acknowledgment at the decision point without a hard backend gate. The invoice table also shows a ⚠ icon (hover for the reason) next to a flagged row's number.
+
+Reason: Accounting had no way to verify an invoice's numbers before approving beyond the bare total (Requirement 1), and no warning at all if a booking changed after its Draft invoice was created (Requirement 2) -- both real, project-owner-identified gaps found through actual live use, not speculative hardening.
+
+Approved By: Daler
+
+Status: Implemented and verified end-to-end via real HTTP (all endpoints, real UTF-8 payload confirmed byte-correct after an initial curl/bash encoding artifact was ruled out as a false alarm, not a real bug) plus `tsc -b` clean and Vite live-transform confirmed for all touched files. No-op cases verified for both "no invoice exists" and "invoice already Issued." All test bookings/invoices cancelled/left as real examples per this session's established cleanup discipline.
+
+---
+
+# Decision 084
+
+Date: 2026-07-20
+
+Decision: `Booking.cancelled_by` -- an additive extension to LOCKED Booking Engine, same discipline as Decision 082. Traced the full audit trail via live project-owner review (not from memory): `cancellation_reason`/`cancelled_at`/`cancellation_fee` were always captured, but WHO clicked cancel was never recorded anywhere, confirmed by reading `repository.cancel_booking` directly. New nullable `Integer` column (plain, no ForeignKey, same convention as `claimed_by`/`created_by`), added via a plain SQLite `ALTER TABLE ADD COLUMN`. `service.cancel_booking`/`repository.cancel_booking` both gained a `cancelled_by` parameter; `api.py`'s cancel endpoint passes `current_user.id` through, mirroring how `claim_booking` already resolves the acting user.
+
+Also fixed, same investigation: `Reservations.tsx`'s "В работе: X" (who claimed it) display was gated on `booking.status === "Pending"`, hiding it from view (though never from the database) the moment a booking left Pending -- e.g. got cancelled. The fact "X claimed this at time Y" is permanently true regardless of what happened after, so the gate was dropped for that specific display block. A second, similarly-gated block (the LPO hotel-correspondence panel) was deliberately left untouched -- that one is a genuinely Pending-only *active workflow tool*, not a passive historical fact, and conflating the two would have been wrong.
+
+Reason: Real business disputes/reviews need to trace "who cancelled this and when" even after a booking is long closed -- a genuine, previously-unrecorded audit gap, not a hypothetical one.
+
+Approved By: Daler
+
+Status: Implemented, migration applied, `tsc -b` clean. Verified as part of Decision 085's combined full-lifecycle trace below.
+
+---
+
+# Decision 085
+
+Date: 2026-07-20
+
+Decision: Finance Engine audit-trail completeness plus two refinements to the live "Требует внимания" urgent-styling mechanism (Decision 083), found via the same live project-owner review as Decision 084.
+
+**Audit trail:** `Invoice` gained `approved_by`/`approved_at` (set unconditionally by `approve_and_send_invoice`, regardless of flag/email state) and `voided_by`/`voided_at` (set unconditionally by `void_invoice`) -- previously only `created_by`/`created_at` existed; who took the approve or void action was never captured at all. Both API endpoints now pass `current_user.id` through. `InvoiceDetailModal` gained a "Создано/Одобрено/Аннулировано" block showing each actor and timestamp, resolved via a `userNames` lookup (the existing agent-name map, renamed from `agentNames` to `userNames` since it's genuinely a full `/users` directory, now used for admin ids too, not just agents).
+
+**"Требует внимания" acknowledgment fix:** a real, live-reported bug -- two already-cancelled/voided test bookings kept showing the badge, red row, and sort-to-top treatment indefinitely, since neither `void_invoice` nor `approve_and_send_invoice` had ever touched `review_flag` or its urgency, and voiding wasn't excluded from the "urgent" condition at all. New nullable `Invoice.flag_acknowledged_at`, set only by `approve_and_send_invoice` when `review_flag` was already populated -- the "this was reviewed and approved anyway" signal, deliberately distinct from `approved_at` (unconditional) and from `review_flag`'s own text (never touched, permanent history regardless of status). New shared frontend helper `isUrgentFlag(inv) = review_flag && !flag_acknowledged_at && status !== "Void"`, used identically for sorting, row styling, and the badge -- combining both exit conditions (Void, acknowledged-via-approval) in one place instead of two patches that could drift apart. `InvoiceDetailModal` never hides `review_flag`'s text regardless of urgency -- only the styling switches, from an urgent coral banner to a calm historical note (with the acknowledgment date, when one exists).
+
+**"Void" vs. "Cancelled" terminology:** kept as distinct technical terms, not unified -- an invoice can be voided for reasons unrelated to the booking (e.g. correcting a data-entry mistake on an otherwise-valid booking), so merging the words would misrepresent that common case. Instead, the displayed label for Invoice's `Void` status specifically (leaving `Draft`/`Issued`/the Cashback statuses untouched) now reads "Аннулирован" in the list, and in the detail modal (where the booking is already fetched at zero extra cost) gains a contextual qualifier -- "Аннулирован (бронь отменена)" / "(бронь отклонена отелем)" -- only when the linked booking is genuinely terminal too.
+
+Reason: A flagged-but-dead-or-resolved invoice permanently squatting at the top of the list defeats the entire purpose of the triage feature Decision 083 built; and real business review needs to know who took every action, not just what happened and when the booking-side actor was concerned -- both real, live-discovered gaps, not speculative hardening.
+
+Approved By: Daler
+
+Status: Implemented, `tsc -b` clean, all migrations applied. Verified via a full real lifecycle trace (create -> claim -> invoice -> flag -> cancel) confirming every actor/timestamp stays visible in the detail views -- see the verification results in this session's own record for the exact real data confirmed.
+
+---
+
 # Decision Template
 
 Decision Number:

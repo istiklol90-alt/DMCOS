@@ -365,13 +365,13 @@ def update_booking_status(db: Session, booking_id: int, status: str) -> Booking:
     return repository.update_booking_status(db, booking, status)
 
 
-def cancel_booking(db: Session, booking_id: int, data: BookingCancelRequest) -> Booking:
+def cancel_booking(db: Session, booking_id: int, data: BookingCancelRequest, cancelled_by: int) -> Booking:
     """
     Cancel a booking: computes the cancellation fee from Contract Engine's
     get_cancellation_policy (see _resolve_cancellation_fee for the
     tier-selection logic), releases the reserved allotment, then records
-    the cancellation (status, reason, timestamp, fee) atomically via
-    repository.cancel_booking.
+    the cancellation (status, reason, timestamp, fee, and per Decision
+    086, who) atomically via repository.cancel_booking.
     """
     booking = _require_booking(db, booking_id)
     validate_status_transition(booking.status, "Cancelled")
@@ -383,7 +383,7 @@ def cancel_booking(db: Session, booking_id: int, data: BookingCancelRequest) -> 
         db, booking.contract_id, booking.room_type_id, booking.arrival_date, booking.departure_date
     )
 
-    return repository.cancel_booking(db, booking, data.reason, cancellation_fee)
+    return repository.cancel_booking(db, booking, data.reason, cancellation_fee, cancelled_by)
 
 
 def claim_booking(db: Session, booking_id: int, claimed_by: int) -> Booking:
