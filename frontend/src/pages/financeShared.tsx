@@ -102,6 +102,18 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
   );
 }
 
+// Decision 099: takes the narrowest shape it actually uses, not the
+// full Invoice type -- lets Reservations.tsx's much smaller InvoiceInfo
+// (booking detail view's own invoice summary, not the full Финансы
+// Invoice shape) pass structurally without needing every Invoice field
+// it doesn't have and doesn't need. Invoice itself still satisfies this
+// shape automatically, so no existing call site changes.
+interface UrgentFlaggable {
+  status: string;
+  review_notes: InvoiceReviewNote[];
+  flag_acknowledged_at: string | null;
+}
+
 // Decision 093: urgency is computed from the latest review note's
 // timestamp vs. flag_acknowledged_at, not from a single field that has
 // to be remembered and cleared -- mirrors the exact same logic as the
@@ -110,7 +122,7 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
 // review_flag+flag_acknowledged_at pair: a second flag after
 // acknowledgment updated the text but never reset flag_acknowledged_at,
 // so it silently never re-appeared as urgent.
-export function isUrgentFlag(inv: Invoice): boolean {
+export function isUrgentFlag(inv: UrgentFlaggable): boolean {
   if (inv.status === "Void" || inv.review_notes.length === 0) return false;
   if (!inv.flag_acknowledged_at) return true;
   const latestNote = inv.review_notes[inv.review_notes.length - 1];

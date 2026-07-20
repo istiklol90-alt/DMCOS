@@ -5300,6 +5300,42 @@ Status: Implemented and verified against all 5 planned checks, real HTTP, no bro
 
 ---
 
+# Decision 099
+
+Date: 2026-07-20
+
+Decision: A flagged invoice was previously only visible in Финансы→Счета -- a manager looking directly at a booking in Бронирования had no indication a pending financial review existed for it. `Reservations.tsx`'s `BookingDetail` now shows a small coral badge ("⚠ Требуется проверка счёта") inline with `StatusBadge`, whenever the booking's invoice is currently urgent.
+
+**No new fetch, no new backend endpoint.** `BookingDetail` already fetches the booking's invoice (`GET /finance-engine/bookings/{id}/invoice`, gated on `permissions.canManageInvoices` -- admin-only, the same boundary Decision 098 deliberately preserved: an agent can trigger a review flag on their own booking now, but still cannot see any invoice data, their own included). `InvoiceInfo` extended with `review_notes`/`flag_acknowledged_at`, reusing the shared `InvoiceReviewNote` type from `financeShared.tsx` rather than redefining it. Urgency reuses the exact shared `isUrgentFlag()` function, not a third reimplementation -- required loosening its parameter type from the full `Invoice` interface to a new minimal `UrgentFlaggable` shape (`status`/`review_notes`/`flag_acknowledged_at`, the only 3 fields it actually reads), since `InvoiceInfo` is deliberately much smaller than `Invoice` and doesn't have (and shouldn't need) the rest. `Invoice` itself still satisfies `UrgentFlaggable` automatically, so no existing call site in `financeShared.tsx`/`Invoices.tsx` changed behavior.
+
+**Freshness fix, without which the badge would only ever appear after closing and reopening the booking:** the flag-for-review orchestration call (Decision 083/094/098) previously discarded its response entirely. It now feeds the returned invoice into `setInvoice(...)` -- but only when `permissions.canManageInvoices` is true. This guard matters: Decision 098 means this call now fires for agents too, and an agent's local `invoice` state must stay exactly as untouched (`null`) as it always was -- populating it from this response would leak invoice visibility to a role that's still supposed to be fully blocked from seeing it, undermining Decision 098's own explicitly-preserved boundary.
+
+**Deliberately informational only, not clickable** -- confirmed with the project owner given the already-documented `App.tsx`/`router.tsx` navigation mismatch (CLAUDE.md's Known Issues): real click-through to the specific invoice in Финансы would need new cross-tab plumbing, scoped as a separate future task, not bundled here. The badge's tooltip shows the latest review note's full content (via the existing `formatSingleNote`), so a manager sees *what* needs review without leaving the page even without a link.
+
+Reason: the whole point of Decisions 083/093/094/098 was making sure a booking change always produces a real, accurate review signal -- but that signal was only surfaced in one of the two places a manager would naturally look. Closing that gap directly serves the same "manager should never have to already know to go looking" principle Decision 087's own urgent panel was built around.
+
+Approved By: Daler
+
+Status: Implemented and verified live, real HTTP, no browser available (ran the actual `isUrgentFlag`/`formatSingleNote` frontend logic in Node against real API responses to confirm rendering). **Admin scenario:** created a booking + Issued invoice, confirmed no badge before any flag (empty `review_notes`); admin changed dates, captured the exact `flag-for-review` response now fed to `setInvoice(...)` -- `isUrgentFlag` returned `true` against it and the tooltip rendered exactly `"Изменено 1 (20.07.2026): Было [01.05.2027 – 04.05.2027], KM26_03, итого 1 468,65 $ → Стало [01.06.2027 – 05.06.2027], KM26_03, итого 1 268,20 $ (разница: -200,45 $)"` -- confirming the badge appears immediately without reopening the view. **Agent scenario:** using the same real-agent-JWT technique as Decision 098, agent 2 changed their own booking's dates and triggered the flag; confirmed the badge (informational, admin-only by design -- the agent never sees it themselves) correctly renders on the very first admin fetch of that booking afterward, with zero special refresh step needed beyond a normal view -- the full agent-triggers/admin-sees loop, matching the just-confirmed scope (no click-through). Agent's real password hash restored exactly (byte-verified) immediately after testing; all test bookings/invoices cancelled/voided via real endpoints afterward.
+
+---
+
+# Decision 100
+
+Date: 2026-07-20
+
+Decision: Traced a real, separate gap first, precisely, before any fix: `BookingsList`'s main table (`Reservations.tsx`) fetches only `/booking-engine/bookings`, `/hotel-engine/hotels`, `/users`, room-types, meal-plans, and cancellation-policies -- zero calls to `/finance-engine/*` anywhere in the list-loading path. Confirmed the `Статус` column renders only `<StatusBadge status={b.status}/>` (the booking's own lifecycle status), and confirmed the existing `AIInsightStrip`/`aiFlags` list-level mechanism doesn't already cover this either -- `computeRecentlyChangedFlags` is purely `dates_changed_at` time-windowed, with no invoice-awareness at all, so it both over-reports (flags a booking with no invoice) and under-reports (stops flagging after its time window even if the invoice's flag is still genuinely unacknowledged) relative to real review-flag state. So Decision 099's detail-view badge only ever helped a manager who'd already opened that specific booking -- a manager scanning the list itself had no signal at all.
+
+**No new backend endpoint.** `GET /finance-engine/invoices/urgent` (Decision 087) already returns exactly the globally-urgent invoice set, already server-bounded by construction ("should be rare, not proportional to total invoice count," per its own docstring) -- reused directly rather than building a second bulk-lookup mechanism, which guarantees the list badge can never drift from what Финансы→Счета's own urgent panel shows, since it's the literal same query, not a parallel reimplementation. `BookingsList`'s existing `load()` effect fetches this once (not per-row -- the exact N-individual-requests trap this reuse avoids), gated on `permissions.canManageInvoices` (same boundary Decision 099 established: an agent never sees invoice data, their own bookings included), and builds a `Record<number, InvoiceInfo>` keyed by `booking_id` (a new optional field on `InvoiceInfo`, populated only by this list-level fetch -- `BookingDetail`'s own single-booking invoice fetch already knows which booking it's for from the URL and never needs it). The `Статус` cell renders the same coral badge/tooltip pattern Decision 099 introduced (compact "⚠ Счёт" label given table-cell width constraints, full detail in the tooltip via the same `formatSingleNote`) whenever a row's `booking_id` has a matching entry in that map.
+
+Reason: the review-flag mechanism (Decisions 083/093/094/098/099) is only useful if a manager actually encounters the signal during their normal workflow -- and normal workflow is scanning the list, not opening every booking individually to check. Reusing the already-proven, already-scale-safe `/invoices/urgent` query was the correct fix, not a new endpoint duplicating logic that already exists and is already trusted.
+
+Approved By: Daler
+
+Status: Implemented and verified live, real HTTP, no browser available. Created three real bookings with Issued invoices in three distinct states -- (A) flagged, unacknowledged; (B) flagged then acknowledged; (C) never flagged -- and confirmed `GET /invoices/urgent` returned exactly booking A's `booking_id` among the three (B and C correctly absent). Ran the actual list-mapping and badge/tooltip logic in Node against this real response: `booking 48 (A) -> badge shown: true`, `booking 49 (B) -> badge shown: false`, `booking 50 (C) -> badge shown: false`, with the tooltip rendering byte-identical to Финансы's own detail-view content for the same invoice. Confirmed the fetch itself never fires for a non-`canManageInvoices` view (same `if` guard, same structural pattern already proven reliable in Decision 099 -- no separate live agent-token test needed for this specific mechanism). All test bookings/invoices cancelled/voided via real endpoints afterward.
+
+---
+
 # Decision Template
 
 Decision Number:

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { API_URL } from "../config";
 import { DateRangePicker } from "./HotelSearch";
+import type { InvoiceReviewNote } from "./financeShared";
+import { isUrgentFlag, formatSingleNote } from "./financeShared";
 
 // ---------------------------------------------------------------------------
 // Types (only the fields this screen actually reads)
@@ -137,6 +139,18 @@ interface InvoiceInfo {
   total: number;
   currency: string;
   status: string;
+  // Decision 099: reuses the shared InvoiceReviewNote type from
+  // financeShared.tsx rather than redefining it -- lets this booking
+  // detail view show the same "needs review" indicator Финансы already
+  // has, via the same shared isUrgentFlag() function.
+  review_notes: InvoiceReviewNote[];
+  flag_acknowledged_at: string | null;
+  // Decision 100: only populated when this InvoiceInfo comes from the
+  // list-level GET /invoices/urgent fetch (BookingDetail's own
+  // GET .../bookings/{id}/invoice fetch already knows which booking
+  // it's for from the URL, so it never needs this) -- lets the main
+  // table key urgent invoices back to their booking row.
+  booking_id?: number;
 }
 
 type SortKey = "created_at" | "arrival_date" | "status" | "net";
@@ -1222,9 +1236,24 @@ function BookingDetail({
           old_arrival_date: oldArrival,
           old_departure_date: oldDeparture,
         }),
-      }).catch(() => {
-        // Best-effort -- nothing to recover here even if this fails.
-      });
+      })
+        .then((result) => {
+          // Decision 099: only surface the refreshed invoice locally
+          // for a caller who's actually allowed to see invoice data at
+          // all (canManageInvoices) -- Decision 098 lets an agent
+          // trigger this flag on their own booking, but they still
+          // can't see Финансы data, so their own local `invoice` state
+          // must stay whatever it already was (null), not get
+          // populated from this response. Also feeds the "needs
+          // review" badge next to StatusBadge, so it appears
+          // immediately without reopening this view.
+          if (permissions.canManageInvoices && result) {
+            setInvoice(result);
+          }
+        })
+        .catch(() => {
+          // Best-effort -- nothing to recover here even if this fails.
+        });
     } catch (err: any) {
       setChangeDatesError(err.message || "Не удалось изменить даты");
     } finally {
@@ -1480,7 +1509,21 @@ function BookingDetail({
         </div>
 
         <div className="mt-4 flex items-center justify-between gap-3">
-          <StatusBadge status={booking.status} />
+          <div className="flex items-center gap-2">
+            <StatusBadge status={booking.status} />
+            {invoice && isUrgentFlag(invoice) && (
+              <span
+                className="inline-flex cursor-help items-center gap-1 rounded-full bg-coral/15 px-2.5 py-1 text-xs font-medium text-coral"
+                title={
+                  invoice.review_notes.length > 0
+                    ? formatSingleNote(invoice.review_notes[invoice.review_notes.length - 1], invoice.currency)
+                    : undefined
+                }
+              >
+                ⚠ Требуется проверка счёта
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             {permissions.canClaim && booking.status === "Pending" && booking.claimed_by === null && (
               <button
@@ -1999,6 +2042,13 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
   const [mealPlans, setMealPlans] = useState<Record<number, MealPlanInfo>>({});
   const [agentNames, setAgentNames] = useState<Record<number, string>>({});
   const [cancellationTiers, setCancellationTiers] = useState<Record<string, CancellationPolicy[]>>({});
+  // Decision 100: keyed by booking_id, populated from ONE bulk
+  // GET /invoices/urgent call -- the exact same server-bounded query
+  // Финансы→Счета's own urgent panel already uses (Decision 087), so
+  // this list badge can never drift from what that panel shows. Never
+  // fetched per-row -- that's the N-individual-requests trap this
+  // reuse specifically avoids.
+  const [urgentInvoicesByBooking, setUrgentInvoicesByBooking] = useState<Record<number, InvoiceInfo>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -2038,6 +2088,19 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
         const hotelMap: Record<number, string> = {};
         hotelsData.forEach((h) => (hotelMap[h.id] = h.hotel_name));
         setHotels(hotelMap);
+
+        // Decision 100: same guard as Decision 099's detail-view badge
+        // -- an agent never sees invoice data, their own bookings
+        // included, so this list-level badge is gated on the same
+        // canManageInvoices permission, not fetched at all otherwise.
+        if (permissions.canManageInvoices) {
+          const urgentInvoices = await fetchJson<InvoiceInfo[]>("/finance-engine/invoices/urgent", token);
+          const urgentMap: Record<number, InvoiceInfo> = {};
+          urgentInvoices.forEach((inv) => {
+            if (inv.booking_id !== undefined) urgentMap[inv.booking_id] = inv;
+          });
+          setUrgentInvoicesByBooking(urgentMap);
+        }
 
         // Agent-scoped view never shows the Агент column/filter, so skip
         // fetching the full user list — no reason to expose other users'
@@ -2106,7 +2169,7 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
     // passing an inline object literal would otherwise create a new
     // reference every render and refetch in a loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope.type, scope.type === "agent" ? scope.agentId : null]);
+  }, [scope.type, scope.type === "agent" ? scope.agentId : null, permissions.canManageInvoices]);
 
   const aiFlags = useMemo(() => {
     return [
@@ -2443,7 +2506,26 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
                       </span>
                     </td>
                     <td className="px-4 py-3.5">
-                      <StatusBadge status={b.status} />
+                      <div className="flex items-center gap-1.5">
+                        <StatusBadge status={b.status} />
+                        {urgentInvoicesByBooking[b.id] && (
+                          <span
+                            className="inline-flex cursor-help items-center gap-1 rounded-full bg-coral/15 px-2 py-0.5 text-[11px] font-medium text-coral"
+                            title={
+                              urgentInvoicesByBooking[b.id].review_notes.length > 0
+                                ? formatSingleNote(
+                                    urgentInvoicesByBooking[b.id].review_notes[
+                                      urgentInvoicesByBooking[b.id].review_notes.length - 1
+                                    ],
+                                    urgentInvoicesByBooking[b.id].currency
+                                  )
+                                : undefined
+                            }
+                          >
+                            ⚠ Счёт
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3.5 text-slate/70">{b.currency}</td>
                     <td className="whitespace-nowrap px-4 py-3.5 font-medium text-ink">{formatNumber(net)}</td>
