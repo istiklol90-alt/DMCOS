@@ -56,15 +56,19 @@ function InvoiceTable({
   onVoid,
   onApprove,
   onDetail,
+  onAcknowledge,
   voidingId,
   approvingId,
+  acknowledgingId,
 }: {
   invoices: Invoice[];
   onVoid: (id: number) => void;
   onApprove: (inv: Invoice) => void;
   onDetail: (inv: Invoice) => void;
+  onAcknowledge: (inv: Invoice) => void;
   voidingId: number | null;
   approvingId: number | null;
+  acknowledgingId: number | null;
 }) {
   const sorted = [...invoices].sort((a, b) => (isUrgentFlag(b) ? 1 : 0) - (isUrgentFlag(a) ? 1 : 0));
 
@@ -146,6 +150,16 @@ function InvoiceTable({
                         {approvingId === inv.id ? "..." : "Одобрить и отправить"}
                       </button>
                     )}
+                    {inv.status === "Issued" && isUrgentFlag(inv) && (
+                      <button
+                        type="button"
+                        onClick={() => onAcknowledge(inv)}
+                        disabled={acknowledgingId === inv.id}
+                        className="appearance-none rounded-lg border-0 bg-coral px-3.5 py-1.5 text-xs font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+                      >
+                        {acknowledgingId === inv.id ? "..." : "Отметить как проверено"}
+                      </button>
+                    )}
                     {inv.status !== "Void" && (
                       <button
                         type="button"
@@ -178,6 +192,7 @@ const Invoices = () => {
 
   const [voidingId, setVoidingId] = useState<number | null>(null);
   const [approvingId, setApprovingId] = useState<number | null>(null);
+  const [acknowledgingId, setAcknowledgingId] = useState<number | null>(null);
   const [detailInvoice, setDetailInvoice] = useState<Invoice | null>(null);
 
   async function loadUrgent() {
@@ -250,6 +265,21 @@ const Invoices = () => {
     }
   }
 
+  async function handleAcknowledge(invoice: Invoice) {
+    const confirmMessage = `⚠ ${invoice.review_flag}\n\nОтметить как проверено? Счёт останется Issued без повторной отправки агенту.`;
+    if (!window.confirm(confirmMessage)) return;
+    const token = localStorage.getItem("token") || "";
+    try {
+      setAcknowledgingId(invoice.id);
+      await fetchJson<Invoice>(`/finance-engine/invoices/${invoice.id}/acknowledge-flag`, token, { method: "POST" });
+      await refreshBoth();
+    } catch (err: any) {
+      alert(err.message || "Не удалось отметить счёт как проверенный");
+    } finally {
+      setAcknowledgingId(null);
+    }
+  }
+
   return (
     <div className="pb-10">
       {/* Always-loaded, always-small: the one place triage doesn't require
@@ -269,8 +299,10 @@ const Invoices = () => {
               onVoid={handleVoid}
               onApprove={handleApproveAndSend}
               onDetail={setDetailInvoice}
+              onAcknowledge={handleAcknowledge}
               voidingId={voidingId}
               approvingId={approvingId}
+              acknowledgingId={acknowledgingId}
             />
           </div>
         )}
@@ -312,14 +344,25 @@ const Invoices = () => {
               onVoid={handleVoid}
               onApprove={handleApproveAndSend}
               onDetail={setDetailInvoice}
+              onAcknowledge={handleAcknowledge}
               voidingId={voidingId}
               approvingId={approvingId}
+              acknowledgingId={acknowledgingId}
             />
           </div>
         )}
       </div>
 
-      {detailInvoice && <InvoiceDetailModal invoice={detailInvoice} onClose={() => setDetailInvoice(null)} />}
+      {detailInvoice && (
+        <InvoiceDetailModal
+          invoice={detailInvoice}
+          onClose={() => setDetailInvoice(null)}
+          onAcknowledged={async () => {
+            setDetailInvoice(null);
+            await refreshBoth();
+          }}
+        />
+      )}
     </div>
   );
 };

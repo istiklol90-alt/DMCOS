@@ -8,6 +8,7 @@ import Counteragents from "./Counteragents";
 import Invoices from "./Invoices";
 import Balance from "./Balance";
 import Cashback from "./Cashback";
+import AdminNav from "./AdminNav";
 
 type StatKey = "all" | "agent" | "admin" | "active" | "never_logged" | "inactive";
 type RegStatus = "pending" | "approved" | "rejected";
@@ -141,6 +142,11 @@ const AdminPanel = () => {
     setFilterType(type === filterType ? "all" : type);
   };
 
+  const handleLogout = () => {
+    localStorage.clear();
+    window.location.href = "/";
+  };
+
   const statCards: { key: StatKey; label: string; value: number }[] = [
     { key: "all", label: "Всего", value: stats.total },
     { key: "agent", label: "Агенты", value: stats.agents },
@@ -152,112 +158,25 @@ const AdminPanel = () => {
 
   if (loading) {
     return (
-      <div className="min-h-[calc(100vh-78px)] bg-sand px-5 py-10 font-sans text-slate">
+      <div className="min-h-screen bg-sand px-5 py-4 font-sans text-slate">
         <div className="mx-auto max-w-[1400px]">
-          <h1 className="font-display text-3xl font-semibold text-ink">Admin Panel</h1>
-          <p className="mt-10 text-center text-sm text-slate/60">Загрузка...</p>
+          <p className="text-center text-sm text-slate/60">Загрузка...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-[calc(100vh-78px)] bg-sand px-5 py-10 font-sans text-slate">
+    <div className="min-h-screen bg-sand px-5 py-4 font-sans text-slate">
       <div className="mx-auto max-w-[1400px]">
-        <h1 className="font-display text-3xl font-semibold text-ink">Admin Panel</h1>
-        <p className="mt-1 text-sm text-slate/70">Управление системой</p>
-
-        {/* ===== ВКЛАДКИ ===== */}
-        <div className="mt-6 flex gap-2 border-b border-ink/10">
+        <div className="flex items-center justify-between gap-4 border-b border-ink/10">
+          <AdminNav activeTab={activeTab} onSelect={(key) => setActiveTab(key as AdminTab)} />
           <button
-            onClick={() => setActiveTab("users")}
-            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === "users"
-                ? "border-coral text-ink"
-                : "border-transparent text-slate/60 hover:text-ink"
-            }`}
+            type="button"
+            onClick={handleLogout}
+            className="shrink-0 appearance-none rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-slate/70 transition-colors hover:bg-sand/60 hover:text-ink"
           >
-            Пользователи
-          </button>
-          <button
-            onClick={() => setActiveTab("reservations")}
-            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === "reservations"
-                ? "border-coral text-ink"
-                : "border-transparent text-slate/60 hover:text-ink"
-            }`}
-          >
-            Бронирования
-          </button>
-          <button
-            onClick={() => setActiveTab("contracts")}
-            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === "contracts"
-                ? "border-coral text-ink"
-                : "border-transparent text-slate/60 hover:text-ink"
-            }`}
-          >
-            Контракты
-          </button>
-          <button
-            onClick={() => setActiveTab("contracts-ai")}
-            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === "contracts-ai"
-                ? "border-coral text-ink"
-                : "border-transparent text-slate/60 hover:text-ink"
-            }`}
-          >
-            Контракты — ИИ
-          </button>
-          <button
-            onClick={() => setActiveTab("price-calculator")}
-            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === "price-calculator"
-                ? "border-coral text-ink"
-                : "border-transparent text-slate/60 hover:text-ink"
-            }`}
-          >
-            Расчёт цены
-          </button>
-          <button
-            onClick={() => setActiveTab("counteragents")}
-            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === "counteragents"
-                ? "border-coral text-ink"
-                : "border-transparent text-slate/60 hover:text-ink"
-            }`}
-          >
-            Контрагенты
-          </button>
-          <button
-            onClick={() => setActiveTab("invoices")}
-            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === "invoices"
-                ? "border-coral text-ink"
-                : "border-transparent text-slate/60 hover:text-ink"
-            }`}
-          >
-            Счета
-          </button>
-          <button
-            onClick={() => setActiveTab("balance")}
-            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === "balance"
-                ? "border-coral text-ink"
-                : "border-transparent text-slate/60 hover:text-ink"
-            }`}
-          >
-            Баланс
-          </button>
-          <button
-            onClick={() => setActiveTab("cashback")}
-            className={`appearance-none border-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-              activeTab === "cashback"
-                ? "border-coral text-ink"
-                : "border-transparent text-slate/60 hover:text-ink"
-            }`}
-          >
-            Кэшбэк
+            Выход
           </button>
         </div>
 
@@ -270,12 +189,10 @@ const AdminPanel = () => {
         {activeTab === "cashback" && <Cashback />}
 
         {activeTab === "reservations" && (
-          <div className="mt-6">
-            <BookingsList
-              scope={{ type: "all" }}
-              permissions={{ canChangeDates: true, canEditGuestDetails: true, canEditFlights: true, canCancel: true, canClaim: true, canManageInvoices: true }}
-            />
-          </div>
+          <BookingsList
+            scope={{ type: "all" }}
+            permissions={{ canChangeDates: true, canEditGuestDetails: true, canEditFlights: true, canCancel: true, canClaim: true, canManageInvoices: true }}
+          />
         )}
 
         {activeTab === "contracts" && <Contracts />}
@@ -287,7 +204,7 @@ const AdminPanel = () => {
         {activeTab === "users" && (
         <>
         {/* ===== СТАТИСТИКА ===== */}
-        <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
           {statCards.map((card) => (
             <div
               key={card.key}

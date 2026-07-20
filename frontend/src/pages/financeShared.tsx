@@ -31,6 +31,7 @@ export interface Invoice {
   email_sent_at: string | null;
   review_flag: string | null;
   flag_acknowledged_at: string | null;
+  flag_acknowledged_by: number | null;
   created_by: number;
   approved_by: number | null;
   approved_at: string | null;
@@ -263,7 +264,30 @@ interface MandatoryTaxBreakdown {
   currency: string;
 }
 
-export function InvoiceDetailModal({ invoice, onClose }: { invoice: Invoice; onClose: () => void }) {
+export function InvoiceDetailModal({
+  invoice,
+  onClose,
+  onAcknowledged,
+}: {
+  invoice: Invoice;
+  onClose: () => void;
+  onAcknowledged?: () => void;
+}) {
+  const [acknowledging, setAcknowledging] = useState(false);
+
+  async function handleAcknowledge() {
+    const token = localStorage.getItem("token") || "";
+    try {
+      setAcknowledging(true);
+      await fetchJson<Invoice>(`/finance-engine/invoices/${invoice.id}/acknowledge-flag`, token, { method: "POST" });
+      onAcknowledged?.();
+    } catch (err: any) {
+      alert(err.message || "Не удалось отметить как проверено");
+    } finally {
+      setAcknowledging(false);
+    }
+  }
+
   const [booking, setBooking] = useState<DetailBooking | null>(null);
   const [roomTypeName, setRoomTypeName] = useState<string>("");
   const [mealPlanLabel, setMealPlanLabel] = useState<string>("");
@@ -277,7 +301,11 @@ export function InvoiceDetailModal({ invoice, onClose }: { invoice: Invoice; onC
   useEffect(() => {
     const token = localStorage.getItem("token") || "";
     const ids = Array.from(
-      new Set([invoice.created_by, invoice.approved_by, invoice.voided_by].filter((id): id is number => id !== null))
+      new Set(
+        [invoice.created_by, invoice.approved_by, invoice.voided_by, invoice.flag_acknowledged_by].filter(
+          (id): id is number => id !== null
+        )
+      )
     );
     Promise.all(
       ids.map((id) =>
@@ -290,7 +318,7 @@ export function InvoiceDetailModal({ invoice, onClose }: { invoice: Invoice; onC
       });
       setActorNames(map);
     });
-  }, [invoice.created_by, invoice.approved_by, invoice.voided_by]);
+  }, [invoice.created_by, invoice.approved_by, invoice.voided_by, invoice.flag_acknowledged_by]);
 
   useEffect(() => {
     const token = localStorage.getItem("token") || "";
@@ -399,12 +427,26 @@ export function InvoiceDetailModal({ invoice, onClose }: { invoice: Invoice; onC
         {invoice.review_flag && (
           isUrgentFlag(invoice) ? (
             <div className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-sm font-medium text-coral">
-              ⚠ {invoice.review_flag}
+              <div>⚠ {invoice.review_flag}</div>
+              {invoice.status === "Issued" && (
+                <button
+                  type="button"
+                  onClick={handleAcknowledge}
+                  disabled={acknowledging}
+                  className="mt-2 appearance-none rounded-lg border-0 bg-coral px-3.5 py-1.5 text-xs font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+                >
+                  {acknowledging ? "..." : "Отметить как проверено"}
+                </button>
+              )}
             </div>
           ) : (
             <div className="mt-3 rounded-lg bg-ink/5 px-3 py-2 text-xs text-slate/60">
               {invoice.flag_acknowledged_at
-                ? `Изменено (одобрено ${formatDate(invoice.flag_acknowledged_at)}): ${invoice.review_flag}`
+                ? `Изменено (проверено ${
+                    invoice.flag_acknowledged_by !== null
+                      ? actorNames[invoice.flag_acknowledged_by] ?? `#${invoice.flag_acknowledged_by}`
+                      : "—"
+                  }, ${formatDate(invoice.flag_acknowledged_at)}): ${invoice.review_flag}`
                 : invoice.review_flag}
             </div>
           )

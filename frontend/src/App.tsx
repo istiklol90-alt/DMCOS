@@ -117,7 +117,7 @@ function App() {
 
   return (
     <div className="page">
-      <Header onHome={goToHome} />
+      {page !== "admin-panel" && <Header onHome={goToHome} />}
 
       {page === "home" && (
         <Home

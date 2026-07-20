@@ -27,6 +27,7 @@ class InvoiceResponse(BaseModel):
     email_sent_at: Optional[datetime] = None
     review_flag: Optional[str] = None
     flag_acknowledged_at: Optional[datetime] = None
+    flag_acknowledged_by: Optional[int] = None
     approved_by: Optional[int] = None
     approved_at: Optional[datetime] = None
     voided_by: Optional[int] = None

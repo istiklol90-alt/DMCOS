@@ -203,16 +203,46 @@ def flag_invoice_for_review(db: Session, booking_id: int, reason: str) -> Invoic
 
     Silently no-ops (returns None, not an error) in the overwhelmingly
     common case of no invoice existing yet for this booking, and also
-    when an invoice exists but isn't Draft -- an already-Issued
-    invoice's staleness is a Credit Note's job, not this flag's; a Void
-    invoice is already dead. Never raises for either case, since the
-    caller's date-change action must never appear to fail because of
-    this best-effort side effect.
+    when the invoice is already Void (already dead, nothing to flag).
+    Never raises for either case, since the caller's date-change action
+    must never appear to fail because of this best-effort side effect.
+
+    Decision 089: previously also no-op'd for any non-Draft invoice,
+    treating an Issued invoice's staleness as "a Credit Note's job, not
+    this flag's" -- but no Credit-Note-triggering workflow was ever
+    built off this event, so in practice a booking date change after
+    Issued produced zero signal anywhere (confirmed via real DB trace:
+    4 real bookings drifted by $2k-$20k with review_flag staying NULL).
+    Issued invoices are now flagged too, surfaced via the same
+    /invoices/urgent panel as Draft ones -- acknowledge_review_flag is
+    the new, separate way to dismiss the flag on an Issued invoice
+    without re-triggering approve_and_send_invoice's send/status-flip
+    side effects (which only make sense for a Draft -> Issued
+    transition).
     """
     invoice = repository.get_invoice_by_booking(db, booking_id)
-    if invoice is None or invoice.status != "Draft":
+    if invoice is None or invoice.status == "Void":
         return None
     return repository.update_invoice(db, invoice, review_flag=reason)
+
+
+def acknowledge_review_flag(db: Session, invoice_id: int, acknowledged_by: int) -> Invoice:
+    """
+    Decision 089: "Отметить как проверено" -- lets accounting dismiss an
+    urgent flag on an Issued invoice (where approve_and_send_invoice's
+    own flag_acknowledged_at write doesn't apply, since that function is
+    gated to Draft-only) without re-sending anything. Requires an
+    existing review_flag: unlike flag_invoice_for_review's best-effort
+    orchestration call, this is a deliberate action a human clicked a
+    button for, so acknowledging a flag that isn't there is a caller
+    error, not a silent no-op.
+    """
+    invoice = get_invoice(db, invoice_id)
+    if invoice.review_flag is None:
+        raise ValueError(f"Invoice {invoice_id} has no review flag to acknowledge")
+    return repository.update_invoice(
+        db, invoice, flag_acknowledged_at=datetime.utcnow(), flag_acknowledged_by=acknowledged_by
+    )
 
 
 def list_invoices(db: Session) -> list[Invoice]:
@@ -318,10 +348,16 @@ def approve_and_send_invoice(db: Session, invoice_id: int, approved_by: int) -> 
 
     Decision 085: approved_by/approved_at are set unconditionally (who
     and when this action happened, regardless of email/flag state).
-    flag_acknowledged_at is set only if review_flag was populated --
-    the narrower "a flagged invoice was reviewed and approved anyway"
-    signal the frontend uses to stop treating it as urgent, distinct
-    from the unconditional approval record.
+    flag_acknowledged_at/flag_acknowledged_by are set only if
+    review_flag was populated -- the narrower "a flagged invoice was
+    reviewed and approved anyway" signal the frontend uses to stop
+    treating it as urgent, distinct from the unconditional approval
+    record. Decision 089 added flag_acknowledged_by alongside the
+    already-existing flag_acknowledged_at, for the same actor+timestamp
+    pairing every other Finance Engine action already has
+    (approved_by/approved_at, voided_by/voided_at) -- and so this path
+    and acknowledge_review_flag's leave an identically-shaped audit
+    trail regardless of which one dismissed the flag.
     """
     invoice = get_invoice(db, invoice_id)
     validators.validate_invoice_draft(invoice)
@@ -357,6 +393,7 @@ def approve_and_send_invoice(db: Session, invoice_id: int, approved_by: int) -> 
         approved_by=approved_by,
         approved_at=now,
         flag_acknowledged_at=now if had_flag else None,
+        flag_acknowledged_by=approved_by if had_flag else None,
     )
 
 

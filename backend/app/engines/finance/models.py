@@ -76,8 +76,12 @@ class Invoice(Base):
     # handler -- same pattern as Decision 080's claim-auto-invoice,
     # avoiding both a circular import (Finance already imports Booking
     # Engine's service.py) and any touch of LOCKED Booking Engine.
-    # Only ever set on a Draft invoice -- an already-Issued invoice's
-    # staleness is a Credit Note's job, not this flag's. Never
+    # Decision 089: previously only ever set on a Draft invoice (an
+    # Issued one's staleness was treated as "a Credit Note's job, not
+    # this flag's") -- but no Credit-Note-triggering workflow was ever
+    # built off this event, so a real booking date change after Issued
+    # produced zero signal anywhere. Now also set on Issued invoices;
+    # only a Void invoice is excluded (already dead). Never
     # auto-cleared: the recovery path for a genuinely-wrong flagged
     # Draft is Void + recreate (reruns compute_booking_financials
     # against the booking's current state), not an in-place edit.
@@ -88,8 +92,15 @@ class Invoice(Base):
     # never changes, permanent history). Used by the frontend to stop
     # rendering a flagged-but-approved invoice as urgent (red row,
     # sort-to-top, badge), without ever hiding or clearing the
-    # underlying reason.
+    # underlying reason. Decision 089: also set directly by the new
+    # acknowledge_review_flag action, for an Issued invoice's flag
+    # (approve_and_send_invoice only applies to Draft -> Issued).
     flag_acknowledged_at = Column(DateTime(timezone=True), nullable=True)
+    # Decision 089: who acknowledged the flag -- set alongside
+    # flag_acknowledged_at by both approve_and_send_invoice (Draft path)
+    # and acknowledge_review_flag (Issued path), same actor+timestamp
+    # pairing as approved_by/voided_by below.
+    flag_acknowledged_by = Column(Integer, nullable=True)
     # Decision 085 (audit-trail completeness, Requirement raised via
     # live project-owner review): who approved/voided this invoice, and
     # when. Previously only created_by/created_at existed -- who took

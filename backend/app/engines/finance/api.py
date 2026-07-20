@@ -154,9 +154,11 @@ def flag_invoice_for_review(
     booking_id: int, data: FlagForReviewRequest, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     """No fixed response_model -- deliberately returns either 204 (no
-    Draft invoice exists for this booking, the common case) or the
-    flagged InvoiceResponse, matching service.flag_invoice_for_review's
-    silent-no-op contract exactly."""
+    invoice exists yet for this booking, or it's already Void, the
+    common cases) or the flagged InvoiceResponse, matching
+    service.flag_invoice_for_review's silent-no-op contract exactly.
+    Decision 089: this now also flags an Issued invoice, not just
+    Draft."""
     _require_admin(current_user)
     result = service.flag_invoice_for_review(db, booking_id, data.reason)
     if result is None:
@@ -174,6 +176,15 @@ def void_invoice(invoice_id: int, db: Session = Depends(get_db), current_user=De
 def approve_and_send_invoice(invoice_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _require_admin(current_user)
     return _run(lambda: service.approve_and_send_invoice(db, invoice_id, approved_by=current_user.id))
+
+
+@router.post("/invoices/{invoice_id}/acknowledge-flag", response_model=InvoiceResponse)
+def acknowledge_review_flag(invoice_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Decision 089: dismisses an urgent flag on an Issued invoice
+    without re-sending anything -- approve_and_send_invoice's own flag
+    acknowledgment only fires for a Draft -> Issued transition."""
+    _require_admin(current_user)
+    return _run(lambda: service.acknowledge_review_flag(db, invoice_id, acknowledged_by=current_user.id))
 
 
 # ---------------------------------------------------------------------------

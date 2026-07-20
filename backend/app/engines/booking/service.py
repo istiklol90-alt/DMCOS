@@ -38,7 +38,6 @@ and "Booking is created" are the same step, not two.
 
 from datetime import date as date_type, datetime
 from typing import Optional
-import uuid
 
 from sqlalchemy.orm import Session
 
@@ -97,11 +96,6 @@ def _require_agent(db: Session, agent_id: int) -> User:
     if agent is None:
         raise ValueError(f"Agent (user) {agent_id} not found")
     return agent
-
-
-def _generate_booking_number() -> str:
-    """No documented format exists for booking_number anywhere in the docs — this is our own scheme, not sourced from 03_Domain_Model.md or 02_Logic_Rules.md."""
-    return f"BK-{uuid.uuid4().hex[:12].upper()}"
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +253,6 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
     try:
         booking = repository.create_booking(
             db,
-            booking_number=_generate_booking_number(),
             agent_id=data.agent_id,
             hotel_id=data.hotel_id,
             contract_id=contract.id,

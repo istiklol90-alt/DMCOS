@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional
+import uuid
 
 from sqlalchemy.orm import Session
 
@@ -22,9 +23,21 @@ def get_db():
 
 
 def create_booking(db: Session, **fields) -> Booking:
-    """Insert a new booking row from already-resolved fields (contract_id/rate_id/meal_plan_id/currency/total_amount already determined by service.py, not the caller). New bookings start with the model's default status ("Draft") unless status is explicitly passed."""
+    """Insert a new booking row from already-resolved fields (contract_id/rate_id/meal_plan_id/currency/total_amount already determined by service.py, not the caller). New bookings start with the model's default status ("Draft") unless status is explicitly passed.
+
+    Decision 090: booking_number is a simple sequential BK-000001 scheme
+    keyed to the row's own real autoincrement id -- not passed in by the
+    caller (replaces the old UUID-based _generate_booking_number, same
+    simplification requested for invoice numbers). The id doesn't exist
+    until the row is actually inserted, so a placeholder is used to
+    satisfy the NOT NULL/UNIQUE column constraints through flush, then
+    immediately overwritten with the real sequential number before
+    commit -- the placeholder is never visible to any caller."""
+    fields["booking_number"] = f"__pending-{uuid.uuid4().hex}"
     booking = Booking(**fields)
     db.add(booking)
+    db.flush()
+    booking.booking_number = f"BK-{booking.id:06d}"
     db.commit()
     db.refresh(booking)
     return booking

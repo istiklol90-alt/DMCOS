@@ -5098,6 +5098,54 @@ Status: Implemented, `tsc -b` clean project-wide (only the same 9 pre-existing, 
 
 ---
 
+# Decision 088
+
+Date: 2026-07-20
+
+Decision: AdminPanel's navigation was restructured twice in direct succession based on live feedback. First attempt: a two-level left sidebar (parent groups with expandable children), matching the project owner's initial framing of "won't scale past a flat 9-item bar toward 20-30+ features." Immediately corrected after live review: a permanent left sidebar reduces usable working width, which the project owner considers a worse tradeoff than the scale problem it solves. Final shape: navigation stays a single horizontal top bar; grouped items ("Контракты"/"Контракты — ИИ" under one "Контракты" parent, "Счета"/"Баланс"/"Кэшбэк" under one "Финансы" parent) open a click-triggered dropdown panel instead of a permanent submenu, closing on outside click or on selection. The underlying data structure survived the correction unchanged -- `NAV_STRUCTURE: NavItem[]` (`{key, label, children?}[]`) in the new `frontend/src/pages/AdminNav.tsx`, the single source of truth adding a future group (e.g. Payment Engine) is a data change, not new JSX in `AdminPanel.tsx`. Parent items are pure triggers, never content; only leaf keys are valid `AdminTab` values.
+
+Separately, the same review found the page's top chrome had real dead weight for a screen used for daily work, not first-time orientation: the global `Header` component (from `App.tsx`, shared across every page) contributes a "DMC OS" logo + "Home" link that add nothing once inside Admin Panel, plus `AdminPanel`'s own `<h1>Admin Panel</h1>` / "Управление системой" subtitle -- none of it functional. `App.tsx` now conditionally skips rendering `Header` specifically when `page === "admin-panel"` (every other page keeps it unchanged). `AdminPanel.tsx` drops the title block entirely and gets a compact "Выход" (log out) button inline in the same row as the nav bar, right-aligned, sharing one border-bottom divider -- closing a real, separate gap found in the process: there was no logout mechanism anywhere in the admin context before this (only `ManagerDashboard.tsx`/`AgentDashboard_v2.tsx` had their own ad hoc `localStorage.clear()` + redirect; the new button reuses that exact pattern). Container height changed from `min-h-[calc(100vh-78px)]` (offsetting the now-gone 78px header) to `min-h-screen`.
+
+Reason: A flat tab bar was already documented as not scaling toward this project's stated 20-30+ feature horizon; a permanent sidebar solves that but at a real, ongoing cost to working area that the project owner judged not worth paying, especially once combined with also reclaiming the header's dead vertical space -- the dropdown-bar approach gets both the scale fix and the maximized content area.
+
+Approved By: Daler
+
+Status: Implemented. `tsc -b` clean (same 9 pre-existing unrelated errors as every prior entry, confirmed unchanged). Structure verified by reading the final JSX directly (sidebar wrapper fully removed, single-row flex layout with `AdminNav` + `Выход` button sharing one `border-b`).
+
+---
+
+# Decision 089
+
+Date: 2026-07-20
+
+Decision: Fixed a real, DB-traced financial-integrity gap in Decision 083's booking-date-change review-flag mechanism. Traced precisely before any fix: found via `bookings.dates_changed_at`/`date_change_reason` (real user-entered reasons, not test strings) cross-referenced against `invoices` that 4 real bookings (#2, #7, #10, #12) had their dates changed after their invoices were already approved to `Issued`, and none of them ever got flagged -- live totals had drifted from their frozen invoice totals by $2,008 to $20,462. Root cause: `flag_invoice_for_review` (Decision 083) deliberately no-op'd for any invoice whose `status != "Draft"`, treating "an already-Issued invoice's staleness" as explicitly out of scope ("a Credit Note's job, not this flag's") -- but no Credit-Note-triggering workflow was ever built off this event, so in practice the carve-out produced zero signal anywhere for a real, common case. The frontend orchestration call itself fires correctly and unconditionally after a successful date change; this was a backend scope gap, not a broken call site.
+
+`flag_invoice_for_review`'s guard loosened from `status != "Draft"` to `status == "Void"` -- Issued invoices are now flaggable too, immediately visible via the existing `/invoices/urgent` panel (whose own query already only ever excluded Void). Since `approve_and_send_invoice`'s flag-acknowledgment only applies to a Draft -> Issued transition, a new, separate action was added for the Issued case: `acknowledge_review_flag` (`POST /finance-engine/invoices/{id}/acknowledge-flag`) sets `flag_acknowledged_at` without touching `status`, email, or anything else -- a deliberate accounting decision ("Отметить как проверено" in `Invoices.tsx`'s row actions and `InvoiceDetailModal`), not a best-effort no-op, so it raises if there's no `review_flag` to acknowledge. New `Invoice.flag_acknowledged_by` column (migrated via raw `ALTER TABLE`, same as Decision 084's `cancelled_by`) gives this path the same actor+timestamp audit pairing every other Finance Engine action already has; `approve_and_send_invoice` was extended to set it too (alongside its existing `flag_acknowledged_at` write), so both acknowledgment paths leave an identically-shaped audit trail.
+
+Reason: An Issued invoice silently drifting by tens of thousands of dollars with zero proactive signal is a real financial-integrity risk, not a cosmetic gap -- it must be visible to accounting, not silently accepted as a known limitation.
+
+Approved By: Daler
+
+Status: Implemented and verified live via real HTTP against a fresh booking/invoice pair (create -> Draft invoice -> approve-and-send -> Issued -> change dates -> flag-for-review): confirmed the Issued invoice's `review_flag` now gets set (previously silently no-op'd), appears in `/invoices/urgent`, and `acknowledge-flag` correctly dismisses it (sets `flag_acknowledged_at`/`flag_acknowledged_by`, drops out of the urgent list, status stays `Issued`). Full regression confirmed unchanged: Draft-invoice flagging still works exactly as before; `approve_and_send_invoice` on a flagged Draft invoice still flips to Issued and now also sets `flag_acknowledged_by`; Void invoices remain correctly excluded from flagging (204 no-op); `acknowledge_review_flag` correctly rejects (400) an invoice with no flag. All test bookings/invoices cleaned up via real cancel/void endpoints, confirmed the urgent list returned to its exact pre-test baseline.
+
+---
+
+# Decision 090
+
+Date: 2026-07-20
+
+Decision: Simplified `booking_number` from a UUID-based scheme (`BK-{uuid4().hex[:12]}`) to a simple sequential one, `BK-{id:06d}`, keyed directly to the booking row's own real autoincrement `id` -- no separate counter table, no race risk beyond what the id column's own uniqueness already guarantees. Since the id doesn't exist until the row is actually inserted, `repository.create_booking` now writes a throwaway unique placeholder to satisfy the column's `NOT NULL`/`UNIQUE` constraints through `db.flush()`, then immediately overwrites it with the real sequential number before `commit()` -- the placeholder is never visible to any caller. The old `_generate_booking_number()` helper (and its now-unused `uuid` import) was removed from `booking/service.py` entirely rather than left as dead code.
+
+**Retroactive rename of all pre-existing bookings, not just new ones going forward.** Before doing this, checked concretely whether any real, already-sent-out reference to an old-format number could go stale: `backend/.env` doesn't exist (confirmed, no file), so `send_real_email`'s `SMTP_USER`/`SMTP_PASSWORD` are always unset and it unconditionally returns `False` + console-logs instead of sending -- confirmed against the live DB that all 11 `Issued` invoices have `email_sent_at = NULL`, meaning zero real emails have ever left this system for anything, ever. Also grepped every reference to `booking_number` in the backend: `Invoice`/`CreditNote`/`AgentStatementLine` all reference `booking_id` as a plain integer and resolve `booking_number` live via lookup only when needed (the `.xlsx` export, an invoice email body) -- nothing persists it as a frozen text snapshot anywhere. Given that, all 28 pre-existing bookings with old UUID-format numbers were renamed in place to the same `BK-{id:06d}` scheme (2 bookings created during this session's own verification already had the new format and were left untouched) -- one uniform, fully sequential numbering scheme project-wide rather than a permanent two-tier split. The only accepted residual risk: a CSV/`.xlsx` export downloaded locally before this rename would reference old numbers -- narrower than "sent to an agent/hotel" and not mitigated further, per explicit project-owner sign-off.
+
+Reason: Sequential booking numbers are meaningfully easier to search, reference in conversation, and cross-check against invoices than opaque UUID fragments -- the same simplification rationale the project owner raised for invoice numbers (though, corrected during this conversation: invoice numbers were never actually changed to sequential in any prior session -- they remain UUID-based, `INV-{uuid4().hex[:12]}`, unchanged by this decision).
+
+Approved By: Daler
+
+Status: Implemented and verified live: two real test bookings received `BK-000030`/`BK-000031` in strict id order; direct DB query confirmed zero leftover placeholder rows and no format/uniqueness violations. Retroactive rename executed directly against `dmc.db` (28 rows updated, 2 already-correct skipped), verified after: zero mismatches between `booking_number` and `BK-{id:06d}` across all 30 rows, zero duplicates, and the existing `GET /booking-engine/bookings/by-number/{booking_number}` endpoint correctly resolves a renamed booking by its new number. All test bookings cancelled via the real cancel endpoint afterward.
+
+---
+
 # Decision Template
 
 Decision Number:
