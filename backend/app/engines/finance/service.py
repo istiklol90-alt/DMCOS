@@ -37,6 +37,7 @@ from app.engines.finance.models import (
     AgentStatement,
     HotelCashbackArrangement,
     HotelCashbackFulfillment,
+    Voucher,
 )
 from app.engines.booking.models import Booking
 from models.user import User
@@ -48,6 +49,12 @@ from app.engines.booking import service as booking_service
 # Decision 081: same read-only pattern -- only needed to resolve
 # hotel_name for approve_and_send_invoice's email content.
 from app.engines.hotel import service as hotel_service
+# Decision 094: same read-only pattern -- add_invoice_review_note prices
+# a booking's OLD dates itself (server-side, never client-supplied) via
+# the exact same functions Booking Engine's own create_booking/
+# change_booking_dates use internally.
+from app.engines.contract import service as contract_service
+from app.engines.pricing import service as pricing_service
 
 # Booking Engine's validators.TERMINAL_STATUSES -- deliberately not
 # imported (validators.py isn't the cross-engine contract surface,
@@ -127,6 +134,29 @@ def _generate_invoice_number() -> str:
     return f"INV-{uuid.uuid4().hex[:12].upper()}"
 
 
+def _attach_review_notes(db: Session, invoice: Invoice) -> Invoice:
+    """Decision 093: no SQLAlchemy relationship() exists anywhere in
+    this project (every intra-engine FK, e.g. CreditNote.invoice_id, is
+    a plain Column, listed explicitly via its own repository function)
+    -- kept consistent here rather than introducing the first one.
+    review_notes is set as a plain ad-hoc attribute so InvoiceResponse's
+    from_attributes validation picks it up like any other field; every
+    service function that returns an Invoice (or list of them) must
+    call this (or _attach_review_notes_bulk) before returning, since
+    the attribute doesn't exist on the ORM object otherwise -- and
+    db.refresh() wipes any previously-attached value, so this must run
+    AFTER the last refresh, not before."""
+    invoice.review_notes = repository.list_review_notes_by_invoice(db, invoice.id)
+    return invoice
+
+
+def _attach_review_notes_bulk(db: Session, invoices: list[Invoice]) -> list[Invoice]:
+    notes_by_invoice = repository.list_review_notes_by_invoice_ids(db, [inv.id for inv in invoices])
+    for inv in invoices:
+        inv.review_notes = notes_by_invoice.get(inv.id, [])
+    return invoices
+
+
 def create_invoice_for_booking(db: Session, booking_id: int, created_by: int) -> Invoice:
     """
     Manually-triggered Invoice generation. Raises if a booking's already
@@ -155,7 +185,7 @@ def create_invoice_for_booking(db: Session, booking_id: int, created_by: int) ->
         raise ValueError(f"Booking {booking_id} already has an invoice")
 
     financials = compute_booking_financials(booking)
-    return repository.create_invoice(
+    invoice = repository.create_invoice(
         db,
         invoice_number=_generate_invoice_number(),
         booking_id=booking.id,
@@ -171,13 +201,14 @@ def create_invoice_for_booking(db: Session, booking_id: int, created_by: int) ->
         status="Draft",
         created_by=created_by,
     )
+    return _attach_review_notes(db, invoice)
 
 
 def get_invoice(db: Session, invoice_id: int) -> Invoice:
     invoice = repository.get_invoice(db, invoice_id)
     if invoice is None:
         raise ValueError(f"Invoice {invoice_id} not found")
-    return invoice
+    return _attach_review_notes(db, invoice)
 
 
 def get_invoice_by_booking(db: Session, booking_id: int) -> Invoice:
@@ -188,12 +219,42 @@ def get_invoice_by_booking(db: Session, booking_id: int) -> Invoice:
     invoice = repository.get_invoice_by_booking(db, booking_id)
     if invoice is None:
         raise ValueError(f"Booking {booking_id} has no invoice")
-    return invoice
+    return _attach_review_notes(db, invoice)
 
 
-def flag_invoice_for_review(db: Session, booking_id: int, reason: str) -> Invoice | None:
+def _price_stay(db: Session, booking: Booking, contract_id: int, meal_code: str, arrival: date, departure: date) -> dict:
+    """Decision 094: the exact same pricing chain Booking Engine's own
+    create_booking/change_booking_dates use internally, factored out
+    here so both the old- and new-dates snapshot (when the new one
+    isn't just read off the booking row) go through identical logic.
+    Returns {"total": agent-facing grand total including transfer/tax,
+    "offer_id": the single applied SpecialOffer id, or None}."""
+    nights = (departure - arrival).days
+    price = contract_service.get_room_price(
+        db, contract_id, booking.room_type_id, arrival, departure, meal_code,
+        booking.adults, booking.children, booking.infants,
+    )
+    transfer_total = 0.0
+    if booking.transfer_type:
+        transfer_total = contract_service.get_transfer_price(
+            db, contract_id, booking.transfer_type, arrival, departure,
+            booking.adults, booking.children, booking.infants,
+        )["total"]
+    tax_total = contract_service.get_mandatory_tax(db, contract_id, nights, booking.adults, booking.children)["total"]
+    agent_pricing = pricing_service.apply_agent_pricing(
+        db, booking.agent_id, contract_id, price["final_total"], nights,
+        booking.room_type_id, price["meal_plan_id"], arrival, departure,
+    )
+    offer_id = price["applied_special_offer_ids"][0] if price["applied_special_offer_ids"] else None
+    return {"total": agent_pricing["agent_room_total"] + transfer_total + tax_total, "offer_id": offer_id}
+
+
+def add_invoice_review_note(
+    db: Session, booking_id: int, old_arrival_date: date, old_departure_date: date
+) -> Invoice | None:
     """
-    Decision 083 (Requirement 2): called via frontend orchestration from
+    Decision 083 (Requirement 2), restructured by Decision 093, extended
+    by Decision 094: called via frontend orchestration from
     Reservations.tsx's date-change handler, best-effort, after
     change_booking_dates already succeeded -- mirrors Decision 080's
     claim-auto-invoice shape exactly, for the same reason (avoids a
@@ -203,46 +264,111 @@ def flag_invoice_for_review(db: Session, booking_id: int, reason: str) -> Invoic
 
     Silently no-ops (returns None, not an error) in the overwhelmingly
     common case of no invoice existing yet for this booking, and also
-    when the invoice is already Void (already dead, nothing to flag).
+    when the invoice is already Void (already dead, nothing to note).
     Never raises for either case, since the caller's date-change action
     must never appear to fail because of this best-effort side effect.
 
-    Decision 089: previously also no-op'd for any non-Draft invoice,
-    treating an Issued invoice's staleness as "a Credit Note's job, not
-    this flag's" -- but no Credit-Note-triggering workflow was ever
-    built off this event, so in practice a booking date change after
-    Issued produced zero signal anywhere (confirmed via real DB trace:
-    4 real bookings drifted by $2k-$20k with review_flag staying NULL).
-    Issued invoices are now flagged too, surfaced via the same
-    /invoices/urgent panel as Draft ones -- acknowledge_review_flag is
-    the new, separate way to dismiss the flag on an Issued invoice
-    without re-triggering approve_and_send_invoice's send/status-flip
-    side effects (which only make sense for a Draft -> Issued
-    transition).
+    Decision 094: captures the real price breakdown for both sides of
+    the change, snapshotted server-side right now -- never
+    client-supplied (a permanent financial audit record shouldn't trust
+    a client's report of historical pricing) and never reconstructed
+    later (season/offer availability can itself change over time, so a
+    later recompute wouldn't necessarily match what was true at the
+    actual moment of change).
+
+    NEW snapshot is read directly off the booking's current row, never
+    recomputed -- change_booking_dates has already computed and stored
+    exactly this, moments before this call runs; recomputing separately
+    would be redundant and could theoretically diverge from what's
+    actually stored. OLD snapshot must be recomputed, since the
+    pre-change values are gone from the booking row by this point:
+    resolves whichever contract actually covered the OLD dates (may
+    differ from the booking's current contract if the change crossed a
+    contract boundary), resolves the booking's current meal_plan_id to
+    its portable meal code first (meal codes, not ids, are portable
+    across contracts -- the same assumption get_room_price's own
+    signature already makes everywhere), then prices the old dates
+    against the old contract using that code. Wrapped in a broad
+    try/except: if the old dates genuinely can't be repriced (no
+    contract covered them, no meal plan match, etc.), old_total/
+    old_offer_name stay None and change_description alone carries the
+    fallback description -- this best-effort note must never fail the
+    caller's already-succeeded date change.
     """
     invoice = repository.get_invoice_by_booking(db, booking_id)
     if invoice is None or invoice.status == "Void":
         return None
-    return repository.update_invoice(db, invoice, review_flag=reason)
+
+    booking = booking_service.get_booking(db, booking_id)
+
+    new_total = booking.total_amount + (booking.transfer_total or 0.0) + (booking.mandatory_tax_total or 0.0)
+    new_offer_name = None
+    if booking.applied_special_offer_id is not None:
+        new_offer_name = contract_service.get_special_offer(db, booking.applied_special_offer_id).offer_name
+
+    old_total = None
+    old_offer_name = None
+    try:
+        old_contract = contract_service.get_active_contract(db, booking.hotel_id, old_arrival_date)
+        if old_contract is not None:
+            current_meal_plans = contract_service.get_meal_plans(db, booking.contract_id, booking.room_type_id)
+            meal_code = next((mp.meal_code for mp in current_meal_plans if mp.id == booking.meal_plan_id), None)
+            if meal_code is not None:
+                old_result = _price_stay(db, booking, old_contract.id, meal_code, old_arrival_date, old_departure_date)
+                old_total = old_result["total"]
+                if old_result["offer_id"] is not None:
+                    old_offer_name = contract_service.get_special_offer(db, old_result["offer_id"]).offer_name
+    except ValueError:
+        pass
+
+    existing_notes = repository.list_review_notes_by_invoice(db, invoice.id)
+    next_sequence = len(existing_notes) + 1
+    fallback_description = (
+        f"Даты изменены: {old_arrival_date.isoformat()} – {old_departure_date.isoformat()} "
+        f"→ {booking.arrival_date.isoformat()} – {booking.departure_date.isoformat()}"
+    )
+    repository.create_review_note(
+        db,
+        invoice_id=invoice.id,
+        sequence_number=next_sequence,
+        change_description=fallback_description,
+        old_arrival_date=old_arrival_date,
+        old_departure_date=old_departure_date,
+        old_total=old_total,
+        old_offer_name=old_offer_name,
+        new_arrival_date=booking.arrival_date,
+        new_departure_date=booking.departure_date,
+        new_total=new_total,
+        new_offer_name=new_offer_name,
+    )
+    return _attach_review_notes(db, invoice)
 
 
 def acknowledge_review_flag(db: Session, invoice_id: int, acknowledged_by: int) -> Invoice:
     """
-    Decision 089: "Отметить как проверено" -- lets accounting dismiss an
-    urgent flag on an Issued invoice (where approve_and_send_invoice's
-    own flag_acknowledged_at write doesn't apply, since that function is
-    gated to Draft-only) without re-sending anything. Requires an
-    existing review_flag: unlike flag_invoice_for_review's best-effort
-    orchestration call, this is a deliberate action a human clicked a
-    button for, so acknowledging a flag that isn't there is a caller
-    error, not a silent no-op.
+    Decision 089: "Отметить как проверено" -- lets accounting dismiss the
+    current urgent state on an Issued invoice (where
+    approve_and_send_invoice's own flag_acknowledged_at write doesn't
+    apply, since that function is gated to Draft-only) without
+    re-sending anything. Requires at least one existing review note:
+    unlike add_invoice_review_note's best-effort orchestration call,
+    this is a deliberate action a human clicked a button for, so
+    acknowledging an invoice with no notes at all is a caller error, not
+    a silent no-op.
+
+    Decision 093: this only needs to stamp flag_acknowledged_at/
+    flag_acknowledged_by "as of now" -- it does NOT need to touch any
+    individual note. A note created after this timestamp automatically
+    makes the invoice urgent again (list_urgent_invoices' own logic),
+    so there is nothing else to update here for that to work correctly.
     """
     invoice = get_invoice(db, invoice_id)
-    if invoice.review_flag is None:
-        raise ValueError(f"Invoice {invoice_id} has no review flag to acknowledge")
-    return repository.update_invoice(
+    if not invoice.review_notes:
+        raise ValueError(f"Invoice {invoice_id} has no review notes to acknowledge")
+    updated = repository.update_invoice(
         db, invoice, flag_acknowledged_at=datetime.utcnow(), flag_acknowledged_by=acknowledged_by
     )
+    return _attach_review_notes(db, updated)
 
 
 def list_invoices(db: Session) -> list[Invoice]:
@@ -250,19 +376,21 @@ def list_invoices(db: Session) -> list[Invoice]:
     No pagination yet, same simplification Pricing Engine's
     list_exclusive_agents already makes at this project's current data
     volume."""
-    return repository.list_invoices(db)
+    return _attach_review_notes_bulk(db, repository.list_invoices(db))
 
 
 def list_invoices_by_agent(db: Session, agent_id: int) -> list[Invoice]:
-    return repository.list_invoices_by_agent(db, agent_id)
+    return _attach_review_notes_bulk(db, repository.list_invoices_by_agent(db, agent_id))
 
 
 def list_invoices_by_agent_in_range(db: Session, agent_id: int, start_date: date, end_date: date) -> list[Invoice]:
-    return repository.list_invoices_by_agent_in_range(db, agent_id, start_date, end_date)
+    return _attach_review_notes_bulk(
+        db, repository.list_invoices_by_agent_in_range(db, agent_id, start_date, end_date)
+    )
 
 
 def list_urgent_invoices(db: Session) -> list[Invoice]:
-    return repository.list_urgent_invoices(db)
+    return _attach_review_notes_bulk(db, repository.list_urgent_invoices(db))
 
 
 def build_agent_invoice_export(db: Session, agent_id: int, start_date: date, end_date: date) -> bytes:
@@ -319,9 +447,10 @@ def build_agent_invoice_export(db: Session, agent_id: int, start_date: date, end
 def void_invoice(db: Session, invoice_id: int, voided_by: int) -> Invoice:
     invoice = get_invoice(db, invoice_id)
     validators.validate_invoice_not_void(invoice)
-    return repository.update_invoice(
+    updated = repository.update_invoice(
         db, invoice, status="Void", voided_by=voided_by, voided_at=datetime.utcnow()
     )
+    return _attach_review_notes(db, updated)
 
 
 def approve_and_send_invoice(db: Session, invoice_id: int, approved_by: int) -> Invoice:
@@ -347,9 +476,9 @@ def approve_and_send_invoice(db: Session, invoice_id: int, approved_by: int) -> 
     exist -- an honest, visible signal, not a silent failure.
 
     Decision 085: approved_by/approved_at are set unconditionally (who
-    and when this action happened, regardless of email/flag state).
-    flag_acknowledged_at/flag_acknowledged_by are set only if
-    review_flag was populated -- the narrower "a flagged invoice was
+    and when this action happened, regardless of email/note state).
+    flag_acknowledged_at/flag_acknowledged_by are set only if at least
+    one review note existed -- the narrower "a flagged invoice was
     reviewed and approved anyway" signal the frontend uses to stop
     treating it as urgent, distinct from the unconditional approval
     record. Decision 089 added flag_acknowledged_by alongside the
@@ -357,11 +486,14 @@ def approve_and_send_invoice(db: Session, invoice_id: int, approved_by: int) -> 
     pairing every other Finance Engine action already has
     (approved_by/approved_at, voided_by/voided_at) -- and so this path
     and acknowledge_review_flag's leave an identically-shaped audit
-    trail regardless of which one dismissed the flag.
+    trail regardless of which one dismissed the current urgent state.
+    Decision 093: had_flag now checks review_notes (the new child table)
+    instead of the retired review_flag column -- same meaning, new
+    source.
     """
     invoice = get_invoice(db, invoice_id)
     validators.validate_invoice_draft(invoice)
-    had_flag = invoice.review_flag is not None
+    had_flag = len(invoice.review_notes) > 0
 
     agent = db.query(User).filter(User.id == invoice.agent_id).first()
     if agent is None or not agent.email:
@@ -386,7 +518,7 @@ def approve_and_send_invoice(db: Session, invoice_id: int, approved_by: int) -> 
     })
 
     now = datetime.utcnow()
-    return repository.update_invoice(
+    updated = repository.update_invoice(
         db, invoice,
         status="Issued",
         email_sent_at=now if sent else None,
@@ -395,6 +527,7 @@ def approve_and_send_invoice(db: Session, invoice_id: int, approved_by: int) -> 
         flag_acknowledged_at=now if had_flag else None,
         flag_acknowledged_by=approved_by if had_flag else None,
     )
+    return _attach_review_notes(db, updated)
 
 
 # ---------------------------------------------------------------------------
@@ -627,3 +760,99 @@ def record_cashback_fulfillment(
 
 def list_cashback_fulfillments(db: Session, arrangement_id: int) -> list[HotelCashbackFulfillment]:
     return repository.list_cashback_fulfillments(db, arrangement_id)
+
+
+# ---------------------------------------------------------------------------
+# Voucher -- Decision 097
+# ---------------------------------------------------------------------------
+
+def create_and_send_voucher(db: Session, booking_id: int, created_by: int) -> Voucher:
+    """
+    Decision 097: called via frontend orchestration from Reservations.tsx's
+    confirmation-number editor, immediately after PUT .../bookings/{id}
+    saves a new non-empty confirmation_number -- same shape as Decision
+    080's claim-auto-invoice and Decision 083's date-change-flag, for the
+    same reason (avoids a circular import: this module already imports
+    booking_service, so Booking Engine calling back into Finance Engine
+    at module level would break at import time; also keeps LOCKED
+    Booking Engine's own code completely untouched by this feature).
+
+    Unlike those two best-effort orchestration calls, this one DOES
+    raise on failure (mirrors approve_and_send_invoice's own hard-fail
+    for an unresolvable agent email) -- a voucher silently failing to
+    generate would leave a manager believing the guest has their
+    confirmation document when they don't, a worse outcome than a
+    visible error the frontend can surface.
+
+    Requires booking.confirmation_number to already be set (raises
+    otherwise) -- the confirmation number IS the voucher's whole reason
+    to exist; generating one without it would be meaningless. Requires
+    the agent to resolve to a real User with a real email, same
+    "sending is meaningless without one" reasoning approve_and_send_
+    invoice already established.
+
+    Every field is resolved fresh from live Booking/Hotel/Contract
+    Engine data (read-only cross-engine calls, same pattern as every
+    other Finance Engine function) and frozen onto the Voucher row at
+    creation -- deliberately no pricing/discount/commission fields
+    anywhere in this payload or the model itself; this is the
+    guest-facing document, Invoice is the financial one.
+
+    email_sent_at is computed BEFORE the row is created (not created
+    then updated) -- Voucher has no Draft-then-Issued staged lifecycle
+    like Invoice does, so there's no reason to insert first and patch
+    the send outcome in afterward. Same "email is always best-effort,
+    never blocks the real action" contract as every other email call
+    site in this project: send_real_email never raises, and with no
+    SMTP configured anywhere in this project today, email_sent_at stays
+    NULL for every real voucher, same honest signal Invoice's own
+    field already gives.
+    """
+    booking = booking_service.get_booking(db, booking_id)
+    if not booking.confirmation_number:
+        raise ValueError(f"Booking {booking_id} has no confirmation_number -- nothing to generate a voucher for")
+
+    agent = db.query(User).filter(User.id == booking.agent_id).first()
+    if agent is None or not agent.email:
+        raise ValueError(f"Agent {booking.agent_id} has no resolvable email -- cannot send voucher")
+
+    hotel = hotel_service.get_hotel(db, booking.hotel_id)
+    room_type = hotel_service.get_room_type(db, booking.room_type_id)
+    meal_plan = contract_service.get_contract_meal_plan(db, booking.meal_plan_id)
+    guests = booking_service.list_guests(db, booking_id)
+    guest_names = ", ".join(f"{g.first_name} {g.last_name}" for g in guests) or None
+
+    sent = email_service.send_voucher_email({
+        "confirmation_number": booking.confirmation_number,
+        "hotel_name": hotel.hotel_name,
+        "booking_number": booking.booking_number,
+        "arrival_date": booking.arrival_date,
+        "departure_date": booking.departure_date,
+        "room_type_name": room_type.room_name,
+        "meal_plan_label": meal_plan.meal_name or meal_plan.meal_code,
+        "guest_names": guest_names,
+        "adults": booking.adults,
+        "children": booking.children,
+        "infants": booking.infants,
+        "agent_name": agent.name,
+        "agent_email": agent.email,
+    })
+
+    return repository.create_voucher(
+        db,
+        booking_id=booking.id,
+        agent_id=booking.agent_id,
+        hotel_id=booking.hotel_id,
+        confirmation_number=booking.confirmation_number,
+        hotel_name=hotel.hotel_name,
+        arrival_date=booking.arrival_date,
+        departure_date=booking.departure_date,
+        room_type_name=room_type.room_name,
+        meal_plan_label=meal_plan.meal_name or meal_plan.meal_code,
+        guest_names=guest_names,
+        adults=booking.adults,
+        children=booking.children,
+        infants=booking.infants,
+        created_by=created_by,
+        email_sent_at=datetime.utcnow() if sent else None,
+    )

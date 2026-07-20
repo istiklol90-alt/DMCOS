@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -7,6 +7,24 @@ from pydantic import BaseModel
 # ---------------------------------------------------------------------------
 # Invoice
 # ---------------------------------------------------------------------------
+
+class InvoiceReviewNoteResponse(BaseModel):
+    id: int
+    sequence_number: int
+    change_description: Optional[str] = None
+    old_arrival_date: Optional[date] = None
+    old_departure_date: Optional[date] = None
+    old_total: Optional[float] = None
+    old_offer_name: Optional[str] = None
+    new_arrival_date: Optional[date] = None
+    new_departure_date: Optional[date] = None
+    new_total: Optional[float] = None
+    new_offer_name: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
 
 class InvoiceResponse(BaseModel):
     id: int
@@ -25,7 +43,7 @@ class InvoiceResponse(BaseModel):
     created_by: int
     created_at: Optional[datetime] = None
     email_sent_at: Optional[datetime] = None
-    review_flag: Optional[str] = None
+    review_notes: List[InvoiceReviewNoteResponse] = []
     flag_acknowledged_at: Optional[datetime] = None
     flag_acknowledged_by: Optional[int] = None
     approved_by: Optional[int] = None
@@ -38,7 +56,14 @@ class InvoiceResponse(BaseModel):
 
 
 class FlagForReviewRequest(BaseModel):
-    reason: str
+    """Decision 094: dropped the free-text `reason` -- a permanent
+    financial audit record shouldn't be built from client-supplied
+    prose. old_arrival_date/old_departure_date are the only real input
+    needed (the new dates are already on the booking row by the time
+    this call runs, read directly from there); the service layer
+    recomputes the actual price breakdown for both sides itself."""
+    old_arrival_date: date
+    old_departure_date: date
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +177,36 @@ class HotelCashbackFulfillmentResponse(BaseModel):
     notes: Optional[str] = None
     recorded_by: int
     recorded_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ---------------------------------------------------------------------------
+# Voucher -- Decision 097. Deliberately no pricing/discount/commission
+# fields anywhere in this schema -- the guest-facing document, not
+# Invoice's financial one.
+# ---------------------------------------------------------------------------
+
+class VoucherResponse(BaseModel):
+    id: int
+    voucher_number: str
+    booking_id: int
+    agent_id: int
+    hotel_id: int
+    confirmation_number: str
+    hotel_name: str
+    arrival_date: date
+    departure_date: date
+    room_type_name: str
+    meal_plan_label: Optional[str] = None
+    guest_names: Optional[str] = None
+    adults: int
+    children: int
+    infants: int
+    created_by: int
+    created_at: Optional[datetime] = None
+    email_sent_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

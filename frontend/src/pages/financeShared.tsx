@@ -14,6 +14,21 @@ import { API_URL } from "../config";
 // unrelated pages that happen to share a few small utils.
 // ---------------------------------------------------------------------------
 
+export interface InvoiceReviewNote {
+  id: number;
+  sequence_number: number;
+  change_description: string | null;
+  old_arrival_date: string | null;
+  old_departure_date: string | null;
+  old_total: number | null;
+  old_offer_name: string | null;
+  new_arrival_date: string | null;
+  new_departure_date: string | null;
+  new_total: number | null;
+  new_offer_name: string | null;
+  created_at: string;
+}
+
 export interface Invoice {
   id: number;
   invoice_number: string;
@@ -29,7 +44,7 @@ export interface Invoice {
   total: number;
   status: string;
   email_sent_at: string | null;
-  review_flag: string | null;
+  review_notes: InvoiceReviewNote[];
   flag_acknowledged_at: string | null;
   flag_acknowledged_by: number | null;
   created_by: number;
@@ -87,12 +102,127 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
   );
 }
 
-// A flagged invoice only counts as "urgent" (red row, sort-to-top, badge)
-// while it's still unacknowledged AND not Void -- both approval (via
-// flag_acknowledged_at) and voiding exit urgent, without ever clearing
-// review_flag's own text, which stays as permanent history either way.
+// Decision 093: urgency is computed from the latest review note's
+// timestamp vs. flag_acknowledged_at, not from a single field that has
+// to be remembered and cleared -- mirrors the exact same logic as the
+// backend's list_urgent_invoices query, so the two can never disagree.
+// This structurally fixes a real, DB-traced bug in the old
+// review_flag+flag_acknowledged_at pair: a second flag after
+// acknowledgment updated the text but never reset flag_acknowledged_at,
+// so it silently never re-appeared as urgent.
 export function isUrgentFlag(inv: Invoice): boolean {
-  return Boolean(inv.review_flag) && !inv.flag_acknowledged_at && inv.status !== "Void";
+  if (inv.status === "Void" || inv.review_notes.length === 0) return false;
+  if (!inv.flag_acknowledged_at) return true;
+  const latestNote = inv.review_notes[inv.review_notes.length - 1];
+  return new Date(latestNote.created_at) > new Date(inv.flag_acknowledged_at);
+}
+
+// Decision 094: a note has a structured price snapshot (both old_total
+// and new_total set) when it was created by the date-change flow after
+// Decision 094 shipped -- the 14 pre-Decision-094 legacy notes only
+// ever have change_description text, no structured fields at all.
+export function hasPriceSnapshot(note: InvoiceReviewNote): boolean {
+  return note.old_total !== null && note.new_total !== null;
+}
+
+export function formatSingleNote(note: InvoiceReviewNote, currency: string): string {
+  if (hasPriceSnapshot(note)) {
+    const diff = note.new_total! - note.old_total!;
+    const diffStr = Math.abs(diff) <= 0.01 ? "без изменений" : `${diff > 0 ? "+" : ""}${formatMoney(diff, currency)}`;
+    return (
+      `Изменено ${note.sequence_number} (${formatDate(note.created_at)}): ` +
+      `Было [${formatDate(note.old_arrival_date!)} – ${formatDate(note.old_departure_date!)}], ` +
+      `${note.old_offer_name ?? "только контракт"}, итого ${formatMoney(note.old_total!, currency)} → ` +
+      `Стало [${formatDate(note.new_arrival_date!)} – ${formatDate(note.new_departure_date!)}], ` +
+      `${note.new_offer_name ?? "только контракт"}, итого ${formatMoney(note.new_total!, currency)} ` +
+      `(разница: ${diffStr})`
+    );
+  }
+  return `Изменено ${note.sequence_number}: ${note.change_description ?? ""} (${formatDate(note.created_at)})`;
+}
+
+// Joined, single-string rendering of the full numbered history -- used
+// wherever the review_notes list needs to collapse into one string
+// (CSV export, tooltips, confirm() dialogs), so the full history is
+// still visible even outside the detail modal's own list rendering.
+export function formatReviewNotes(notes: InvoiceReviewNote[], currency: string): string {
+  return notes.map((note) => formatSingleNote(note, currency)).join("\n");
+}
+
+// Decision 096: a highlighted "this specific thing changed" line for
+// InvoiceDetailModal's "Текущее состояние брони" block, generic across
+// whatever kind of change a note captures -- not hardcoded to dates.
+// Each field-change type this project ever adds gets its own small
+// "build" function producing this exact shape; deriveChangeHighlights
+// below is where a future one gets wired in. Rendering never needs to
+// change, only this file.
+export interface ChangeHighlight {
+  label: string;
+  newValue: string;
+  oldValue: string;
+  delta: string;
+}
+
+function pluralizeNights(n: number): string {
+  const abs = Math.abs(n);
+  const mod10 = abs % 10;
+  const mod100 = abs % 100;
+  if (mod100 >= 11 && mod100 <= 14) return "ночей";
+  if (mod10 === 1) return "ночь";
+  if (mod10 >= 2 && mod10 <= 4) return "ночи";
+  return "ночей";
+}
+
+function daysBetween(a: string, b: string): number {
+  return Math.round((new Date(b).getTime() - new Date(a).getTime()) / 86400000);
+}
+
+function buildDateChangeHighlight(
+  oldArrival: string, oldDeparture: string, newArrival: string, newDeparture: string
+): ChangeHighlight {
+  const nightsDiff = daysBetween(oldArrival, oldDeparture) * -1 + daysBetween(newArrival, newDeparture);
+  let delta: string;
+  if (nightsDiff !== 0) {
+    delta = `${nightsDiff > 0 ? "+" : ""}${nightsDiff} ${pluralizeNights(nightsDiff)}`;
+  } else {
+    const shiftDays = daysBetween(oldArrival, newArrival);
+    delta = shiftDays !== 0 ? `смещено на ${shiftDays > 0 ? "+" : ""}${shiftDays} дн.` : "без изменений";
+  }
+  return {
+    label: "Новые даты",
+    newValue: `${formatDate(newArrival)} – ${formatDate(newDeparture)}`,
+    oldValue: `${formatDate(oldArrival)} – ${formatDate(oldDeparture)}`,
+    delta,
+  };
+}
+
+// latestNote's old_* fields are compared against the live-fetched
+// booking's CURRENT dates (passed in as currentArrival/currentDeparture)
+// -- not the note's own new_* fields -- since the modal already fetches
+// the booking separately for exactly this "what's actually true right
+// now" purpose, and that's more robust than trusting a snapshot field.
+// Only ever derived from the LATEST note (the single most recent
+// change), not cumulative drift across every note in the history.
+export function deriveChangeHighlights(
+  latestNote: InvoiceReviewNote | undefined,
+  currentArrival: string,
+  currentDeparture: string
+): ChangeHighlight[] {
+  const highlights: ChangeHighlight[] = [];
+  if (
+    latestNote?.old_arrival_date &&
+    latestNote.old_departure_date &&
+    (latestNote.old_arrival_date !== currentArrival || latestNote.old_departure_date !== currentDeparture)
+  ) {
+    highlights.push(
+      buildDateChangeHighlight(latestNote.old_arrival_date, latestNote.old_departure_date, currentArrival, currentDeparture)
+    );
+  }
+  // Future extension point: a note type capturing a room-type or
+  // meal-plan change would add another `if (latestNote?.old_room_type_name
+  // && ...) highlights.push(buildRoomTypeChangeHighlight(...))` block
+  // here, same {label, oldValue, newValue, delta} shape.
+  return highlights;
 }
 
 // "Void" (Invoice) and "Cancelled" (Booking) are deliberately NOT
@@ -390,6 +520,8 @@ export function InvoiceDetailModal({
     ? booking.total_amount + (booking.transfer_total || 0) + (booking.mandatory_tax_total || 0)
     : null;
   const mismatch = liveTotal !== null && Math.abs(liveTotal - invoice.total) > 0.01;
+  const latestNote = invoice.review_notes.length > 0 ? invoice.review_notes[invoice.review_notes.length - 1] : undefined;
+  const changeHighlights = booking ? deriveChangeHighlights(latestNote, booking.arrival_date, booking.departure_date) : [];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4" onClick={onClose}>
@@ -424,10 +556,14 @@ export function InvoiceDetailModal({
           )}
         </div>
 
-        {invoice.review_flag && (
+        {invoice.review_notes.length > 0 && (
           isUrgentFlag(invoice) ? (
             <div className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-sm font-medium text-coral">
-              <div>⚠ {invoice.review_flag}</div>
+              <div className="space-y-1.5">
+                {invoice.review_notes.map((note) => (
+                  <div key={note.id}>⚠ {formatSingleNote(note, invoice.currency)}</div>
+                ))}
+              </div>
               {invoice.status === "Issued" && (
                 <button
                   type="button"
@@ -441,18 +577,25 @@ export function InvoiceDetailModal({
             </div>
           ) : (
             <div className="mt-3 rounded-lg bg-ink/5 px-3 py-2 text-xs text-slate/60">
-              {invoice.flag_acknowledged_at
-                ? `Изменено (проверено ${
-                    invoice.flag_acknowledged_by !== null
-                      ? actorNames[invoice.flag_acknowledged_by] ?? `#${invoice.flag_acknowledged_by}`
-                      : "—"
-                  }, ${formatDate(invoice.flag_acknowledged_at)}): ${invoice.review_flag}`
-                : invoice.review_flag}
+              {invoice.flag_acknowledged_at && (
+                <p className="mb-1">
+                  Проверено (
+                  {invoice.flag_acknowledged_by !== null
+                    ? actorNames[invoice.flag_acknowledged_by] ?? `#${invoice.flag_acknowledged_by}`
+                    : "—"}
+                  , {formatDate(invoice.flag_acknowledged_at)})
+                </p>
+              )}
+              <div className="space-y-1">
+                {invoice.review_notes.map((note) => (
+                  <div key={note.id}>{formatSingleNote(note, invoice.currency)}</div>
+                ))}
+              </div>
             </div>
           )
         )}
 
-        {invoice.review_flag && !loading && !error && liveTotal !== null && (
+        {invoice.review_notes.length > 0 && !loading && !error && liveTotal !== null && (
           <div className="mt-3 rounded-lg border border-ink/10 bg-sand/40 p-3 text-sm">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-slate/70">
@@ -507,6 +650,12 @@ export function InvoiceDetailModal({
 
               <div className={`rounded-xl border p-3 ${mismatch ? "border-coral/40 bg-coral/5" : "border-ink/10"}`}>
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Текущее состояние брони</p>
+                {changeHighlights.map((h, i) => (
+                  <div key={i} className="mt-2 rounded-lg bg-coral/10 px-2 py-1.5 text-sm font-medium text-coral">
+                    {h.label}: {h.newValue}{" "}
+                    <span className="font-normal text-coral/70">(было: {h.oldValue}, {h.delta})</span>
+                  </div>
+                ))}
                 {roomBreakdown && booking && (
                   <div className="mt-2 space-y-1 text-sm">
                     <div className="flex justify-between"><span className="text-slate/60">Базовая ставка (нетто)</span><span className="text-ink">{formatMoney(roomBreakdown.base_total, roomBreakdown.currency)}</span></div>

@@ -1,16 +1,20 @@
 from datetime import date
 from typing import Optional
+import uuid
 
+from sqlalchemy import exists, func, or_
 from sqlalchemy.orm import Session
 
 from database.db import SessionLocal
 from app.engines.finance.models import (
     Invoice,
+    InvoiceReviewNote,
     CreditNote,
     AgentStatement,
     AgentStatementLine,
     HotelCashbackArrangement,
     HotelCashbackFulfillment,
+    Voucher,
 )
 
 
@@ -53,15 +57,77 @@ def list_invoices_by_agent_in_range(db: Session, agent_id: int, start_date: date
 
 def list_urgent_invoices(db: Session) -> list[Invoice]:
     """Decision 087: the one 'list many at once, unscoped by agent'
-    query that stays safe at real scale, by construction -- a Draft
-    invoice with an unacknowledged review_flag should be rare, not
-    proportional to total invoice count. If it isn't rare, that's a
-    real operational signal, not a reason to hide the list."""
+    query that stays safe at real scale, by construction -- an invoice
+    with an unacknowledged review note should be rare, not proportional
+    to total invoice count. If it isn't rare, that's a real operational
+    signal, not a reason to hide the list.
+
+    Decision 093: urgent = has at least one InvoiceReviewNote AND
+    (never acknowledged, or the latest note is newer than the last
+    acknowledgment) -- computed from the notes' own timestamps every
+    time, not from a field that has to be remembered and cleared. This
+    is the actual fix for a real, DB-traced bug in the old
+    review_flag+flag_acknowledged_at pair: a second flag after
+    acknowledgment updated the text but never reset
+    flag_acknowledged_at, so it silently never re-appeared here."""
+    latest_note_at = (
+        db.query(func.max(InvoiceReviewNote.created_at))
+        .filter(InvoiceReviewNote.invoice_id == Invoice.id)
+        .correlate(Invoice)
+        .scalar_subquery()
+    )
     return db.query(Invoice).filter(
-        Invoice.review_flag.isnot(None),
-        Invoice.flag_acknowledged_at.is_(None),
         Invoice.status != "Void",
+        exists().where(InvoiceReviewNote.invoice_id == Invoice.id),
+        or_(
+            Invoice.flag_acknowledged_at.is_(None),
+            latest_note_at > Invoice.flag_acknowledged_at,
+        ),
     ).all()
+
+
+# ---------------------------------------------------------------------------
+# InvoiceReviewNote -- append-only, no update/delete.
+# ---------------------------------------------------------------------------
+
+def create_review_note(db: Session, **fields) -> InvoiceReviewNote:
+    """Decision 094: generic **fields (same convention as create_invoice/
+    create_credit_note elsewhere in this file) instead of an exhaustive
+    parameter list -- the caller now assembles a real structured price
+    snapshot (old_total/old_offer_name/new_total/new_offer_name/dates),
+    not just invoice_id/sequence_number/change_description."""
+    row = InvoiceReviewNote(**fields)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_review_notes_by_invoice(db: Session, invoice_id: int) -> list[InvoiceReviewNote]:
+    return (
+        db.query(InvoiceReviewNote)
+        .filter(InvoiceReviewNote.invoice_id == invoice_id)
+        .order_by(InvoiceReviewNote.sequence_number)
+        .all()
+    )
+
+
+def list_review_notes_by_invoice_ids(db: Session, invoice_ids: list[int]) -> dict[int, list[InvoiceReviewNote]]:
+    """Bulk variant for list-returning service functions -- one query
+    for however many invoices are already in the (already-bounded)
+    result set, instead of N+1."""
+    if not invoice_ids:
+        return {}
+    notes = (
+        db.query(InvoiceReviewNote)
+        .filter(InvoiceReviewNote.invoice_id.in_(invoice_ids))
+        .order_by(InvoiceReviewNote.invoice_id, InvoiceReviewNote.sequence_number)
+        .all()
+    )
+    grouped: dict[int, list[InvoiceReviewNote]] = {iid: [] for iid in invoice_ids}
+    for note in notes:
+        grouped[note.invoice_id].append(note)
+    return grouped
 
 
 def create_invoice(db: Session, **fields) -> Invoice:
@@ -224,3 +290,29 @@ def create_cashback_fulfillment(db: Session, **fields) -> HotelCashbackFulfillme
     db.commit()
     db.refresh(row)
     return row
+
+
+# ---------------------------------------------------------------------------
+# Voucher -- append-only (not "one per booking"), no update/delete.
+# ---------------------------------------------------------------------------
+
+def create_voucher(db: Session, **fields) -> Voucher:
+    """Decision 097: voucher_number is sequential (VCH-000001), same
+    flush-before-commit technique Decision 090 introduced for
+    booking_number -- a throwaway placeholder satisfies the column's
+    NOT NULL/UNIQUE constraints until the row's real id exists after
+    flush, then gets overwritten with the real sequential number before
+    commit. Not a UUID scheme that would just need fixing later, same
+    reasoning Decision 090 already established project-wide."""
+    fields["voucher_number"] = f"__pending-{uuid.uuid4().hex}"
+    row = Voucher(**fields)
+    db.add(row)
+    db.flush()
+    row.voucher_number = f"VCH-{row.id:06d}"
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_vouchers_by_booking(db: Session, booking_id: int) -> list[Voucher]:
+    return db.query(Voucher).filter(Voucher.booking_id == booking_id).order_by(Voucher.created_at).all()

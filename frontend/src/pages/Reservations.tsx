@@ -42,6 +42,7 @@ interface Booking {
   dates_changed_at: string | null;
   claimed_by: number | null;
   claimed_at: string | null;
+  confirmation_number: string | null;
   created_at: string;
 }
 
@@ -884,6 +885,110 @@ function FlightNumbersEdit({
 }
 
 // ---------------------------------------------------------------------------
+// Confirmation-number edit (Decision 097) — the hotel's own reference
+// number, entered by a manager once received (typically after sending
+// the LPO and getting a hotel reply). Saving a new, non-empty value
+// best-effort fires Finance Engine's Voucher auto-generation-and-send
+// (POST /finance-engine/bookings/{id}/voucher) -- same frontend
+// orchestration pattern as Decision 080's claim-auto-invoice and
+// Decision 083's date-change-flag, avoiding any change to LOCKED
+// Booking Engine. Only fires for an actually-new value, not a resave of
+// the same one (would otherwise spam a fresh voucher email on every
+// unrelated edit-and-resave).
+// ---------------------------------------------------------------------------
+
+function ConfirmationNumberEdit({
+  booking,
+  onUpdated,
+  canEdit,
+}: {
+  booking: Booking;
+  onUpdated: (updated: Booking) => void;
+  canEdit: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(booking.confirmation_number ?? "");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSave() {
+    const token = localStorage.getItem("token") || "";
+    const trimmed = value.trim() || null;
+    const previous = booking.confirmation_number;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const updated = await fetchJson<Booking>(`/booking-engine/bookings/${booking.id}`, token, {
+        method: "PUT",
+        body: JSON.stringify({ confirmation_number: trimmed }),
+      });
+      onUpdated(updated);
+      setEditing(false);
+      if (trimmed && trimmed !== previous) {
+        fetchJson(`/finance-engine/bookings/${booking.id}/voucher`, token, { method: "POST" }).catch(() => {
+          // Best-effort -- nothing to recover here even if this fails.
+        });
+      }
+    } catch (err: any) {
+      setError(err.message || "Не удалось сохранить номер подтверждения");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!canEdit) return null;
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        className="rounded-lg border border-ink/15 bg-white px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:bg-sand"
+      >
+        {booking.confirmation_number ? "Изменить номер подтверждения" : "Добавить номер подтверждения"}
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-2 space-y-2 rounded-lg border border-ink/10 bg-sand/30 p-3">
+      <input
+        placeholder="Номер подтверждения отеля"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+      />
+      {value.trim() && value.trim() !== (booking.confirmation_number ?? "") && (
+        <p className="text-[11px] text-slate/50">
+          При сохранении агенту автоматически будет отправлен ваучер с этим номером.
+        </p>
+      )}
+      {error && (
+        <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{error}</div>
+      )}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={submitting}
+          className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+        >
+          {submitting ? "Сохранение..." : "Сохранить"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          disabled={submitting}
+          className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Отмена
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Detail panel — guests, meal plan, transfer, cancellation info, and an
 // on-demand re-derived price breakdown for one booking
 // ---------------------------------------------------------------------------
@@ -1091,22 +1196,35 @@ function BookingDetail({
       onBookingUpdated(updated);
       setChangeDatesOpen(false);
       setChangeDatesReason("");
-      // Decision 083 (Requirement 2): best-effort, frontend-only side
-      // effect -- flags a still-Draft invoice for this booking as
-      // needing review, same shape as Decision 080's claim-auto-invoice.
-      // Silently no-ops server-side if no Draft invoice exists (the
-      // common case) or the invoice already moved past Draft. Never
-      // affects the date change itself, which already succeeded above.
-      if (permissions.canManageInvoices) {
-        fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/flag-for-review`, token, {
-          method: "POST",
-          body: JSON.stringify({
-            reason: `Даты изменены после создания счёта: ${oldArrival} – ${oldDeparture} → ${newCheckIn} – ${newCheckOut}. Суммы могли устареть.`,
-          }),
-        }).catch(() => {
-          // Best-effort -- nothing to recover here even if this fails.
-        });
-      }
+      // Decision 083 (Requirement 2), extended by Decision 094, fixed by
+      // Decision 098: best-effort, frontend-only side effect -- appends
+      // a numbered review note for this booking's invoice (if any, and
+      // not Void), same shape as Decision 080's claim-auto-invoice.
+      // Only the old dates are sent -- the new dates are already on the
+      // booking row by now (the change-dates call above already
+      // succeeded), and the backend recomputes the real price breakdown
+      // for both sides itself rather than trusting a client-supplied
+      // number for a permanent audit record. Never affects the date
+      // change itself, which already succeeded above.
+      //
+      // Decision 098: deliberately NOT gated by permissions.canManageInvoices
+      // anymore -- a real, traced bug found that gate (meant only for
+      // "can this user see Draft invoice data") also silently blocked an
+      // agent's own date change from ever flagging their own booking's
+      // invoice, since AgentDashboard_v2.tsx passes canManageInvoices:
+      // false. This call now fires for ANY successful date change,
+      // agent or admin; Finance Engine's own endpoint independently
+      // enforces who's actually allowed to do this
+      // (_require_admin_or_owning_agent).
+      fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/flag-for-review`, token, {
+        method: "POST",
+        body: JSON.stringify({
+          old_arrival_date: oldArrival,
+          old_departure_date: oldDeparture,
+        }),
+      }).catch(() => {
+        // Best-effort -- nothing to recover here even if this fails.
+      });
     } catch (err: any) {
       setChangeDatesError(err.message || "Не удалось изменить даты");
     } finally {
@@ -1721,6 +1839,12 @@ function BookingDetail({
             <span className="text-slate/50">Питание: </span>
             <span className="text-ink">{mealPlanInfo?.meal_name || mealPlanInfo?.meal_code || `#${booking.meal_plan_id}`}</span>
           </div>
+          {booking.confirmation_number && (
+            <div>
+              <span className="text-slate/50">Номер подтверждения: </span>
+              <span className="text-ink">{booking.confirmation_number}</span>
+            </div>
+          )}
           {booking.arrival_flight_number && (
             <div>
               <span className="text-slate/50">Рейс прилёта: </span>
@@ -1773,6 +1897,16 @@ function BookingDetail({
             </p>
             <p className="font-medium text-ink">—</p>
           </div>
+        </div>
+
+        {/* ===== Подтверждение отеля (Decision 097) ===== */}
+        <div className="mt-4 flex items-center justify-between">
+          <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">Подтверждение отеля</h4>
+          <ConfirmationNumberEdit
+            booking={booking}
+            onUpdated={onBookingUpdated}
+            canEdit={permissions.canManageInvoices}
+          />
         </div>
 
         {/* ===== Re-derived price breakdown ===== */}

@@ -132,6 +132,14 @@ class Booking(Base):
     # AI-agent identity actually exists to test against.
     claimed_by = Column(Integer, nullable=True)
     claimed_at = Column(DateTime, nullable=True)
+    # Decision 097: the hotel's own reference number, entered manually by
+    # a manager once received (typically after sending the LPO and
+    # getting a hotel reply) -- same nullable-String-on-Booking shape as
+    # arrival_flight_number/departure_flight_number above, same
+    # LOCKED-engine additive-extension precedent as Decisions 084/089/090.
+    # Saving a real value here is the trigger Finance Engine's Voucher
+    # generation orchestrates off of (frontend-only, no coupling here).
+    confirmation_number = Column(String(100), nullable=True)
     created_by = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -69,32 +69,27 @@ class Invoice(Base):
     # email call site in this project (email is always best-effort,
     # never blocks the real action).
     email_sent_at = Column(DateTime(timezone=True), nullable=True)
-    # Decision 083 (Requirement 2): NULL = clean; non-NULL = both the
-    # "needs review" signal and the human-readable reason in one field
-    # (e.g. "Даты изменены после создания счёта: ..."), set via
-    # frontend orchestration from Reservations.tsx's date-change
-    # handler -- same pattern as Decision 080's claim-auto-invoice,
-    # avoiding both a circular import (Finance already imports Booking
-    # Engine's service.py) and any touch of LOCKED Booking Engine.
-    # Decision 089: previously only ever set on a Draft invoice (an
-    # Issued one's staleness was treated as "a Credit Note's job, not
-    # this flag's") -- but no Credit-Note-triggering workflow was ever
-    # built off this event, so a real booking date change after Issued
-    # produced zero signal anywhere. Now also set on Issued invoices;
-    # only a Void invoice is excluded (already dead). Never
-    # auto-cleared: the recovery path for a genuinely-wrong flagged
-    # Draft is Void + recreate (reruns compute_booking_financials
-    # against the booking's current state), not an in-place edit.
-    review_flag = Column(String(500), nullable=True)
-    # Decision 085: set only when approve_and_send_invoice runs while
-    # review_flag is populated -- the "this was reviewed and
-    # acknowledged" signal, distinct from review_flag's text (which
-    # never changes, permanent history). Used by the frontend to stop
-    # rendering a flagged-but-approved invoice as urgent (red row,
-    # sort-to-top, badge), without ever hiding or clearing the
-    # underlying reason. Decision 089: also set directly by the new
-    # acknowledge_review_flag action, for an Issued invoice's flag
-    # (approve_and_send_invoice only applies to Draft -> Issued).
+    # Decision 083 (Requirement 2), superseded by Decision 093: this was
+    # originally a single overwritable text field (NULL = clean,
+    # non-NULL = both "needs review" and the reason in one field) --
+    # replaced by the InvoiceReviewNote child table below. The physical
+    # `review_flag` column still exists in the SQLite file (SQLite
+    # column drops are unnecessary DDL risk for zero benefit) but is no
+    # longer mapped here; its history was backfilled into
+    # InvoiceReviewNote rows before this line was removed. Real,
+    # DB-traced bug this fixed: the old field was always overwritten by
+    # a new flag (never "set once"), but flag_acknowledged_at was never
+    # reset alongside it, so a second flag after an acknowledgment
+    # silently never re-appeared as urgent -- a class of bug the new
+    # "urgency computed from latest note vs. acknowledged_at" design
+    # eliminates structurally instead of patching around it.
+    # Decision 085: flag_acknowledged_at/flag_acknowledged_by now mean
+    # "all InvoiceReviewNotes as of this timestamp were reviewed" --
+    # still set by approve_and_send_invoice (Draft path) and
+    # acknowledge_review_flag (Issued path), same actor+timestamp
+    # pairing as approved_by/voided_by below. A note created AFTER this
+    # timestamp makes the invoice urgent again automatically -- no
+    # field needs to be manually cleared.
     flag_acknowledged_at = Column(DateTime(timezone=True), nullable=True)
     # Decision 089: who acknowledged the flag -- set alongside
     # flag_acknowledged_at by both approve_and_send_invoice (Draft path)
@@ -113,6 +108,64 @@ class Invoice(Base):
     approved_at = Column(DateTime(timezone=True), nullable=True)
     voided_by = Column(Integer, nullable=True)
     voided_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class InvoiceReviewNote(Base):
+    """Decision 093: append-only numbered history of every 'this
+    invoice's booking changed after the invoice existed' event --
+    replaces Invoice.review_flag's single overwritable text field, which
+    had a real, DB-traced bug: a second flag after acknowledgment
+    silently never re-surfaced as urgent (see Invoice.flag_acknowledged_at's
+    docstring). Never updated or deleted once created -- same
+    "never mutate history" principle as AI Core Engine's
+    HumanGateDecision and this Engine's own AgentStatementLine.
+    sequence_number is assigned by service.py (1, 2, 3... per invoice,
+    never reused), not a DB identity column, so it reads naturally as
+    "Изменено 1", "Изменено 2" in the UI regardless of the row's own
+    internal id.
+
+    Decision 094: change_description alone ("Даты изменены с X на Y")
+    doesn't tell accounting whether the price actually moved or why --
+    the 8 nullable old_*/new_* columns below capture the real price
+    breakdown (via Contract/Pricing Engine's own get_room_price/
+    get_transfer_price/get_mandatory_tax/apply_agent_pricing) for BOTH
+    the old and new dates, snapshotted server-side at the moment this
+    note is created -- never client-supplied (a permanent financial
+    audit record shouldn't trust a client's report of historical
+    pricing) and never reconstructed later (season/offer availability
+    can itself change over time, so a later recompute wouldn't
+    necessarily match what was true at the actual moment of change).
+    old_offer_name/new_offer_name are NULL when no SpecialOffer applied
+    ("только контракт" at display time), not an empty string.
+    change_description itself became nullable here (a real SQLite table
+    rebuild, not just an ALTER -- the table had only test rows, so this
+    was cheap) since a structured note doesn't need a redundant
+    free-text sentence; it's still used verbatim by the 14 pre-Decision-
+    094 legacy notes, which have no structured snapshot at all.
+
+    Deliberately NOT built here, logged for later only: a per-note
+    hotel-confirmation status/comment (e.g. "Отправлено отелю, ожидаем
+    подтверждения" / "Отель подтвердил по этой цене") -- ties into
+    Decision 029's future AI-hotel-correspondence work, not something
+    this session has any real need to build yet."""
+
+    __tablename__ = "invoice_review_notes"
+
+    id = Column(Integer, primary_key=True)
+    # Intra-engine relation (Invoice lives in this same Engine) -- real
+    # ForeignKey, same convention as CreditNote.invoice_id.
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False)
+    sequence_number = Column(Integer, nullable=False)
+    change_description = Column(String(500), nullable=True)
+    old_arrival_date = Column(Date, nullable=True)
+    old_departure_date = Column(Date, nullable=True)
+    old_total = Column(Float, nullable=True)
+    old_offer_name = Column(String(100), nullable=True)
+    new_arrival_date = Column(Date, nullable=True)
+    new_departure_date = Column(Date, nullable=True)
+    new_total = Column(Float, nullable=True)
+    new_offer_name = Column(String(100), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class CreditNote(Base):
@@ -240,3 +293,68 @@ class HotelCashbackFulfillment(Base):
     notes = Column(Text, nullable=True)
     recorded_by = Column(Integer, nullable=False)
     recorded_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Voucher(Base):
+    """Decision 097: the guest-facing proof-of-booking document -- hotel
+    name/dates/room type/guest names/meal plan/the hotel's own
+    confirmation number, what a guest presents at check-in. Deliberately
+    carries NO pricing/discount/commission figures at all -- that's
+    Invoice's job, a completely separate document for a completely
+    separate audience (agent/accounting vs. the guest). This is
+    `01_Modules_List.md` §11's originally-deferred "Voucher" item
+    (Decision 076 explicitly excluded it from Finance Engine's initial
+    scope); built now as a genuine additive extension to this
+    already-LOCKED Engine, not a new deferral being closed early.
+
+    Lives in Finance Engine, not Booking Engine, despite being
+    booking-content-heavy: every piece of infrastructure this needs
+    already exists here and nowhere else (the generate-a-document/
+    resolve-agent-email/send-via-email_service pattern Invoice already
+    established, the read-only booking_service/hotel_service/
+    contract_service cross-engine imports, the sequential-number scheme
+    Decision 090 introduced). Booking Engine has never had a new entity
+    added to it this whole project -- every LOCKED-Booking-Engine touch
+    (Decisions 082/084/089/090/095) has been a single field, never a
+    table.
+
+    Fields are a frozen snapshot at generation time, same "never
+    silently drift if the booking changes later" principle Invoice's
+    own fields already follow -- resolved once, from booking/hotel/
+    contract/guest data, then never re-derived.
+
+    Deliberately NOT "one per booking" like Invoice -- mirrors
+    CreditNote's append-only relationship to Invoice instead: a hotel
+    correcting its confirmation number later produces a new Voucher,
+    not a blocked-on-one-existing error. No status/review workflow
+    (unlike Invoice's Draft/Issued gate) -- generation IS the send
+    action here, since nothing about a guest-facing document needs an
+    internal accounting approval step the way an agent's bill does."""
+
+    __tablename__ = "vouchers"
+
+    id = Column(Integer, primary_key=True)
+    voucher_number = Column(String(50), unique=True, nullable=False)
+    # Cross-engine refs into Booking/Hotel Engine -- plain Integer, no
+    # ForeignKey, same convention every Engine uses.
+    booking_id = Column(Integer, nullable=False)
+    agent_id = Column(Integer, nullable=False)
+    hotel_id = Column(Integer, nullable=False)
+    confirmation_number = Column(String(100), nullable=False)
+    hotel_name = Column(String(200), nullable=False)
+    arrival_date = Column(Date, nullable=False)
+    departure_date = Column(Date, nullable=False)
+    room_type_name = Column(String(200), nullable=False)
+    meal_plan_label = Column(String(100), nullable=True)
+    guest_names = Column(Text, nullable=True)
+    adults = Column(Integer, nullable=False)
+    children = Column(Integer, nullable=False, default=0)
+    infants = Column(Integer, nullable=False, default=0)
+    created_by = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Decision 081's own email_sent_at precedent exactly: set only when
+    # send_real_email genuinely returns True. No SMTP configured
+    # anywhere in this project today, so this stays NULL for every real
+    # voucher, same as every invoice email -- an honest signal, not a
+    # silent failure.
+    email_sent_at = Column(DateTime(timezone=True), nullable=True)

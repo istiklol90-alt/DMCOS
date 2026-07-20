@@ -67,6 +67,7 @@ class BookingUpdate(BaseModel):
     departure_flight_date: Optional[date] = None
     departure_flight_time: Optional[str] = Field(None, max_length=5)
     status: Optional[BookingUpdatableStatus] = None
+    confirmation_number: Optional[str] = None
 
 
 class BookingCancelRequest(BaseModel):
@@ -119,6 +120,7 @@ class BookingResponse(BaseModel):
     dates_changed_at: Optional[datetime] = None
     claimed_by: Optional[int] = None
     claimed_at: Optional[datetime] = None
+    confirmation_number: Optional[str] = None
     created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime

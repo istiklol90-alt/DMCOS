@@ -4,6 +4,7 @@ import {
   fetchJson,
   formatMoney,
   formatDate,
+  formatReviewNotes,
   StatusBadge,
   isUrgentFlag,
   voidLabel,
@@ -25,6 +26,15 @@ function csvEscape(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
+// Decision 092: accepts a bare number ("21") as well as the full BK-000021
+// form -- strips any BK-/bk- prefix, keeps only digits, zero-pads to 6.
+function normalizeBookingNumber(raw: string): string {
+  const trimmed = raw.trim();
+  const withoutPrefix = trimmed.toUpperCase().startsWith("BK-") ? trimmed.slice(3) : trimmed;
+  const digits = withoutPrefix.replace(/\D/g, "");
+  return digits ? `BK-${digits.padStart(6, "0")}` : trimmed.toUpperCase();
+}
+
 function exportInvoicesCsv(invoices: Invoice[], agentLabel: string) {
   const headers = ["№ счёта", "Booking", "Отель", "Дата", "Сумма", "Валюта", "Статус", "Email отправлен", "Флаг"];
   const rows = invoices.map((inv) => [
@@ -36,7 +46,7 @@ function exportInvoicesCsv(invoices: Invoice[], agentLabel: string) {
     inv.currency,
     inv.status,
     inv.email_sent_at ? new Date(inv.email_sent_at).toLocaleString("ru-RU") : "не отправлено",
-    inv.review_flag ?? "",
+    formatReviewNotes(inv.review_notes, inv.currency),
   ]);
   const bom = String.fromCharCode(0xfeff);
   const csvContent = bom + [headers, ...rows].map((row) => row.map(csvEscape).join(",")).join("\r\n");
@@ -110,7 +120,7 @@ function InvoiceTable({
                     {isUrgentFlag(inv) && (
                       <span
                         className="cursor-help rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white"
-                        title={inv.review_flag ?? undefined}
+                        title={formatReviewNotes(inv.review_notes, inv.currency) || undefined}
                       >
                         Требует внимания
                       </span>
@@ -185,10 +195,17 @@ const Invoices = () => {
   const [urgent, setUrgent] = useState<Invoice[]>([]);
   const [urgentLoading, setUrgentLoading] = useState(true);
 
+  const [searchMode, setSearchMode] = useState<"agent" | "booking">("agent");
+
   const [selectedAgent, setSelectedAgent] = useState<AgentOption | null>(null);
   const [agentInvoices, setAgentInvoices] = useState<Invoice[]>([]);
   const [agentInvoicesLoading, setAgentInvoicesLoading] = useState(false);
   const [agentInvoicesError, setAgentInvoicesError] = useState<string | null>(null);
+
+  const [bookingNumberQuery, setBookingNumberQuery] = useState("");
+  const [bookingSearchLoading, setBookingSearchLoading] = useState(false);
+  const [bookingSearchError, setBookingSearchError] = useState<string | null>(null);
+  const [bookingSearchResults, setBookingSearchResults] = useState<Invoice[]>([]);
 
   const [voidingId, setVoidingId] = useState<number | null>(null);
   const [approvingId, setApprovingId] = useState<number | null>(null);
@@ -229,9 +246,23 @@ const Invoices = () => {
     else setAgentInvoices([]);
   }, [selectedAgent]);
 
+  async function refreshBookingSearchResults() {
+    if (bookingSearchResults.length === 0) return;
+    const token = localStorage.getItem("token") || "";
+    try {
+      const refreshed = await Promise.all(
+        bookingSearchResults.map((inv) => fetchJson<Invoice>(`/finance-engine/invoices/${inv.id}`, token))
+      );
+      setBookingSearchResults(refreshed);
+    } catch {
+      // best-effort refresh -- keep showing the stale-but-still-valid rows rather than clearing them
+    }
+  }
+
   async function refreshBoth() {
     await loadUrgent();
     if (selectedAgent) await loadAgentInvoices(selectedAgent.id);
+    await refreshBookingSearchResults();
   }
 
   async function handleVoid(id: number) {
@@ -249,8 +280,8 @@ const Invoices = () => {
   }
 
   async function handleApproveAndSend(invoice: Invoice) {
-    const confirmMessage = invoice.review_flag
-      ? `⚠ ВНИМАНИЕ: ${invoice.review_flag}\n\nОдобрить и отправить счёт агенту всё равно?`
+    const confirmMessage = isUrgentFlag(invoice)
+      ? `⚠ ВНИМАНИЕ:\n${formatReviewNotes(invoice.review_notes, invoice.currency)}\n\nОдобрить и отправить счёт агенту всё равно?`
       : "Одобрить и отправить счёт агенту?";
     if (!window.confirm(confirmMessage)) return;
     const token = localStorage.getItem("token") || "";
@@ -265,8 +296,48 @@ const Invoices = () => {
     }
   }
 
+  async function handleBookingNumberSearch() {
+    const tokens = bookingNumberQuery
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    if (tokens.length === 0) {
+      setBookingSearchError("Введите номер брони");
+      return;
+    }
+    const token = localStorage.getItem("token") || "";
+    setBookingSearchLoading(true);
+    setBookingSearchError(null);
+    setBookingSearchResults([]);
+
+    const found: Invoice[] = [];
+    const problems: string[] = [];
+
+    for (const raw of tokens) {
+      const number = normalizeBookingNumber(raw);
+      try {
+        const booking = await fetchJson<{ id: number; booking_number: string }>(
+          `/booking-engine/bookings/by-number/${encodeURIComponent(number)}`,
+          token
+        );
+        try {
+          const invoice = await fetchJson<Invoice>(`/finance-engine/bookings/${booking.id}/invoice`, token);
+          found.push(invoice);
+        } catch {
+          problems.push(`${booking.booking_number}: счёта пока нет`);
+        }
+      } catch {
+        problems.push(`${number}: не найдено`);
+      }
+    }
+
+    setBookingSearchResults(found);
+    setBookingSearchError(problems.length > 0 ? problems.join("; ") : null);
+    setBookingSearchLoading(false);
+  }
+
   async function handleAcknowledge(invoice: Invoice) {
-    const confirmMessage = `⚠ ${invoice.review_flag}\n\nОтметить как проверено? Счёт останется Issued без повторной отправки агенту.`;
+    const confirmMessage = `⚠\n${formatReviewNotes(invoice.review_notes, invoice.currency)}\n\nОтметить как проверено? Счёт останется Issued без повторной отправки агенту.`;
     if (!window.confirm(confirmMessage)) return;
     const token = localStorage.getItem("token") || "";
     try {
@@ -309,9 +380,78 @@ const Invoices = () => {
       </div>
 
       {/* Search-first -- the full invoice list for a given agent is never
-          fetched until that one agent is explicitly selected. */}
+          fetched until that one agent is explicitly selected. Two search
+          modes (Decision 091): "По агенту" (browse an agent's whole
+          list) vs "По номеру брони" (jump directly to one known
+          booking's invoice) -- a toggle, not one smart auto-detecting
+          field, since the two are different interaction shapes
+          (select-from-autocomplete vs type-and-submit-to-jump). */}
       <div className="mt-8">
-        <h3 className="font-display text-lg font-semibold text-ink">Счета по агенту</h3>
+        <h3 className="font-display text-lg font-semibold text-ink">Поиск счетов</h3>
+
+        <div className="mt-3 flex gap-1 border-b border-ink/10">
+          <button
+            type="button"
+            onClick={() => setSearchMode("agent")}
+            className={`appearance-none border-0 border-b-2 bg-transparent px-4 py-2 text-sm font-medium transition-colors ${
+              searchMode === "agent" ? "border-coral text-ink" : "border-transparent text-slate/60 hover:text-ink"
+            }`}
+          >
+            По агенту
+          </button>
+          <button
+            type="button"
+            onClick={() => setSearchMode("booking")}
+            className={`appearance-none border-0 border-b-2 bg-transparent px-4 py-2 text-sm font-medium transition-colors ${
+              searchMode === "booking" ? "border-coral text-ink" : "border-transparent text-slate/60 hover:text-ink"
+            }`}
+          >
+            По номеру брони
+          </button>
+        </div>
+
+        {searchMode === "booking" && (
+          <div className="mt-3">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <input
+                type="text"
+                value={bookingNumberQuery}
+                onChange={(e) => setBookingNumberQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleBookingNumberSearch();
+                }}
+                placeholder="Например: 21 или 21, 22"
+                className="min-w-[260px] appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+              />
+              <button
+                type="button"
+                onClick={handleBookingNumberSearch}
+                disabled={bookingSearchLoading}
+                className="appearance-none rounded-lg border-0 bg-coral px-5 py-2.5 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+              >
+                {bookingSearchLoading ? "..." : "Найти"}
+              </button>
+            </div>
+            {bookingSearchError && <p className="mt-3 text-sm text-red-600">{bookingSearchError}</p>}
+            {bookingSearchResults.length > 0 && (
+              <div className="mt-4">
+                <InvoiceTable
+                  invoices={bookingSearchResults}
+                  onVoid={handleVoid}
+                  onApprove={handleApproveAndSend}
+                  onDetail={setDetailInvoice}
+                  onAcknowledge={handleAcknowledge}
+                  voidingId={voidingId}
+                  approvingId={approvingId}
+                  acknowledgingId={acknowledgingId}
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {searchMode === "agent" && (
+          <>
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2.5">
           <AgentSearchSelect selected={selectedAgent} onSelect={setSelectedAgent} />
           {selectedAgent && (
@@ -350,6 +490,8 @@ const Invoices = () => {
               acknowledgingId={acknowledgingId}
             />
           </div>
+        )}
+          </>
         )}
       </div>
 

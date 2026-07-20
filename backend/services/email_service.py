@@ -243,3 +243,41 @@ def send_invoice_email(data: dict) -> bool:
         "С уважением,\nDMC OS"
     )
     return send_real_email(data["agent_email"], subject, body)
+
+
+def send_voucher_email(data: dict) -> bool:
+    """
+    Decision 097: the guest-facing proof-of-booking document, sent
+    automatically once a manager saves a booking's confirmation_number
+    -- same graceful console-log fallback (no SMTP configured anywhere
+    in this project yet), same "never raises, always best-effort"
+    contract as every other email in this file. Deliberately contains
+    NO pricing/discount/commission figures anywhere in this table --
+    that's send_invoice_email's job, a completely separate document for
+    a completely separate audience (the guest, via the agent, not
+    accounting). Every value in `data` is pre-resolved by the caller
+    (finance/service.py's create_and_send_voucher), same caller-
+    resolves/function-only-formats-and-sends split as every other
+    function in this file.
+    """
+    rows = [
+        ("Отель", data["hotel_name"]),
+        ("Номер подтверждения отеля", data["confirmation_number"]),
+        ("Бронирование", data["booking_number"]),
+        ("Заезд", data["arrival_date"]),
+        ("Выезд", data["departure_date"]),
+        ("Тип номера", data["room_type_name"]),
+        ("План питания", data["meal_plan_label"] or "—"),
+        ("Гости", data["guest_names"] or "—"),
+        ("Взрослые / Дети / Младенцы", f"{data['adults']} / {data['children']} / {data['infants']}"),
+    ]
+
+    subject = f"Ваучер — {data['hotel_name']} — подтверждение {data['confirmation_number']}"
+    body = (
+        f"Здравствуйте, {data['agent_name']}!\n\n"
+        f"Бронирование {data['booking_number']} подтверждено отелем.\n\n"
+        f"{_render_text_table(rows)}\n\n"
+        "Этот документ подтверждает бронирование для гостя.\n\n"
+        "С уважением,\nDMC OS"
+    )
+    return send_real_email(data["agent_email"], subject, body)

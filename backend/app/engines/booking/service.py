@@ -546,6 +546,18 @@ def change_booking_dates(db: Session, booking_id: int, data: BookingDateChangeRe
             agent_exclusive_discount_amount=agent_pricing["exclusive_discount_amount"],
             transfer_total=transfer_total,
             mandatory_tax_total=mandatory_tax_total,
+            # Decision 095: real, previously-undiscovered bug -- this call
+            # never included applied_special_offer_id, so it stayed frozen
+            # at whatever create_booking originally set it to, silently
+            # wrong on every date change that crossed a SpecialOffer
+            # boundary, ever since Decision 048 introduced the column.
+            # Same bug shape as Decision 082 (agent_markup_amount/
+            # agent_exclusive_discount_amount going stale on date change),
+            # just never covered by that fix since it's a different field.
+            applied_special_offer_id=(
+                price["applied_special_offer_ids"][0]
+                if len(price["applied_special_offer_ids"]) == 1 else None
+            ),
             date_change_reason=data.reason,
             dates_changed_at=datetime.utcnow(),
         )
