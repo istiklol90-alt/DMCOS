@@ -415,7 +415,10 @@ def build_agent_invoice_export(db: Session, agent_id: int, start_date: date, end
     wb = Workbook()
     ws = wb.active
     ws.title = "Invoices"
-    headers = ["Booking №", "Отель", "Заезд", "Выезд", "№ счёта", "Дата выставления", "Сумма", "Валюта", "Статус"]
+    headers = [
+        "Booking №", "Отель", "Заезд", "Выезд", "№ счёта", "Дата выставления",
+        "Сумма", "Прибыль", "Валюта", "Статус",
+    ]
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True)
@@ -423,6 +426,15 @@ def build_agent_invoice_export(db: Session, agent_id: int, start_date: date, end
     for invoice in invoices:
         booking = booking_service.get_booking(db, invoice.booking_id)
         hotel = hotel_service.get_hotel(db, invoice.hotel_id)
+        # Decision 101: same commission - discount formula as everywhere
+        # else this session added Profit -- empty cell (not 0) when
+        # either side is None, same NULL-vs-zero distinction the rest of
+        # this Engine already carries.
+        profit = (
+            invoice.commission - invoice.discount
+            if invoice.commission is not None and invoice.discount is not None
+            else ""
+        )
         ws.append([
             booking.booking_number,
             hotel.hotel_name,
@@ -431,6 +443,7 @@ def build_agent_invoice_export(db: Session, agent_id: int, start_date: date, end
             invoice.invoice_number,
             invoice.issue_date.isoformat(),
             invoice.total,
+            profit,
             invoice.currency,
             invoice.status,
         ])
@@ -856,3 +869,82 @@ def create_and_send_voucher(db: Session, booking_id: int, created_by: int) -> Vo
         created_by=created_by,
         email_sent_at=datetime.utcnow() if sent else None,
     )
+
+
+def get_invoice_status(db: Session, booking_id: int) -> str | None:
+    """
+    Decision 102: the ONLY invoice-related data an agent's own view is
+    ever allowed to receive over the network for their own booking --
+    literally just the status string, never subtotal/discount/
+    commission/tax/total. Returning None (not raising) when no invoice
+    exists at all is deliberate: the caller (BookingDetail's
+    "В работе" vs download-link decision) treats "no invoice yet" and
+    "Draft" identically anyway, so this stays a plain lookup, not
+    another ValueError-to-400 case.
+    """
+    invoice = repository.get_invoice_by_booking(db, booking_id)
+    return invoice.status if invoice is not None else None
+
+
+def get_latest_voucher(db: Session, booking_id: int) -> Voucher:
+    """
+    Decision 102: Voucher is deliberately append-only (Decision 097 --
+    not "one per booking"), so a booking's confirmation_number being
+    corrected later produces a NEW row, not an update to the old one.
+    "The voucher" for download purposes is always the most recent one.
+    """
+    vouchers = repository.list_vouchers_by_booking(db, booking_id)
+    if not vouchers:
+        raise ValueError(f"Booking {booking_id} has no voucher yet")
+    return vouchers[-1]
+
+
+def build_voucher_download_text(voucher: Voucher) -> str:
+    """Decision 102: same guest-facing-only content shape as
+    send_voucher_email's own table -- zero pricing/discount/commission
+    fields, reused verbatim as a real downloadable .txt rather than
+    only ever existing as an email body."""
+    lines = [
+        f"ВАУЧЕР {voucher.voucher_number}",
+        "",
+        f"Отель: {voucher.hotel_name}",
+        f"Номер подтверждения отеля: {voucher.confirmation_number}",
+        f"Заезд: {voucher.arrival_date.isoformat()}",
+        f"Выезд: {voucher.departure_date.isoformat()}",
+        f"Тип номера: {voucher.room_type_name}",
+        f"План питания: {voucher.meal_plan_label or '—'}",
+        f"Гости: {voucher.guest_names or '—'}",
+        f"Взрослые / Дети / Младенцы: {voucher.adults} / {voucher.children} / {voucher.infants}",
+        "",
+        "Этот документ подтверждает бронирование для гостя.",
+    ]
+    return "\n".join(lines)
+
+
+def build_invoice_download_text(db: Session, invoice: Invoice) -> str:
+    """
+    Decision 102: only ever reachable for a status=="Issued" invoice
+    (the caller/endpoint enforces this, matching the existing Draft-
+    invisibility principle -- Draft content is never exposed to an
+    agent through any path). Same line items send_invoice_email has
+    already been putting in the agent's own inbox since Decision 081 --
+    Комиссия/Скидка on an agent's OWN invoice is their bill's own
+    breakdown, not the internal Profit framing Decision 102's list/
+    detail-view fix was actually about; reuses that already-approved
+    content shape here, not a more revealing new one.
+    """
+    booking = booking_service.get_booking(db, invoice.booking_id)
+    hotel = hotel_service.get_hotel(db, invoice.hotel_id)
+    lines = [
+        f"СЧЁТ {invoice.invoice_number}",
+        "",
+        f"Отель: {hotel.hotel_name}",
+        f"Бронирование: {booking.booking_number}",
+        f"Дата выставления: {invoice.issue_date.isoformat()}",
+        f"Сумма номера (нетто): {invoice.subtotal} {invoice.currency}",
+        f"Скидка: {invoice.discount if invoice.discount is not None else '—'} {invoice.currency}",
+        f"Комиссия: {invoice.commission if invoice.commission is not None else '—'} {invoice.currency}",
+        f"Налог: {invoice.tax if invoice.tax is not None else '—'} {invoice.currency}",
+        f"ИТОГО К ОПЛАТЕ: {invoice.total} {invoice.currency}",
+    ]
+    return "\n".join(lines)

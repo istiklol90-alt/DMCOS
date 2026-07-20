@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { API_URL } from "../config";
 import type { Invoice, AgentOption } from "./financeShared";
-import { fetchJson, formatMoney, AgentSearchSelect } from "./financeShared";
+import { fetchJson, formatMoney, AgentSearchSelect, invoiceProfit } from "./financeShared";
 
 // ---------------------------------------------------------------------------
 // "Баланс" -- Decision 088 restructure. Search-first agent + date-range
@@ -82,6 +82,11 @@ const Balance = () => {
 
   const currency = invoices[0]?.currency ?? "USD";
   const totalAmount = invoices.reduce((sum, inv) => sum + inv.total, 0);
+  // Decision 101: not-computed invoices (pre-Decision-069) contribute 0
+  // to this aggregate -- same precedent generate_agent_statement's own
+  // total_profit already uses on the backend (distinct from a single
+  // invoice's own null, which stays "—" wherever shown individually).
+  const totalProfit = invoices.reduce((sum, inv) => sum + (invoiceProfit(inv) ?? 0), 0);
   const byStatus: Record<string, number> = {};
   invoices.forEach((inv) => {
     byStatus[inv.status] = (byStatus[inv.status] ?? 0) + 1;
@@ -144,6 +149,12 @@ const Balance = () => {
             <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Сумма</p>
             <p className="mt-1 font-display text-2xl font-semibold text-ink">
               {invoices.length > 0 ? formatMoney(totalAmount, currency) : "—"}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-ink/10 bg-white px-4 py-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Прибыль</p>
+            <p className="mt-1 font-display text-2xl font-semibold text-ink">
+              {invoices.length > 0 ? formatMoney(totalProfit, currency) : "—"}
             </p>
           </div>
           {Object.entries(byStatus).map(([status, count]) => (

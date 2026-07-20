@@ -54,6 +54,63 @@ export interface Invoice {
   voided_at: string | null;
 }
 
+// Decision 101: single shared source of truth for Net/Sale/Profit,
+// reused by Reservations.tsx (detail modal + list table) and this
+// module's own InvoiceDetailModal -- a direct TypeScript mirror of the
+// backend's compute_booking_financials (finance/service.py), operating
+// on booking fields already fetched client-side, no new API calls. Only
+// figures that were never a fake placeholder to begin with belonged
+// hardcoded in six different places; this exists so the real formula
+// only ever lives in exactly one of them.
+export interface BookingFinancialsInput {
+  total_amount: number;
+  agent_markup_amount: number | null;
+  agent_exclusive_discount_amount: number | null;
+  transfer_total: number | null;
+  mandatory_tax_total: number | null;
+}
+
+export interface BookingFinancials {
+  roomNet: number;
+  roomSale: number;
+  netTotal: number;
+  saleTotal: number;
+  // null (not 0) when agent_markup_amount is null -- a booking that
+  // predates Decision 069's Pricing Engine integration never had a
+  // markup computed at all, same NULL-vs-zero distinction the backend's
+  // own markup_computed flag already carries.
+  profit: number | null;
+}
+
+export function computeBookingFinancials(b: BookingFinancialsInput): BookingFinancials {
+  const transfer = b.transfer_total ?? 0;
+  const tax = b.mandatory_tax_total ?? 0;
+  const markupComputed = b.agent_markup_amount !== null;
+  const markup = b.agent_markup_amount ?? 0;
+  const discount = b.agent_exclusive_discount_amount ?? 0;
+
+  const roomNet = b.total_amount - markup + discount;
+  return {
+    roomNet,
+    roomSale: b.total_amount,
+    netTotal: roomNet + transfer + tax,
+    saleTotal: b.total_amount + transfer + tax,
+    profit: markupComputed ? markup - discount : null,
+  };
+}
+
+// Same formula as BookingFinancials.profit, applied to an already-frozen
+// Invoice's own commission/discount instead of a live Booking's markup/
+// discount -- the two are numerically identical at the moment an
+// invoice is created (Invoice.commission IS booking.agent_markup_amount,
+// frozen), but this is the correct source for the "Зафиксировано в
+// счёте" (frozen) side of InvoiceDetailModal, where computeBookingFinancials
+// would need the live booking instead.
+export function invoiceProfit(inv: { commission: number | null; discount: number | null }): number | null {
+  if (inv.commission === null || inv.discount === null) return null;
+  return inv.commission - inv.discount;
+}
+
 export async function fetchJson<T>(path: string, token: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...options,
@@ -528,10 +585,13 @@ export function InvoiceDetailModal({
       .finally(() => setLoading(false));
   }, [invoice.booking_id]);
 
-  const liveTotal = booking
-    ? booking.total_amount + (booking.transfer_total || 0) + (booking.mandatory_tax_total || 0)
-    : null;
+  // Decision 101: liveFinancials.saleTotal replaces what used to be a
+  // separately hand-written liveTotal formula -- same numbers, one
+  // source of truth instead of two copies of the same arithmetic.
+  const liveFinancials = booking ? computeBookingFinancials(booking) : null;
+  const liveTotal = liveFinancials ? liveFinancials.saleTotal : null;
   const mismatch = liveTotal !== null && Math.abs(liveTotal - invoice.total) > 0.01;
+  const frozenProfit = invoiceProfit(invoice);
   const latestNote = invoice.review_notes.length > 0 ? invoice.review_notes[invoice.review_notes.length - 1] : undefined;
   const changeHighlights = booking ? deriveChangeHighlights(latestNote, booking.arrival_date, booking.departure_date) : [];
 
@@ -655,6 +715,7 @@ export function InvoiceDetailModal({
                   <div className="flex justify-between"><span className="text-slate/60">Сумма номера (нетто+трансфер)</span><span className="text-ink">{formatMoney(invoice.subtotal, invoice.currency)}</span></div>
                   <div className="flex justify-between"><span className="text-slate/60">Скидка</span><span className="text-ink">{invoice.discount !== null ? formatMoney(invoice.discount, invoice.currency) : "—"}</span></div>
                   <div className="flex justify-between"><span className="text-slate/60">Комиссия</span><span className="text-ink">{invoice.commission !== null ? formatMoney(invoice.commission, invoice.currency) : "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate/60">Прибыль</span><span className="text-ink">{frozenProfit !== null ? formatMoney(frozenProfit, invoice.currency) : "—"}</span></div>
                   <div className="flex justify-between"><span className="text-slate/60">Налог</span><span className="text-ink">{invoice.tax !== null ? formatMoney(invoice.tax, invoice.currency) : "—"}</span></div>
                   <div className="flex justify-between border-t border-ink/10 pt-1 font-medium"><span className="text-ink">Итого</span><span className="text-ink">{formatMoney(invoice.total, invoice.currency)}</span></div>
                 </div>
@@ -674,6 +735,7 @@ export function InvoiceDetailModal({
                     <div className="flex justify-between"><span className="text-slate/60">Надбавки</span><span className="text-ink">{formatMoney(roomBreakdown.supplements_total, roomBreakdown.currency)}</span></div>
                     <div className="flex justify-between"><span className="text-slate/60">Скидка</span><span className="text-ink">{booking.agent_exclusive_discount_amount !== null ? formatMoney(booking.agent_exclusive_discount_amount, booking.currency) : "—"}</span></div>
                     <div className="flex justify-between"><span className="text-slate/60">Комиссия</span><span className="text-ink">{booking.agent_markup_amount !== null ? formatMoney(booking.agent_markup_amount, booking.currency) : "—"}</span></div>
+                    <div className="flex justify-between"><span className="text-slate/60">Прибыль</span><span className="text-ink">{liveFinancials && liveFinancials.profit !== null ? formatMoney(liveFinancials.profit, booking.currency) : "—"}</span></div>
                     {transferBreakdown && (
                       <div className="flex justify-between"><span className="text-slate/60">Трансфер ({transferBreakdown.transfer_name})</span><span className="text-ink">{formatMoney(transferBreakdown.total, transferBreakdown.currency)}</span></div>
                     )}

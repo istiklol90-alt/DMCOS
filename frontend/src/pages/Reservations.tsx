@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { API_URL } from "../config";
 import { DateRangePicker } from "./HotelSearch";
 import type { InvoiceReviewNote } from "./financeShared";
-import { isUrgentFlag, formatSingleNote } from "./financeShared";
+import { isUrgentFlag, formatSingleNote, computeBookingFinancials } from "./financeShared";
 
 // ---------------------------------------------------------------------------
 // Types (only the fields this screen actually reads)
@@ -26,6 +26,11 @@ interface Booking {
   status: string;
   currency: string;
   total_amount: number;
+  // Decision 101: were missing entirely -- Reservations.tsx's own
+  // Net/Sale/Profit display had no way to compute a real figure without
+  // these, even though the backend has returned them since Decision 069.
+  agent_markup_amount: number | null;
+  agent_exclusive_discount_amount: number | null;
   transfer_type: string | null;
   transfer_total: number | null;
   mandatory_tax_total: number | null;
@@ -1003,6 +1008,120 @@ function ConfirmationNumberEdit({
 }
 
 // ---------------------------------------------------------------------------
+// Documents — Voucher/Invoice download (Decision 102). Visible to both
+// admin and the owning agent (document access/ownership, not the
+// Cost/Profit boundary), each gated independently: Voucher requires a
+// confirmation_number (hotel has confirmed), Invoice requires the
+// backend's own /invoice/status to report "Issued" (approved and sent
+// by accounting) -- fetched via a status-only endpoint deliberately, so
+// no financial figures ever reach the agent's browser even unrendered.
+// Both show "В работе" until ready, matching the existing
+// Draft-invisibility principle already established for invoices.
+// ---------------------------------------------------------------------------
+
+function DocumentsSection({ booking }: { booking: Booking }) {
+  const [invoiceStatus, setInvoiceStatus] = useState<string | null>(null);
+  const [statusLoading, setStatusLoading] = useState(true);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setStatusLoading(true);
+    const token = localStorage.getItem("token") || "";
+    fetchJson<{ status: string | null }>(`/finance-engine/bookings/${booking.id}/invoice/status`, token)
+      .then((r) => {
+        if (!cancelled) setInvoiceStatus(r.status);
+      })
+      .catch(() => {
+        if (!cancelled) setInvoiceStatus(null);
+      })
+      .finally(() => {
+        if (!cancelled) setStatusLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [booking.id]);
+
+  async function handleDownload(kind: "voucher" | "invoice") {
+    setDownloadError(null);
+    const token = localStorage.getItem("token") || "";
+    const path =
+      kind === "voucher"
+        ? `/finance-engine/bookings/${booking.id}/voucher/download`
+        : `/finance-engine/bookings/${booking.id}/invoice/download`;
+    try {
+      const response = await fetch(`${API_URL}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) {
+        let detail = `Ошибка запроса (${response.status})`;
+        try {
+          const body = await response.json();
+          if (body?.detail) detail = body.detail;
+        } catch {
+          // response body wasn't JSON -- keep the generic message
+        }
+        throw new Error(detail);
+      }
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename = match ? match[1] : `${kind}.txt`;
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setDownloadError(err.message || "Не удалось скачать документ");
+    }
+  }
+
+  return (
+    <div className="mt-4">
+      <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">Документы</h4>
+      <div className="mt-2 space-y-1.5 text-sm">
+        <div className="flex items-center justify-between">
+          <span className="text-slate/70">Ваучер</span>
+          {booking.confirmation_number ? (
+            <button
+              type="button"
+              onClick={() => handleDownload("voucher")}
+              className="font-medium text-coral hover:underline"
+            >
+              Скачать
+            </button>
+          ) : (
+            <span className="text-slate/40">В работе</span>
+          )}
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-slate/70">Счёт</span>
+          {statusLoading ? (
+            <span className="text-slate/40">...</span>
+          ) : invoiceStatus === "Issued" ? (
+            <button
+              type="button"
+              onClick={() => handleDownload("invoice")}
+              className="font-medium text-coral hover:underline"
+            >
+              Скачать
+            </button>
+          ) : (
+            <span className="text-slate/40">В работе</span>
+          )}
+        </div>
+      </div>
+      {downloadError && (
+        <p className="mt-1.5 text-xs font-medium text-coral">{downloadError}</p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Detail panel — guests, meal plan, transfer, cancellation info, and an
 // on-demand re-derived price breakdown for one booking
 // ---------------------------------------------------------------------------
@@ -1486,6 +1605,13 @@ function BookingDetail({
     }
   }
 
+  // Decision 101: real Net/Sale/Profit, replacing a hardcoded formula
+  // that made Net always equal Sale and a fake "—" Profit with a stale
+  // "not implemented" tooltip -- Pricing Engine has been live since
+  // Decision 069. Same shared computeBookingFinancials() the list table
+  // and financeShared.tsx's InvoiceDetailModal both use.
+  const financials = computeBookingFinancials(booking);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/40 px-4 py-10"
@@ -1908,39 +2034,45 @@ function BookingDetail({
           )}
         </div>
 
-        {/* ===== Net / Sale / Profit ===== */}
-        <div className="mt-4 grid grid-cols-3 gap-3 rounded-lg bg-sand/50 p-3 text-sm">
-          <div>
-            <p className="text-slate/50">Net cost</p>
-            <p className="font-medium text-ink">
-              {formatMoney(
-                (booking.total_amount || 0) + (booking.transfer_total || 0) + (booking.mandatory_tax_total || 0),
-                booking.currency
-              )}
-            </p>
+        {/* ===== Net / Sale / Profit (Decision 101, gated by Decision 102) =====
+            Decision 102: URGENT fix -- this block rendered unconditionally
+            (a real, confirmed leak: Cost/Profit are internal commercial
+            data, an agent must never see them, only the total they're
+            charged). Same permission boundary Decision 099/100 already
+            established for invoice visibility generally. */}
+        {permissions.canManageInvoices ? (
+          <div className="mt-4 grid grid-cols-3 gap-3 rounded-lg bg-sand/50 p-3 text-sm">
+            <div>
+              <p className="text-slate/50">Net cost</p>
+              <p className="font-medium text-ink">{formatMoney(financials.netTotal, booking.currency)}</p>
+            </div>
+            <div>
+              <p className="text-slate/50">Sale price</p>
+              <p className="font-medium text-ink">{formatMoney(financials.saleTotal, booking.currency)}</p>
+            </div>
+            <div>
+              <p className="flex items-center gap-1 text-slate/50">
+                Profit
+                {financials.profit === null && (
+                  <span
+                    className="cursor-help text-slate/40"
+                    title="Не рассчитано — бронирование создано до внедрения Pricing Engine (Decision 069)"
+                  >
+                    ⓘ
+                  </span>
+                )}
+              </p>
+              <p className="font-medium text-ink">
+                {financials.profit !== null ? formatMoney(financials.profit, booking.currency) : "—"}
+              </p>
+            </div>
           </div>
-          <div>
-            <p className="text-slate/50">Sale price</p>
-            <p className="font-medium text-ink">
-              {formatMoney(
-                (booking.total_amount || 0) + (booking.transfer_total || 0) + (booking.mandatory_tax_total || 0),
-                booking.currency
-              )}
-            </p>
+        ) : (
+          <div className="mt-4 rounded-lg bg-sand/50 p-3 text-sm">
+            <p className="text-slate/50">Итого</p>
+            <p className="font-medium text-ink">{formatMoney(financials.saleTotal, booking.currency)}</p>
           </div>
-          <div>
-            <p className="flex items-center gap-1 text-slate/50">
-              Profit
-              <span
-                className="cursor-help text-slate/40"
-                title="Наценка агента ещё не реализована — Pricing Engine (Decision 009)"
-              >
-                ⓘ
-              </span>
-            </p>
-            <p className="font-medium text-ink">—</p>
-          </div>
-        </div>
+        )}
 
         {/* ===== Подтверждение отеля (Decision 097) ===== */}
         <div className="mt-4 flex items-center justify-between">
@@ -1951,6 +2083,12 @@ function BookingDetail({
             canEdit={permissions.canManageInvoices}
           />
         </div>
+
+        {/* ===== Документы (Decision 102) — visible to admin and the
+            owning agent alike; not gated by canManageInvoices since this
+            is about document access/ownership, not the Cost/Profit
+            confidentiality boundary. ===== */}
+        <DocumentsSection booking={booking} />
 
         {/* ===== Re-derived price breakdown ===== */}
         <div className="mt-4 rounded-lg border border-ink/10 p-3 text-sm">
@@ -2191,7 +2329,10 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
     [bookings]
   );
 
-  const netOf = (b: Booking) => (b.total_amount || 0) + (b.transfer_total || 0) + (b.mandatory_tax_total || 0);
+  // Decision 101: real net total (was previously identical to sale
+  // total by construction -- the same bug the detail modal had, sorting
+  // by "net" was actually sorting by sale price).
+  const netOf = (b: Booking) => computeBookingFinancials(b).netTotal;
 
   const filteredSorted = useMemo(() => {
     let list = bookings;
@@ -2429,26 +2570,31 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
                 Статус{sortArrow("status")}
               </th>
               <th className="px-4 py-3 font-medium">Валюта</th>
-              <th
-                className="cursor-pointer select-none px-4 py-3 font-medium"
-                onClick={() => toggleSort("net")}
-              >
-                Net cost{sortArrow("net")}
-              </th>
+              {permissions.canManageInvoices && (
+                <th
+                  className="cursor-pointer select-none px-4 py-3 font-medium"
+                  onClick={() => toggleSort("net")}
+                >
+                  Net cost{sortArrow("net")}
+                </th>
+              )}
               <th className="px-4 py-3 font-medium">Sale price</th>
-              <th className="px-4 py-3 font-medium">Profit</th>
+              {permissions.canManageInvoices && <th className="px-4 py-3 font-medium">Profit</th>}
             </tr>
           </thead>
           <tbody>
             {filteredSorted.length === 0 ? (
               <tr>
-                <td colSpan={scope.type === "all" ? 11 : 10} className="px-4 py-10 text-center text-sm text-slate/50">
+                <td
+                  colSpan={8 + (scope.type === "all" ? 1 : 0) + (permissions.canManageInvoices ? 2 : 0)}
+                  className="px-4 py-10 text-center text-sm text-slate/50"
+                >
                   Бронирования не найдены
                 </td>
               </tr>
             ) : (
               filteredSorted.map((b) => {
-                const net = netOf(b);
+                const financials = computeBookingFinancials(b);
                 // "Взято в работу" overlay (independent of the status
                 // badge): only meaningful for Pending bookings -- a
                 // Cancelled/old booking doesn't need an "has anyone
@@ -2528,16 +2674,24 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
                       </div>
                     </td>
                     <td className="px-4 py-3.5 text-slate/70">{b.currency}</td>
-                    <td className="whitespace-nowrap px-4 py-3.5 font-medium text-ink">{formatNumber(net)}</td>
-                    <td className="whitespace-nowrap px-4 py-3.5 font-medium text-ink">{formatNumber(net)}</td>
-                    <td className="whitespace-nowrap px-4 py-3.5">
-                      <span
-                        className="cursor-help text-slate/40"
-                        title="Наценка агента ещё не реализована — Pricing Engine (Decision 009)"
-                      >
-                        —
-                      </span>
-                    </td>
+                    {permissions.canManageInvoices && (
+                      <td className="whitespace-nowrap px-4 py-3.5 font-medium text-ink">{formatNumber(financials.netTotal)}</td>
+                    )}
+                    <td className="whitespace-nowrap px-4 py-3.5 font-medium text-ink">{formatNumber(financials.saleTotal)}</td>
+                    {permissions.canManageInvoices && (
+                      <td className="whitespace-nowrap px-4 py-3.5 font-medium text-ink">
+                        {financials.profit !== null ? (
+                          formatNumber(financials.profit)
+                        ) : (
+                          <span
+                            className="cursor-help text-slate/40"
+                            title="Не рассчитано — бронирование создано до внедрения Pricing Engine (Decision 069)"
+                          >
+                            —
+                          </span>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 );
               })

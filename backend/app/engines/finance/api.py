@@ -67,11 +67,15 @@ def _require_admin(current_user) -> None:
 def _require_admin_or_owning_agent(current_user, booking) -> None:
     """
     Decision 098: a scoped exception to this router's usual Admin-only
-    gate, for exactly one endpoint (flag-for-review) -- an agent may
-    flag their OWN booking's invoice for review (the side effect of
-    their own date-change action), but every other Finance Engine
-    action (seeing, approving, voiding an invoice, acknowledging a
-    flag) stays Admin-only via _require_admin, completely unchanged.
+    gate -- originally for exactly one endpoint (flag-for-review, so an
+    agent could flag their own booking's invoice for review), extended
+    by Decision 102 to the invoice-status check and the voucher/invoice
+    download endpoints (an agent needs to know/fetch their OWN
+    documents once accounting has confirmed them). Every OTHER Finance
+    Engine action (seeing full invoice data, approving, voiding,
+    acknowledging a flag) stays Admin-only via _require_admin,
+    completely unchanged -- this is deliberately still a narrow,
+    per-endpoint opt-in, not a general Finance Engine relaxation.
 
     Mirrors Booking Engine's own _require_owner_or_admin exactly (same
     role check, same booking.agent_id comparison) -- not imported
@@ -85,7 +89,7 @@ def _require_admin_or_owning_agent(current_user, booking) -> None:
     if role == "admin":
         return
     if current_user.id != booking.agent_id:
-        raise HTTPException(status_code=403, detail="You can only flag your own bookings for review")
+        raise HTTPException(status_code=403, detail="You do not have access to this booking's Finance Engine data")
 
 
 def _run(operation):
@@ -367,3 +371,60 @@ def create_and_send_voucher(booking_id: int, db: Session = Depends(get_db), curr
     approve_and_send_invoice's own hard-fail precedent."""
     _require_admin(current_user)
     return _run(lambda: service.create_and_send_voucher(db, booking_id, created_by=current_user.id))
+
+
+@router.get("/bookings/{booking_id}/voucher/download")
+def download_voucher(booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Decision 102: admin OR the booking's own agent (unlike every
+    other Voucher/Invoice endpoint in this router, which stays
+    Admin-only) -- 404 if no voucher exists yet for this booking
+    (frontend shows "В работе" in that case, never attempts this call
+    speculatively since it already knows booking.confirmation_number).
+    Plain-text .txt, same as the .xlsx export's real-file-download
+    precedent (Decision 086) -- no PDF generation exists anywhere in
+    this project."""
+    booking = _run(lambda: booking_service.get_booking(db, booking_id))
+    _require_admin_or_owning_agent(current_user, booking)
+    voucher = _run(lambda: service.get_latest_voucher(db, booking_id))
+    content = service.build_voucher_download_text(voucher)
+    return Response(
+        content=content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{voucher.voucher_number}.txt"'},
+    )
+
+
+@router.get("/bookings/{booking_id}/invoice/status")
+def get_invoice_status_for_booking(booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Decision 102: admin OR the booking's own agent. Returns ONLY a
+    status string (or null if no invoice exists at all) -- deliberately
+    never the full InvoiceResponse, which carries subtotal/discount/
+    commission/tax/total. This is the one call an agent's own view is
+    allowed to make just to decide "В работе" vs a real download link,
+    without ever putting financial figures on the wire for a role this
+    project has decided must never see them."""
+    booking = _run(lambda: booking_service.get_booking(db, booking_id))
+    _require_admin_or_owning_agent(current_user, booking)
+    return {"status": service.get_invoice_status(db, booking_id)}
+
+
+@router.get("/bookings/{booking_id}/invoice/download")
+def download_invoice(booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Decision 102: admin OR the booking's own agent -- but ONLY when
+    the invoice's status is "Issued". A Draft invoice's content is
+    never reachable through this endpoint for anyone but an admin (via
+    the existing GET .../invoice), matching the Draft-invisibility
+    principle Decision 079 established and this decision's own leak fix
+    reinforces elsewhere on this page."""
+    booking = _run(lambda: booking_service.get_booking(db, booking_id))
+    _require_admin_or_owning_agent(current_user, booking)
+    invoice = _run(lambda: service.get_invoice_by_booking(db, booking_id))
+    role = (current_user.role or "").strip().lower()
+    if role != "admin" and invoice.status != "Issued":
+        raise HTTPException(status_code=404, detail="Invoice not yet issued")
+    content = service.build_invoice_download_text(db, invoice)
+    return Response(
+        content=content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{invoice.invoice_number}.txt"'},
+    )
