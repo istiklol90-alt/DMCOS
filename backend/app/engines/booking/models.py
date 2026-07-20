@@ -140,6 +140,17 @@ class Booking(Base):
     # Saving a real value here is the trigger Finance Engine's Voucher
     # generation orchestrates off of (frontend-only, no coupling here).
     confirmation_number = Column(String(100), nullable=True)
+    # Decision 104: two-stage cancellation confirmation, mirroring
+    # confirmation_number's own shape/precedent exactly but for the
+    # hotel's acknowledgment of a *cancellation* rather than the original
+    # booking. Populated only once status reaches the final "Cancelled"
+    # (set by confirm_cancellation) -- cancellation_reason/cancelled_at/
+    # cancellation_fee/cancelled_by (above) are the request-stage fields,
+    # frozen when status first becomes "Cancellation Requested", and are
+    # never touched again by confirm_cancellation.
+    cancellation_confirmation_number = Column(String(100), nullable=True)
+    cancellation_confirmed_at = Column(DateTime, nullable=True)
+    cancellation_confirmed_by = Column(Integer, nullable=True)
     created_by = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

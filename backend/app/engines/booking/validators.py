@@ -15,12 +15,18 @@ All functions raise ValueError on failure and return None on success.
 from datetime import date
 
 # 03_Domain_Model.md #39 / 02_Logic_Rules.md #47 "Booking Status".
+# "Cancellation Requested" (Decision 104) is the intermediate stage of the
+# two-step cancellation workflow -- deliberately NOT in TERMINAL_STATUSES
+# below (it still needs to transition to "Cancelled"), but excluded from
+# BookingUpdatableStatus in schemas.py so it can only be entered/exited via
+# the dedicated cancel/confirm-cancellation endpoints, never a generic PUT.
 BOOKING_STATUSES = {
     "Draft",
     "Pending",
     "Waiting Hotel",
     "Confirmed",
     "Partially Confirmed",
+    "Cancellation Requested",
     "Cancelled",
     "Rejected",
     "Completed",
@@ -61,6 +67,38 @@ def validate_status_transition(current_status: str, new_status: str) -> None:
         raise ValueError(
             f"Booking status '{current_status}' is terminal (allotment already released) — "
             f"cannot transition to '{new_status}'"
+        )
+
+
+def validate_can_request_cancellation(current_status: str) -> None:
+    """
+    Decision 104: gates the request stage (service.cancel_booking, which
+    now only requests cancellation — see its own docstring). A terminal
+    booking has nothing left to cancel; a booking already in
+    "Cancellation Requested" would silently re-freeze a different fee/
+    reason if allowed to request again, so that's blocked explicitly too
+    rather than just letting a second freeze quietly overwrite the first.
+    """
+    if current_status in TERMINAL_STATUSES:
+        raise ValueError(f"Booking status '{current_status}' is terminal — cannot request cancellation")
+    if current_status == "Cancellation Requested":
+        raise ValueError("Cancellation has already been requested for this booking")
+
+
+def validate_can_confirm_cancellation(current_status: str) -> None:
+    """
+    Decision 104: gates the confirm stage (service.confirm_cancellation).
+    A booking can only be finalized as Cancelled once cancellation has
+    actually been requested — this is the sole legitimate way to reach
+    "Cancellation Requested" -> "Cancelled"; the generic status-update
+    path (update_booking_status) is separately blocked from moving a
+    booking out of "Cancellation Requested" at all (see its own
+    docstring), so this transition has exactly one door.
+    """
+    if current_status != "Cancellation Requested":
+        raise ValueError(
+            f"Booking status '{current_status}' — cancellation must be requested "
+            f"before it can be confirmed"
         )
 
 

@@ -11,16 +11,18 @@ from datetime import datetime, date
 Currency = Literal["USD", "EUR", "GBP", "AED", "RUB", "KZT", "UZS", "TJS"]
 
 # 03_Domain_Model.md #39 / 02_Logic_Rules.md #47 "Booking Status" — the
-# full 8-value set, used for BookingResponse.
+# documented set plus "Cancellation Requested" (Decision 104's two-stage
+# cancellation intermediate), used for BookingResponse.
 BookingStatus = Literal[
     "Draft", "Pending", "Waiting Hotel", "Confirmed", "Partially Confirmed",
-    "Cancelled", "Rejected", "Completed",
+    "Cancellation Requested", "Cancelled", "Rejected", "Completed",
 ]
 
-# Same set minus "Cancelled" — used only in BookingUpdate, so a status
-# change can never smuggle a cancellation past the dedicated
-# BookingCancelRequest flow (which requires a reason and triggers
-# release_allotment as a side effect a generic field edit shouldn't).
+# Same set minus "Cancellation Requested" and "Cancelled" — used only in
+# BookingUpdate, so a status change can never smuggle a cancellation past
+# the dedicated BookingCancelRequest/ConfirmCancellationRequest flows
+# (which require a reason/confirmation number and trigger allotment
+# side effects a generic field edit shouldn't be able to cause).
 BookingUpdatableStatus = Literal[
     "Draft", "Pending", "Waiting Hotel", "Confirmed", "Partially Confirmed",
     "Rejected", "Completed",
@@ -74,6 +76,13 @@ class BookingCancelRequest(BaseModel):
     reason: str = Field(..., min_length=2)
 
 
+class ConfirmCancellationRequest(BaseModel):
+    """Decision 104: stage 2 of the two-step cancellation workflow — the
+    hotel's own acknowledgment reference, same shape as confirmation_number
+    but mandatory here (there's no valid "Cancelled" state without it)."""
+    cancellation_confirmation_number: str = Field(..., min_length=1)
+
+
 class BookingDateChangeRequest(BaseModel):
     new_arrival_date: date
     new_departure_date: date
@@ -116,6 +125,9 @@ class BookingResponse(BaseModel):
     cancelled_at: Optional[datetime] = None
     cancellation_fee: Optional[float] = None
     cancelled_by: Optional[int] = None
+    cancellation_confirmation_number: Optional[str] = None
+    cancellation_confirmed_at: Optional[datetime] = None
+    cancellation_confirmed_by: Optional[int] = None
     date_change_reason: Optional[str] = None
     dates_changed_at: Optional[datetime] = None
     claimed_by: Optional[int] = None

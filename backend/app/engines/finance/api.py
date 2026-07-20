@@ -216,6 +216,40 @@ def flag_invoice_for_review(
     return InvoiceResponse.model_validate(result)
 
 
+@router.post("/bookings/{booking_id}/flag-cancellation-requested")
+def flag_cancellation_requested(
+    booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """
+    Decision 104: same best-effort, 204-or-InvoiceResponse contract as
+    flag-for-review above, called by the frontend right after
+    POST /booking-engine/bookings/{id}/cancel (stage 1) succeeds. No
+    request body -- the note is built entirely server-side from
+    booking.cancellation_reason (see service.add_cancellation_requested_note).
+    Same _require_admin_or_owning_agent gate as flag-for-review, since
+    the request stage can be agent-initiated too.
+    """
+    booking = _run(lambda: booking_service.get_booking(db, booking_id))
+    _require_admin_or_owning_agent(current_user, booking)
+    result = service.add_cancellation_requested_note(db, booking_id)
+    if result is None:
+        return Response(status_code=204)
+    return InvoiceResponse.model_validate(result)
+
+
+@router.post("/bookings/{booking_id}/flag-cancellation-confirmed")
+def flag_cancellation_confirmed(
+    booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """Decision 104: same shape as flag-cancellation-requested above, called after stage 2 (POST /confirm-cancellation) succeeds. Gated by _require_admin, not _require_admin_or_owning_agent -- confirming is itself Admin-only (Booking Engine's own /confirm-cancellation is _require_admin), so only an admin can ever be the caller here anyway."""
+    booking = _run(lambda: booking_service.get_booking(db, booking_id))
+    _require_admin(current_user)
+    result = service.add_cancellation_confirmed_note(db, booking_id)
+    if result is None:
+        return Response(status_code=204)
+    return InvoiceResponse.model_validate(result)
+
+
 @router.post("/invoices/{invoice_id}/void", response_model=InvoiceResponse)
 def void_invoice(invoice_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _require_admin(current_user)

@@ -48,11 +48,14 @@ from app.engines.booking.schemas import (
     BookingUpdate,
     BookingCancelRequest,
     BookingDateChangeRequest,
+    ConfirmCancellationRequest,
     GuestCreate,
 )
 from app.engines.booking.validators import (
     validate_booking_status,
     validate_status_transition,
+    validate_can_request_cancellation,
+    validate_can_confirm_cancellation,
     validate_stay_dates,
     validate_nights_consistency,
     validate_occupancy,
@@ -343,11 +346,25 @@ def update_booking_status(db: Session, booking_id: int, status: str) -> Booking:
     Validate and apply a booking status change on its own. Enforces
     validate_status_transition (Cancelled/Rejected are terminal). If the
     new status is "Rejected", releases the reserved allotment first —
-    same as cancel_booking's release, since a hotel-rejected booking also
-    gives back the room it was holding.
+    same as confirm_cancellation's release, since a hotel-rejected
+    booking also gives back the room it was holding.
+
+    Decision 104: also blocks ANY change while the booking is
+    "Cancellation Requested" — that status has exactly one legitimate
+    exit (confirm_cancellation, which does its own dedicated validation
+    and never routes through this generic function), so a client can't
+    use this path to sidestep the cancellation-confirmation flow (e.g.
+    silently resuming an active booking mid-cancellation, or marking it
+    "Rejected" — both would leave the earlier cancellation request in a
+    confusing, unresolved state).
     """
     booking = _require_booking(db, booking_id)
     validate_booking_status(status)
+    if booking.status == "Cancellation Requested":
+        raise ValueError(
+            "Booking has a pending cancellation request — confirm or handle it via the "
+            "dedicated cancellation endpoints, not a generic status update"
+        )
     validate_status_transition(booking.status, status)
 
     if status == "Rejected":
@@ -360,23 +377,54 @@ def update_booking_status(db: Session, booking_id: int, status: str) -> Booking:
 
 def cancel_booking(db: Session, booking_id: int, data: BookingCancelRequest, cancelled_by: int) -> Booking:
     """
-    Cancel a booking: computes the cancellation fee from Contract Engine's
-    get_cancellation_policy (see _resolve_cancellation_fee for the
-    tier-selection logic), releases the reserved allotment, then records
-    the cancellation (status, reason, timestamp, fee, and per Decision
-    086, who) atomically via repository.cancel_booking.
+    Decision 104, stage 1 of 2 (two-step cancellation — was previously a
+    single-stage, immediate cancel; renamed reasoning kept here since this
+    is the same function/endpoint the project owner asked to change the
+    behavior of, not a new one): computes and FREEZES the cancellation
+    fee from Contract Engine's get_cancellation_policy (see
+    _resolve_cancellation_fee — unchanged logic, just now run at request
+    time rather than at final cancellation, so the fee reflects the
+    notice actually given, not however long the hotel takes to respond),
+    then records the request (status="Cancellation Requested", reason,
+    timestamp, fee, who) atomically via repository.request_cancellation.
+
+    Deliberately does NOT release the allotment — the room stays reserved
+    until the hotel's cancellation is actually confirmed via
+    confirm_cancellation, so it can never be silently double-sold while a
+    cancellation is still only requested, not acknowledged.
     """
     booking = _require_booking(db, booking_id)
-    validate_status_transition(booking.status, "Cancelled")
+    validate_can_request_cancellation(booking.status)
 
     policies = contract_service.get_cancellation_policy(db, booking.contract_id, booking.arrival_date)
     cancellation_fee = _resolve_cancellation_fee(policies, booking)
+
+    return repository.request_cancellation(db, booking, data.reason, cancellation_fee, cancelled_by)
+
+
+def confirm_cancellation(
+    db: Session, booking_id: int, data: ConfirmCancellationRequest, confirmed_by: int
+) -> Booking:
+    """
+    Decision 104, stage 2 of 2: finalizes a "Cancellation Requested"
+    booking as "Cancelled" once the hotel's own acknowledgment reference
+    is in hand. This is the ONLY place release_allotment is called for
+    cancellation now (moved out of cancel_booking/stage 1) — the room is
+    only actually given back once the cancellation is confirmed, not
+    merely requested. cancellation_reason/cancelled_at/cancellation_fee/
+    cancelled_by (stage 1's frozen snapshot) are left completely
+    untouched here.
+    """
+    booking = _require_booking(db, booking_id)
+    validate_can_confirm_cancellation(booking.status)
 
     contract_service.release_allotment(
         db, booking.contract_id, booking.room_type_id, booking.arrival_date, booking.departure_date
     )
 
-    return repository.cancel_booking(db, booking, data.reason, cancellation_fee, cancelled_by)
+    return repository.confirm_cancellation(
+        db, booking, data.cancellation_confirmation_number, confirmed_by
+    )
 
 
 def claim_booking(db: Session, booking_id: int, claimed_by: int) -> Booking:
@@ -463,6 +511,21 @@ def change_booking_dates(db: Session, booking_id: int, data: BookingDateChangeRe
         raise ValueError(
             f"Booking status '{booking.status}' is terminal (allotment already released) — "
             f"cannot change dates"
+        )
+    # Decision 104: a separate, real gap found while designing two-stage
+    # cancellation — TERMINAL_STATUSES deliberately excludes "Cancellation
+    # Requested" (it must still be able to reach "Cancelled"), so the
+    # check above alone wouldn't block this. Changing dates on a booking
+    # with a pending cancellation is nonsensical (the frozen
+    # cancellation_fee/cancellation_reason were computed for the OLD
+    # dates) — blocked here explicitly, same principle as
+    # update_booking_status's own guard, just enforced in this separate
+    # code path since change_booking_dates has never routed through that
+    # generic function.
+    if booking.status == "Cancellation Requested":
+        raise ValueError(
+            "Booking has a pending cancellation request — cannot change dates until it is "
+            "confirmed or the request is otherwise resolved"
         )
 
     validate_stay_dates(data.new_arrival_date, data.new_departure_date)

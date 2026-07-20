@@ -58,8 +58,14 @@ from app.engines.pricing import service as pricing_service
 
 # Booking Engine's validators.TERMINAL_STATUSES -- deliberately not
 # imported (validators.py isn't the cross-engine contract surface,
-# service.py is), duplicated here as a plain constant instead.
-CANCELLED_BOOKING_STATUSES = {"Cancelled", "Rejected"}
+# service.py is), duplicated here as a plain constant instead. Decision
+# 104: also includes "Cancellation Requested" (not itself terminal in
+# Booking Engine, but not a real, billable sale from Finance Engine's
+# perspective either) -- both here (blocks new invoices, see
+# create_invoice_for_booking below) and in generate_agent_statement's
+# existing exclusion (a booking mid-cancellation shouldn't count toward
+# a finalized agent rollup any more than an already-cancelled one does).
+CANCELLED_BOOKING_STATUSES = {"Cancellation Requested", "Cancelled", "Rejected"}
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +187,8 @@ def create_invoice_for_booking(db: Session, booking_id: int, created_by: int) ->
     that stage, not decided here.
     """
     booking = booking_service.get_booking(db, booking_id)
+    if booking.status in CANCELLED_BOOKING_STATUSES:
+        raise ValueError(f"Cannot create an invoice for a booking with status '{booking.status}'")
     if repository.get_invoice_by_booking(db, booking_id) is not None:
         raise ValueError(f"Booking {booking_id} already has an invoice")
 
@@ -340,6 +348,60 @@ def add_invoice_review_note(
         new_departure_date=booking.departure_date,
         new_total=new_total,
         new_offer_name=new_offer_name,
+    )
+    return _attach_review_notes(db, invoice)
+
+
+def add_cancellation_requested_note(db: Session, booking_id: int) -> Invoice | None:
+    """
+    Decision 104: same frontend-orchestrated, best-effort pattern as
+    add_invoice_review_note above, for the same reason (Finance Engine
+    already imports booking_service at module level, so a reverse import
+    would break at import time) -- called right after
+    POST /booking-engine/bookings/{id}/cancel (stage 1) succeeds.
+
+    Takes no reason parameter -- same Decision 094 principle
+    (FlagForReviewRequest itself) applies: a permanent financial audit
+    record shouldn't be built from client-supplied prose. Reads
+    booking.cancellation_reason directly off the booking row (already
+    frozen server-side by request_cancellation) instead.
+
+    Unlike a date-change note, there's no price to compare (nothing has
+    been repriced), so this only ever populates change_description and
+    leaves all 8 price-snapshot columns NULL -- InvoiceReviewNote's own
+    columns are already nullable for exactly this kind of event-only
+    note; no schema change needed. Same silent no-op precedent as
+    add_invoice_review_note: no invoice yet, or already Void, is the
+    overwhelmingly common/expected case, not an error.
+    """
+    invoice = repository.get_invoice_by_booking(db, booking_id)
+    if invoice is None or invoice.status == "Void":
+        return None
+
+    booking = booking_service.get_booking(db, booking_id)
+    next_sequence = len(repository.list_review_notes_by_invoice(db, invoice.id)) + 1
+    repository.create_review_note(
+        db,
+        invoice_id=invoice.id,
+        sequence_number=next_sequence,
+        change_description=f"Запрошена отмена бронирования: {booking.cancellation_reason}",
+    )
+    return _attach_review_notes(db, invoice)
+
+
+def add_cancellation_confirmed_note(db: Session, booking_id: int) -> Invoice | None:
+    """Decision 104: same shape as add_cancellation_requested_note above (including reading cancellation_confirmation_number directly off the booking row, never from the client), called after stage 2 (POST /confirm-cancellation) succeeds -- gives accounting a second, distinct signal that the cancellation is now final, not just requested."""
+    invoice = repository.get_invoice_by_booking(db, booking_id)
+    if invoice is None or invoice.status == "Void":
+        return None
+
+    booking = booking_service.get_booking(db, booking_id)
+    next_sequence = len(repository.list_review_notes_by_invoice(db, invoice.id)) + 1
+    repository.create_review_note(
+        db,
+        invoice_id=invoice.id,
+        sequence_number=next_sequence,
+        change_description=f"Отмена подтверждена отелем (номер: {booking.cancellation_confirmation_number})",
     )
     return _attach_review_notes(db, invoice)
 

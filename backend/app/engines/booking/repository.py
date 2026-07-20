@@ -79,7 +79,7 @@ def update_booking(db: Session, booking: Booking, **fields) -> Booking:
 
 
 def update_booking_status(db: Session, booking: Booking, status: str) -> Booking:
-    """Change only the booking's lifecycle status (e.g. Pending -> Confirmed) without touching any other field. Caller is responsible for validating the status value and the transition itself. Not for cancellation — use cancel_booking, which sets several related fields atomically."""
+    """Change only the booking's lifecycle status (e.g. Pending -> Confirmed) without touching any other field. Caller is responsible for validating the status value and the transition itself. Not for cancellation — use request_cancellation/confirm_cancellation, which set several related fields atomically at each of the two stages."""
     booking.status = status
     booking.updated_at = datetime.utcnow()
     db.commit()
@@ -87,15 +87,46 @@ def update_booking_status(db: Session, booking: Booking, status: str) -> Booking
     return booking
 
 
-def cancel_booking(
+def request_cancellation(
     db: Session, booking: Booking, reason: str, cancellation_fee: Optional[float], cancelled_by: int
 ) -> Booking:
-    """Set status="Cancelled" together with cancellation_reason, cancelled_at, cancellation_fee, and (Decision 084) cancelled_by in one write, since these fields only ever change together as part of the same cancellation event (02_Logic_Rules.md #49: "every cancellation must have reason")."""
-    booking.status = "Cancelled"
+    """
+    Decision 104, stage 1 of 2 (renamed from the old single-stage
+    cancel_booking, which this function replaces): set
+    status="Cancellation Requested" together with cancellation_reason,
+    cancelled_at, cancellation_fee, and cancelled_by in one write, since
+    these fields only ever change together as part of the same
+    cancellation-request event (02_Logic_Rules.md #49: "every
+    cancellation must have reason"). These fields are the frozen
+    request-time snapshot — confirm_cancellation (stage 2) never touches
+    them again.
+    """
+    booking.status = "Cancellation Requested"
     booking.cancellation_reason = reason
     booking.cancelled_at = datetime.utcnow()
     booking.cancellation_fee = cancellation_fee
     booking.cancelled_by = cancelled_by
+    booking.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(booking)
+    return booking
+
+
+def confirm_cancellation(
+    db: Session, booking: Booking, confirmation_number: str, confirmed_by: int
+) -> Booking:
+    """
+    Decision 104, stage 2 of 2: set status="Cancelled" together with
+    cancellation_confirmation_number/cancellation_confirmed_at/
+    cancellation_confirmed_by in one write. Deliberately does not touch
+    cancellation_reason/cancelled_at/cancellation_fee/cancelled_by — those
+    were already frozen by request_cancellation and represent a different
+    moment (the request), not this one (the hotel's confirmation).
+    """
+    booking.status = "Cancelled"
+    booking.cancellation_confirmation_number = confirmation_number
+    booking.cancellation_confirmed_at = datetime.utcnow()
+    booking.cancellation_confirmed_by = confirmed_by
     booking.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(booking)

@@ -14,6 +14,7 @@ from app.engines.booking.schemas import (
     BookingCreate,
     BookingUpdate,
     BookingCancelRequest,
+    ConfirmCancellationRequest,
     BookingDateChangeRequest,
     BookingResponse,
     GuestCreate,
@@ -279,10 +280,40 @@ def cancel_booking(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Dedicated cancellation flow: computes cancellation_fee via Contract Engine's get_cancellation_policy, releases the reserved allotment, and records the cancellation atomically. Requires a reason (02_Logic_Rules.md #49)."""
+    """
+    Decision 104: stage 1 of 2 of the cancellation workflow. Computes and
+    freezes cancellation_fee via Contract Engine's get_cancellation_policy,
+    records the request (status="Cancellation Requested", reason,
+    timestamp, fee, who) atomically. Requires a reason (02_Logic_Rules.md
+    #49). Deliberately does NOT release the allotment anymore — see
+    /confirm-cancellation below for stage 2, which does.
+    """
     existing = _run(lambda: service.get_booking(db, booking_id))
     _require_owner_or_admin(current_user, existing)
     return _run(lambda: service.cancel_booking(db, booking_id, data, cancelled_by=current_user.id))
+
+
+@router.post("/bookings/{booking_id}/confirm-cancellation", response_model=BookingResponse)
+def confirm_cancellation(
+    booking_id: int,
+    data: ConfirmCancellationRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Decision 104: stage 2 of 2. Finalizes a "Cancellation Requested"
+    booking as "Cancelled" once the hotel's own cancellation
+    acknowledgment reference is in hand — this is what actually releases
+    the allotment. Admin-only (_require_admin, added in Decision 103):
+    mirrors confirmation_number's existing precedent (only a
+    manager/admin records what a hotel told them) — an agent can request
+    a cancellation on their own booking, but does not confirm it.
+    """
+    existing = _run(lambda: service.get_booking(db, booking_id))
+    _require_admin(current_user)
+    return _run(
+        lambda: service.confirm_cancellation(db, booking_id, data, confirmed_by=current_user.id)
+    )
 
 
 @router.post("/bookings/{booking_id}/claim", response_model=BookingResponse)

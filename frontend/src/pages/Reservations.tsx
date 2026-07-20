@@ -45,6 +45,13 @@ interface Booking {
   cancelled_at: string | null;
   cancellation_fee: number | null;
   cancelled_by: number | null;
+  // Decision 104: two-stage cancellation confirmation -- populated only
+  // once status reaches the final "Cancelled" (stage 2), distinct from
+  // cancellation_reason/cancelled_at/cancellation_fee/cancelled_by above,
+  // which are stage 1's frozen request-time snapshot.
+  cancellation_confirmation_number: string | null;
+  cancellation_confirmed_at: string | null;
+  cancellation_confirmed_by: number | null;
   date_change_reason: string | null;
   dates_changed_at: string | null;
   claimed_by: number | null;
@@ -235,6 +242,9 @@ const STATUS_LABELS: Record<string, string> = {
   Draft: "Черновик",
   Pending: "В ожидании",
   Confirmed: "Подтверждено",
+  // Decision 104: intermediate stage -- allotment is still held, the
+  // hotel hasn't yet acknowledged the cancellation.
+  "Cancellation Requested": "Запрос на отмену",
   Cancelled: "Отменено",
   Rejected: "Отклонено",
   Completed: "Завершено",
@@ -244,6 +254,9 @@ const STATUS_CLASSES: Record<string, string> = {
   Draft: "bg-slate/10 text-slate",
   Pending: "bg-coral/15 text-coral",
   Confirmed: "bg-teal/15 text-teal",
+  // Amber, deliberately distinct from both Cancelled's neutral slate and
+  // Rejected's red -- signals "in progress, not final."
+  "Cancellation Requested": "bg-amber-500/15 text-amber-600",
   Cancelled: "bg-slate/10 text-slate",
   Rejected: "bg-red-500/15 text-red-600",
   Completed: "bg-teal/15 text-teal",
@@ -1008,6 +1021,115 @@ function ConfirmationNumberEdit({
 }
 
 // ---------------------------------------------------------------------------
+// Cancellation confirmation edit (Decision 104) — stage 2 of the two-step
+// cancellation workflow. Mirrors ConfirmationNumberEdit above exactly
+// (same admin-only gate, same inline edit-and-save shape), but for the
+// hotel's acknowledgment of a CANCELLATION rather than the original
+// booking. Only rendered while status === "Cancellation Requested" (by
+// the caller); saving calls the dedicated confirm-cancellation endpoint,
+// which is what actually releases the allotment — never PUT
+// /bookings/{id}, which cannot touch this field at all. Unlike
+// confirmation_number, the value is mandatory (no "clear it" flow) since
+// there's no valid "Cancelled" state without it.
+// ---------------------------------------------------------------------------
+
+function CancellationConfirmationEdit({
+  booking,
+  onUpdated,
+}: {
+  booking: Booking;
+  onUpdated: (updated: Booking) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSave() {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      setError("Укажите номер подтверждения отмены");
+      return;
+    }
+    const token = localStorage.getItem("token") || "";
+    setSubmitting(true);
+    setError(null);
+    try {
+      const updated = await fetchJson<Booking>(
+        `/booking-engine/bookings/${booking.id}/confirm-cancellation`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({ cancellation_confirmation_number: trimmed }),
+        }
+      );
+      onUpdated(updated);
+      setEditing(false);
+
+      // Best-effort, no request body -- the note is built server-side
+      // from booking.cancellation_confirmation_number.
+      fetchJson(`/finance-engine/bookings/${booking.id}/flag-cancellation-confirmed`, token, {
+        method: "POST",
+      }).catch(() => {
+        // Best-effort -- nothing to recover here even if this fails.
+      });
+    } catch (err: any) {
+      setError(err.message || "Не удалось подтвердить отмену");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        className="rounded-lg border border-amber-500/30 bg-white px-2.5 py-1 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-50"
+      >
+        Подтвердить отмену отелем
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-2 space-y-2 rounded-lg border border-amber-500/20 bg-amber-50/40 p-3">
+      <input
+        placeholder="Номер подтверждения отмены (от отеля)"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+      />
+      <p className="text-[11px] text-slate/50">
+        Подтверждает, что отель обработал отмену — только после этого бронирование станет
+        окончательно отменённым и номер вернётся в продажу.
+      </p>
+      {error && (
+        <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{error}</div>
+      )}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={submitting}
+          className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+        >
+          {submitting ? "Сохранение..." : "Сохранить"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          disabled={submitting}
+          className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Отмена
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Documents — Voucher/Invoice download (Decision 102). Visible to both
 // admin and the owning agent (document access/ownership, not the
 // Cost/Profit boundary), each gated independently: Voucher requires a
@@ -1293,6 +1415,11 @@ function BookingDetail({
     setCancelSubmitting(true);
     setCancelError(null);
     try {
+      // Decision 104: this now only REQUESTS cancellation (stage 1 of 2)
+      // -- status becomes "Cancellation Requested", allotment is NOT
+      // released yet. Final "Cancelled" only happens once an admin
+      // enters the hotel's own cancellation acknowledgment via
+      // CancellationConfirmationEdit below (stage 2).
       const updated = await fetchJson<Booking>(`/booking-engine/bookings/${booking.id}/cancel`, token, {
         method: "POST",
         body: JSON.stringify({ reason: cancelReason.trim() }),
@@ -1300,8 +1427,25 @@ function BookingDetail({
       onBookingUpdated(updated);
       setCancelOpen(false);
       setCancelReason("");
+
+      // Best-effort, same fire-and-forget pattern as the date-change flag
+      // call above -- no request body (the note is built server-side
+      // from booking.cancellation_reason, never trusting client-supplied
+      // prose for a permanent audit record, per Decision 094's own
+      // established principle).
+      fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/flag-cancellation-requested`, token, {
+        method: "POST",
+      })
+        .then((result) => {
+          if (permissions.canManageInvoices && result) {
+            setInvoice(result);
+          }
+        })
+        .catch(() => {
+          // Best-effort -- nothing to recover here even if this fails.
+        });
     } catch (err: any) {
-      setCancelError(err.message || "Не удалось отменить бронирование");
+      setCancelError(err.message || "Не удалось запросить отмену бронирования");
     } finally {
       setCancelSubmitting(false);
     }
@@ -1661,7 +1805,7 @@ function BookingDetail({
                 {claimSubmitting ? "Отправка..." : "Взять в работу"}
               </button>
             )}
-            {permissions.canChangeDates && booking.status !== "Cancelled" && booking.status !== "Rejected" && !changeDatesOpen && !cancelOpen && (
+            {permissions.canChangeDates && booking.status !== "Cancelled" && booking.status !== "Rejected" && booking.status !== "Cancellation Requested" && !changeDatesOpen && !cancelOpen && (
               <button
                 type="button"
                 onClick={() => {
@@ -1675,7 +1819,7 @@ function BookingDetail({
                 Изменить даты
               </button>
             )}
-            {permissions.canCancel && booking.status !== "Cancelled" && booking.status !== "Rejected" && !changeDatesOpen && !cancelOpen && (
+            {permissions.canCancel && booking.status !== "Cancelled" && booking.status !== "Rejected" && booking.status !== "Cancellation Requested" && !changeDatesOpen && !cancelOpen && (
               <button
                 type="button"
                 onClick={openCancelPanel}
@@ -1684,7 +1828,7 @@ function BookingDetail({
                 Отменить бронь
               </button>
             )}
-            {permissions.canManageInvoices && !invoiceLoading && !invoice && booking.status !== "Cancelled" && booking.status !== "Rejected" && (
+            {permissions.canManageInvoices && !invoiceLoading && !invoice && booking.status !== "Cancelled" && booking.status !== "Rejected" && booking.status !== "Cancellation Requested" && (
               <button
                 type="button"
                 onClick={handleCreateInvoice}
@@ -2099,6 +2243,23 @@ function BookingDetail({
           />
         </div>
 
+        {/* ===== Подтверждение отмены отелем (Decision 104) — stage 2 of
+            the two-step cancellation workflow. Admin-only, same
+            canManageInvoices boundary as confirmation_number above (an
+            agent can request cancellation on their own booking, but does
+            not confirm the hotel processed it). Only shown while status
+            is still "Cancellation Requested" -- once confirmed, status
+            flips to "Cancelled" and this section naturally stops
+            rendering. ===== */}
+        {permissions.canManageInvoices && booking.status === "Cancellation Requested" && (
+          <div className="mt-4 flex items-center justify-between">
+            <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">
+              Подтверждение отмены
+            </h4>
+            <CancellationConfirmationEdit booking={booking} onUpdated={onBookingUpdated} />
+          </div>
+        )}
+
         {/* ===== Документы (Decision 102) — visible to admin and the
             owning agent alike; not gated by canManageInvoices since this
             is about document access/ownership, not the Cost/Profit
@@ -2140,15 +2301,33 @@ function BookingDetail({
           )}
         </div>
 
-        {booking.status === "Cancelled" && (
+        {/* Decision 104: covers both stages now -- a "Cancellation
+            Requested" booking already has the request-side fields
+            (reason/cancelled_at/fee/cancelled_by, frozen at request
+            time); "Cancelled" additionally has the confirmation-side
+            fields (populated only once stage 2 completes). */}
+        {(booking.status === "Cancellation Requested" || booking.status === "Cancelled") && (
           <div className="mt-4 rounded-lg bg-slate/5 p-3 text-sm">
             <p className="font-medium text-ink">Отмена</p>
             <p className="mt-1 text-slate/70">Причина: {booking.cancellation_reason || "—"}</p>
-            <p className="text-slate/70">Дата отмены: {booking.cancelled_at ? formatDate(booking.cancelled_at) : "—"}</p>
+            <p className="text-slate/70">Запрошена: {booking.cancelled_at ? formatDate(booking.cancelled_at) : "—"}</p>
             <p className="text-slate/70">
-              Отменил: <strong className="text-ink">{booking.cancelled_by !== null ? (claimerNames[booking.cancelled_by] ?? `#${booking.cancelled_by}`) : "—"}</strong>
+              Запросил: <strong className="text-ink">{booking.cancelled_by !== null ? (claimerNames[booking.cancelled_by] ?? `#${booking.cancelled_by}`) : "—"}</strong>
             </p>
             <p className="text-slate/70">Штраф: {formatMoney(booking.cancellation_fee, booking.currency)}</p>
+            {booking.status === "Cancelled" ? (
+              <>
+                <p className="mt-2 text-slate/70">
+                  Подтверждена отелем: {booking.cancellation_confirmed_at ? formatDate(booking.cancellation_confirmed_at) : "—"}
+                  {booking.cancellation_confirmation_number && <> (номер: {booking.cancellation_confirmation_number})</>}
+                </p>
+                <p className="text-slate/70">
+                  Подтвердил: <strong className="text-ink">{booking.cancellation_confirmed_by !== null ? (claimerNames[booking.cancellation_confirmed_by] ?? `#${booking.cancellation_confirmed_by}`) : "—"}</strong>
+                </p>
+              </>
+            ) : (
+              <p className="mt-2 text-amber-600">Ожидает подтверждения отелем — номер ещё не освобождён.</p>
+            )}
           </div>
         )}
 
