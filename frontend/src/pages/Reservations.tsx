@@ -1726,7 +1726,16 @@ function BookingDetail({
           </div>
         )}
 
-        {booking.status === "Pending" && booking.claimed_by !== null && (
+        {/* ===== LPO — запрос на подтверждение отелю (Decision 046, gated
+            admin-only by Decision 103) =====
+            This is outbound communication to a hotel on the company's
+            behalf, not booking-operations data -- same category as
+            invoice management, not something an individual agent
+            should be able to compose/dispatch themselves. The backend
+            (claim_booking/send_correspondence) now enforces this too;
+            this gate keeps the UI from offering an action that would
+            403 anyway. */}
+        {permissions.canManageInvoices && booking.status === "Pending" && booking.claimed_by !== null && (
           <div className="mt-3 rounded-lg border border-ink/10 bg-sand/30 p-4">
             <div className="mb-2 flex items-center justify-between">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
@@ -1797,7 +1806,13 @@ function BookingDetail({
         <div className="mt-3 rounded-lg border border-ink/10 bg-white p-4">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Переписка с отелем</p>
-            {!replyOpen && (
+            {/* Decision 103: logging a hotel's reply is a write action on
+                the same admin-only add_correspondence_reply endpoint the
+                LPO panel uses -- gated here too, so an agent never sees a
+                button that would now 403. Reading the thread below stays
+                visible to everyone (their own booking's correspondence
+                history is reasonable to see). */}
+            {permissions.canManageInvoices && !replyOpen && (
               <button
                 type="button"
                 onClick={() => {

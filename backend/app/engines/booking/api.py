@@ -90,6 +90,25 @@ def _require_owner_or_admin(current_user, booking) -> None:
         raise HTTPException(status_code=403, detail="You can only modify bookings you own")
 
 
+def _require_admin(current_user) -> None:
+    """
+    Decision 103: closes a real, previously-flagged gap on claim_booking/
+    send_correspondence/add_correspondence_reply (see each endpoint's own
+    docstring) -- these three are not an ownership question the way
+    _require_owner_or_admin's endpoints are (an agent editing their OWN
+    booking); they're a manager/admin acting on a booking on the
+    company's behalf (taking review ownership, or communicating
+    externally with a hotel), so no agent -- including the booking's own
+    owning agent -- is exempted here. No distinct "Manager" role exists
+    in Authentication Engine yet, same simplification Finance/Pricing
+    Engine's own _require_admin already made for their admin-only
+    surfaces.
+    """
+    role = (current_user.role or "").strip().lower()
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
 def _send_confirmation_email_best_effort(db: Session, booking: Booking) -> None:
     """
     Decision 029 Stage 2 (see email_service.send_booking_confirmation_email's
@@ -281,13 +300,11 @@ def claim_booking(
     Deliberately NOT wrapped in _require_owner_or_admin: that check
     verifies an AGENT owns the booking they're editing (change-dates,
     cancel, update), the opposite direction from claiming -- a manager
-    taking ownership of reviewing someone else's booking. Known, flagged
-    gap (same precedent as Decision 032's Admin-only exemption): any
-    authenticated user can currently call this, not just an Admin/Manager
-    role -- Manager isn't wired to a distinct role check anywhere in
-    Booking Engine yet, so adding one here would be speculative rather
-    than addressing a concrete need.
+    taking ownership of reviewing someone else's booking. Gated by
+    _require_admin instead (Decision 103, closing what was previously a
+    known, flagged gap where any authenticated user could call this).
     """
+    _require_admin(current_user)
     return _run(lambda: service.claim_booking(db, booking_id, claimed_by=current_user.id))
 
 
@@ -367,13 +384,17 @@ def send_correspondence(
 ):
     """
     Records an outbound message (typically the Decision 046 LPO text) --
-    no real email is sent. Deliberately NOT wrapped in
-    _require_owner_or_admin: same reasoning as Decision 045's
-    claim_booking -- this is a manager acting on a booking, not the
-    owning agent editing their own, so that check's semantics don't fit.
-    Known, flagged gap, same precedent as Decision 032/045: any
-    authenticated user can currently call this.
+    no real email is sent (record-only, see service.py). Deliberately
+    NOT wrapped in _require_owner_or_admin: same reasoning as Decision
+    045's claim_booking -- this is a manager/admin communicating with a
+    hotel on the company's behalf, not the owning agent editing their
+    own booking, so that check's semantics don't fit. Gated by
+    _require_admin instead (Decision 103, closing what was previously a
+    known, flagged gap where any authenticated user could call this --
+    a real risk for an outbound-communication action once real email
+    sending is ever wired up, independent of today's record-only state).
     """
+    _require_admin(current_user)
     return _run(
         lambda: service.send_correspondence(
             db,
@@ -398,7 +419,8 @@ def add_correspondence_reply(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Manually log a hotel's reply -- no real IMAP integration yet (Decision 029 Stage 3+). Same authorization note as send_correspondence above."""
+    """Manually log a hotel's reply -- no real IMAP integration yet (Decision 029 Stage 3+). Same authorization note as send_correspondence above; also gated by _require_admin (Decision 103)."""
+    _require_admin(current_user)
     return _run(
         lambda: service.add_correspondence_reply(db, booking_id, data.subject, data.body, current_user.id)
     )
