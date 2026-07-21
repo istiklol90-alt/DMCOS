@@ -18,6 +18,7 @@ from app.engines.booking import service as booking_service
 from app.engines.finance.schemas import (
     InvoiceResponse,
     FlagForReviewRequest,
+    UrgentBookingResponse,
     CreditNoteResponse,
     CreditNoteCreate,
     AgentStatementResponse,
@@ -130,6 +131,18 @@ def get_urgent_invoices(db: Session = Depends(get_db), current_user=Depends(get_
 def get_invoice(invoice_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _require_admin(current_user)
     return _run(lambda: service.get_invoice(db, invoice_id))
+
+
+@router.get("/bookings/urgent", response_model=list[UrgentBookingResponse])
+def get_urgent_bookings(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Decision 108: Бронирования's own "Требует внимания" panel --
+    MUST stay declared before /bookings/{booking_id}/invoice below, same
+    route-ordering class of bug Decision 087 already documented for
+    /invoices/urgent vs /invoices/{invoice_id}. Admin-only, same gate as
+    /invoices/urgent -- this is admin/financial-layer content per
+    Decision 107's own classification."""
+    _require_admin(current_user)
+    return service.list_urgent_bookings(db)
 
 
 @router.get("/bookings/{booking_id}/invoice", response_model=InvoiceResponse)
@@ -248,6 +261,20 @@ def flag_cancellation_confirmed(
     if result is None:
         return Response(status_code=204)
     return InvoiceResponse.model_validate(result)
+
+
+@router.post("/bookings/{booking_id}/acknowledge-review")
+def acknowledge_booking_review(booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Decision 108: Бронирования's own "Отметить как проверено" --
+    the same underlying action as /invoices/{id}/acknowledge-flag below
+    (both write to the same BookingReviewAcknowledgment row, unified
+    per the project owner's explicit decision), just keyed by
+    booking_id instead of invoice_id since a booking's review history
+    doesn't require an invoice to exist. Admin-only, same gate as
+    acknowledge-flag."""
+    _require_admin(current_user)
+    _run(lambda: service.acknowledge_booking_review(db, booking_id, acknowledged_by=current_user.id))
+    return Response(status_code=204)
 
 
 @router.post("/invoices/{invoice_id}/void", response_model=InvoiceResponse)

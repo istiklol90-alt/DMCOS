@@ -270,11 +270,16 @@ def add_invoice_review_note(
     Booking Engine calling back into Finance Engine at module level
     would break at import time).
 
-    Silently no-ops (returns None, not an error) in the overwhelmingly
-    common case of no invoice existing yet for this booking, and also
-    when the invoice is already Void (already dead, nothing to note).
-    Never raises for either case, since the caller's date-change action
-    must never appear to fail because of this best-effort side effect.
+    Decision 108: ALWAYS creates a booking-rooted note now, regardless
+    of whether an invoice exists -- previously silently no-op'd
+    whenever no invoice existed yet, which is the common case for a
+    freshly-created booking, meaning no durable signal was created for
+    a large fraction of real date changes at all. invoice_id is set
+    only when one happens to exist right now (informational, never
+    load-bearing for urgency). The RETURN VALUE keeps its exact
+    original contract (None when no invoice exists or it's Void) --
+    only the API caller's "should I surface an updated Invoice"
+    decision, not whether a note gets written.
 
     Decision 094: captures the real price breakdown for both sides of
     the change, snapshotted server-side right now -- never
@@ -304,8 +309,6 @@ def add_invoice_review_note(
     caller's already-succeeded date change.
     """
     invoice = repository.get_invoice_by_booking(db, booking_id)
-    if invoice is None or invoice.status == "Void":
-        return None
 
     booking = booking_service.get_booking(db, booking_id)
 
@@ -329,7 +332,7 @@ def add_invoice_review_note(
     except ValueError:
         pass
 
-    existing_notes = repository.list_review_notes_by_invoice(db, invoice.id)
+    existing_notes = repository.list_review_notes_by_booking(db, booking_id)
     next_sequence = len(existing_notes) + 1
     fallback_description = (
         f"Даты изменены: {old_arrival_date.isoformat()} – {old_departure_date.isoformat()} "
@@ -337,7 +340,8 @@ def add_invoice_review_note(
     )
     repository.create_review_note(
         db,
-        invoice_id=invoice.id,
+        booking_id=booking_id,
+        invoice_id=invoice.id if invoice is not None else None,
         sequence_number=next_sequence,
         change_description=fallback_description,
         old_arrival_date=old_arrival_date,
@@ -349,6 +353,8 @@ def add_invoice_review_note(
         new_total=new_total,
         new_offer_name=new_offer_name,
     )
+    if invoice is None or invoice.status == "Void":
+        return None
     return _attach_review_notes(db, invoice)
 
 
@@ -370,40 +376,83 @@ def add_cancellation_requested_note(db: Session, booking_id: int) -> Invoice | N
     been repriced), so this only ever populates change_description and
     leaves all 8 price-snapshot columns NULL -- InvoiceReviewNote's own
     columns are already nullable for exactly this kind of event-only
-    note; no schema change needed. Same silent no-op precedent as
-    add_invoice_review_note: no invoice yet, or already Void, is the
-    overwhelmingly common/expected case, not an error.
+    note; no schema change needed.
+
+    Decision 108: ALWAYS creates the note now (booking-rooted), same
+    reasoning as add_invoice_review_note's own Decision 108 update --
+    previously silently no-op'd whenever no invoice existed yet, the
+    common case. Return value keeps its original None-when-no-invoice
+    contract; only note creation itself is now unconditional.
     """
     invoice = repository.get_invoice_by_booking(db, booking_id)
-    if invoice is None or invoice.status == "Void":
-        return None
 
     booking = booking_service.get_booking(db, booking_id)
-    next_sequence = len(repository.list_review_notes_by_invoice(db, invoice.id)) + 1
+    next_sequence = len(repository.list_review_notes_by_booking(db, booking_id)) + 1
     repository.create_review_note(
         db,
-        invoice_id=invoice.id,
+        booking_id=booking_id,
+        invoice_id=invoice.id if invoice is not None else None,
         sequence_number=next_sequence,
         change_description=f"Запрошена отмена бронирования: {booking.cancellation_reason}",
     )
+    if invoice is None or invoice.status == "Void":
+        return None
     return _attach_review_notes(db, invoice)
 
 
 def add_cancellation_confirmed_note(db: Session, booking_id: int) -> Invoice | None:
-    """Decision 104: same shape as add_cancellation_requested_note above (including reading cancellation_confirmation_number directly off the booking row, never from the client), called after stage 2 (POST /confirm-cancellation) succeeds -- gives accounting a second, distinct signal that the cancellation is now final, not just requested."""
+    """Decision 104: same shape as add_cancellation_requested_note above (including reading cancellation_confirmation_number directly off the booking row, never from the client), called after stage 2 (POST /confirm-cancellation) succeeds -- gives accounting a second, distinct signal that the cancellation is now final, not just requested. Decision 108: always creates the note now (booking-rooted); see add_invoice_review_note's own Decision 108 note for the full reasoning."""
     invoice = repository.get_invoice_by_booking(db, booking_id)
-    if invoice is None or invoice.status == "Void":
-        return None
 
     booking = booking_service.get_booking(db, booking_id)
-    next_sequence = len(repository.list_review_notes_by_invoice(db, invoice.id)) + 1
+    next_sequence = len(repository.list_review_notes_by_booking(db, booking_id)) + 1
     repository.create_review_note(
         db,
-        invoice_id=invoice.id,
+        booking_id=booking_id,
+        invoice_id=invoice.id if invoice is not None else None,
         sequence_number=next_sequence,
         change_description=f"Отмена подтверждена отелем (номер: {booking.cancellation_confirmation_number})",
     )
+    if invoice is None or invoice.status == "Void":
+        return None
     return _attach_review_notes(db, invoice)
+
+
+def acknowledge_booking_review(db: Session, booking_id: int, acknowledged_by: int) -> None:
+    """
+    Decision 108: the real acknowledge action -- booking-rooted, unified
+    across Бронирования and Финансы→Счета per the project owner's
+    explicit "same action, one shared acknowledgment" decision.
+    Requires at least one existing review note for the booking: same
+    "deliberate human action, not a silent no-op" precedent
+    acknowledge_review_flag (below) originally established.
+
+    Real finding made while implementing, not part of the original
+    plan: financeShared.tsx's isUrgentFlag (used by Invoices.tsx's
+    general/searched invoice table AND InvoiceDetailModal, not just the
+    already-server-filtered urgent panel) recomputes urgency
+    CLIENT-SIDE from Invoice.flag_acknowledged_at -- if this function
+    left that field frozen (as originally planned), those already-
+    LOCKED, already-verified frontend surfaces would silently show
+    stale urgency after any booking-rooted acknowledgment. Mirrors the
+    write into the booking's Invoice (if one exists) specifically to
+    avoid touching that frontend code at all, matching the project
+    owner's own "keep InvoiceReviewNote name, minimize touching locked
+    Финансы→Счета code" preference for this whole decision.
+    BookingReviewAcknowledgment remains the real, authoritative source
+    of truth server-side (list_urgent_booking_ids never reads this
+    mirrored field) -- this write exists purely for frontend
+    backward-compatibility.
+    """
+    notes = repository.list_review_notes_by_booking(db, booking_id)
+    if not notes:
+        raise ValueError(f"Booking {booking_id} has no review notes to acknowledge")
+    repository.upsert_booking_acknowledgment(db, booking_id, acknowledged_by)
+    invoice = repository.get_invoice_by_booking(db, booking_id)
+    if invoice is not None:
+        repository.update_invoice(
+            db, invoice, flag_acknowledged_at=datetime.utcnow(), flag_acknowledged_by=acknowledged_by
+        )
 
 
 def acknowledge_review_flag(db: Session, invoice_id: int, acknowledged_by: int) -> Invoice:
@@ -412,25 +461,51 @@ def acknowledge_review_flag(db: Session, invoice_id: int, acknowledged_by: int) 
     current urgent state on an Issued invoice (where
     approve_and_send_invoice's own flag_acknowledged_at write doesn't
     apply, since that function is gated to Draft-only) without
-    re-sending anything. Requires at least one existing review note:
-    unlike add_invoice_review_note's best-effort orchestration call,
-    this is a deliberate action a human clicked a button for, so
-    acknowledging an invoice with no notes at all is a caller error, not
-    a silent no-op.
+    re-sending anything.
 
-    Decision 093: this only needs to stamp flag_acknowledged_at/
-    flag_acknowledged_by "as of now" -- it does NOT need to touch any
-    individual note. A note created after this timestamp automatically
-    makes the invoice urgent again (list_urgent_invoices' own logic),
-    so there is nothing else to update here for that to work correctly.
+    Decision 108: now a thin wrapper over acknowledge_booking_review --
+    resolves the invoice's booking_id and writes there instead of this
+    Invoice's own flag_acknowledged_at/flag_acknowledged_by (those two
+    columns stay in place physically, unmapped going forward, same
+    precedent as Decision 093's own review_flag retirement). This
+    endpoint and Бронирования's own acknowledge action are now the
+    literal same operation on the same BookingReviewAcknowledgment row.
     """
     invoice = get_invoice(db, invoice_id)
-    if not invoice.review_notes:
-        raise ValueError(f"Invoice {invoice_id} has no review notes to acknowledge")
-    updated = repository.update_invoice(
-        db, invoice, flag_acknowledged_at=datetime.utcnow(), flag_acknowledged_by=acknowledged_by
-    )
-    return _attach_review_notes(db, updated)
+    acknowledge_booking_review(db, invoice.booking_id, acknowledged_by)
+    return _attach_review_notes(db, invoice)
+
+
+def list_urgent_bookings(db: Session) -> list[dict]:
+    """
+    Decision 108: Бронирования's own "Требует внимания" panel -- the
+    exact same underlying signal Финансы→Счета's own urgent-invoices
+    panel now derives from (list_urgent_invoices above is a thin
+    wrapper over the identical repository.list_urgent_booking_ids this
+    calls too). Returns one summary dict per urgent booking (not a
+    real ORM model -- this is a computed cross-engine join): booking_id,
+    booking_number (resolved from Booking Engine), and the latest
+    note's change_description/created_at -- enough for a manager to see
+    what happened without opening the booking. Most-recently-changed
+    first.
+    """
+    booking_ids = repository.list_urgent_booking_ids(db)
+    result = []
+    for booking_id in booking_ids:
+        try:
+            booking = booking_service.get_booking(db, booking_id)
+        except ValueError:
+            continue
+        notes = repository.list_review_notes_by_booking(db, booking_id)
+        latest = notes[-1] if notes else None
+        result.append({
+            "booking_id": booking_id,
+            "booking_number": booking.booking_number,
+            "latest_change_description": latest.change_description if latest else None,
+            "latest_note_at": latest.created_at if latest else None,
+        })
+    result.sort(key=lambda r: r["latest_note_at"] or datetime.min, reverse=True)
+    return result
 
 
 def list_invoices(db: Session) -> list[Invoice]:

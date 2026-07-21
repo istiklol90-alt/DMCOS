@@ -147,14 +147,37 @@ class InvoiceReviewNote(Base):
     hotel-confirmation status/comment (e.g. "Отправлено отелю, ожидаем
     подтверждения" / "Отель подтвердил по этой цене") -- ties into
     Decision 029's future AI-hotel-correspondence work, not something
-    this session has any real need to build yet."""
+    this session has any real need to build yet.
+
+    Decision 108: generalized to be booking-rooted, not invoice-rooted.
+    A large fraction of real bookings get changed before any invoice
+    ever exists (invoice creation is a separate, manual, later action) --
+    every note-creating function used to silently no-op in that case, so
+    no durable "needs review" signal existed at all for those changes.
+    booking_id is now the real anchor (NOT NULL, always set);
+    sequence_number is now assigned per-BOOKING (not per-invoice), so a
+    booking's own numbered history survives across invoice
+    creation/void. invoice_id stays as optional, informational-only
+    metadata -- set when an invoice happened to exist at note-creation
+    time, never load-bearing for urgency (see list_urgent_bookings).
+    Deliberately did NOT rename this model/table despite the scope
+    change -- avoids touching already-verified, LOCKED code
+    (InvoiceDetailModal, formatSingleNote, formatReviewNotes,
+    deriveChangeHighlights) that has nothing to do with this decision."""
 
     __tablename__ = "invoice_review_notes"
 
     id = Column(Integer, primary_key=True)
+    # Decision 108: plain Integer, no ForeignKey -- same cross-engine
+    # convention every other Engine reference in this project already
+    # uses (Booking lives in a different Engine). The real anchor now;
+    # always set.
+    booking_id = Column(Integer, nullable=False)
     # Intra-engine relation (Invoice lives in this same Engine) -- real
-    # ForeignKey, same convention as CreditNote.invoice_id.
-    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False)
+    # ForeignKey, same convention as CreditNote.invoice_id. Decision 108:
+    # made nullable -- optional, informational metadata only now, not
+    # required for a note to exist.
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=True)
     sequence_number = Column(Integer, nullable=False)
     change_description = Column(String(500), nullable=True)
     old_arrival_date = Column(Date, nullable=True)
@@ -166,6 +189,40 @@ class InvoiceReviewNote(Base):
     new_total = Column(Float, nullable=True)
     new_offer_name = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class BookingReviewAcknowledgment(Base):
+    """Decision 108: one row per booking, upserted -- replaces
+    Invoice.flag_acknowledged_at/flag_acknowledged_by as the real,
+    AUTHORITATIVE source of truth for "has anyone reviewed this
+    booking's changes" (list_urgent_booking_ids/list_urgent_bookings
+    read only this table, never the Invoice columns). Those two Invoice
+    columns are kept physically in place (same precedent as Decision
+    093's own review_flag column retirement on this same LOCKED table
+    -- no destructive removal) AND kept in sync via a mirrored write in
+    service.acknowledge_booking_review -- a real finding made while
+    implementing, not the original plan: financeShared.tsx's
+    isUrgentFlag (Финансы→Счета's general/searched invoice table and
+    InvoiceDetailModal, not just the pre-filtered urgent panel)
+    recomputes urgency client-side from these two fields, so leaving
+    them genuinely frozen/stale would have silently broken those
+    already-LOCKED frontend surfaces. Their existing pre-migration
+    values were also copied into this table once.
+
+    Deliberately booking-rooted, not invoice-rooted: acknowledging from
+    Бронирования and acknowledging from Финансы→Счета are the SAME
+    action now (per the project owner's explicit "unified acknowledgment"
+    decision) -- one booking, one acknowledgment state, actionable from
+    either screen. acknowledge_review_flag (the existing invoice-keyed
+    function Финансы→Счета's endpoint already calls) becomes a thin
+    wrapper that resolves the invoice's booking_id and writes here."""
+
+    __tablename__ = "booking_review_acknowledgments"
+
+    id = Column(Integer, primary_key=True)
+    booking_id = Column(Integer, nullable=False, unique=True)
+    acknowledged_at = Column(DateTime(timezone=True), nullable=False)
+    acknowledged_by = Column(Integer, nullable=True)
 
 
 class CreditNote(Base):

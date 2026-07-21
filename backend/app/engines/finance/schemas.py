@@ -66,6 +66,17 @@ class FlagForReviewRequest(BaseModel):
     old_departure_date: date
 
 
+class UrgentBookingResponse(BaseModel):
+    """Decision 108: Бронирования's own "Требует внимания" panel --
+    not a real ORM model (a computed cross-engine summary), same
+    'plain dict validated structurally' shape service.list_urgent_bookings
+    returns."""
+    booking_id: int
+    booking_number: str
+    latest_change_description: Optional[str] = None
+    latest_note_at: Optional[datetime] = None
+
+
 # ---------------------------------------------------------------------------
 # CreditNote
 # ---------------------------------------------------------------------------

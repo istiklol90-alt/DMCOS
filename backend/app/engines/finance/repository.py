@@ -1,14 +1,15 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 import uuid
 
-from sqlalchemy import exists, func, or_
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database.db import SessionLocal
 from app.engines.finance.models import (
     Invoice,
     InvoiceReviewNote,
+    BookingReviewAcknowledgment,
     CreditNote,
     AgentStatement,
     AgentStatementLine,
@@ -55,6 +56,31 @@ def list_invoices_by_agent_in_range(db: Session, agent_id: int, start_date: date
     ).all()
 
 
+def list_urgent_booking_ids(db: Session) -> list[int]:
+    """Decision 108: the real source of truth for "needs review" --
+    booking-rooted, not invoice-rooted, so it correctly covers bookings
+    that have never had an invoice created (the common case). Direct
+    structural port of the query this replaced (Decision 087/093's
+    "compute from the notes' own timestamps every time, not a field
+    that has to be remembered and cleared"), just re-anchored to
+    booking_id via BookingReviewAcknowledgment instead of
+    Invoice.flag_acknowledged_at."""
+    rows = (
+        db.query(InvoiceReviewNote.booking_id, func.max(InvoiceReviewNote.created_at).label("latest"))
+        .group_by(InvoiceReviewNote.booking_id)
+        .all()
+    )
+    acks = {
+        a.booking_id: a.acknowledged_at
+        for a in db.query(BookingReviewAcknowledgment).all()
+    }
+    return [
+        booking_id
+        for booking_id, latest in rows
+        if booking_id not in acks or latest > acks[booking_id]
+    ]
+
+
 def list_urgent_invoices(db: Session) -> list[Invoice]:
     """Decision 087: the one 'list many at once, unscoped by agent'
     query that stays safe at real scale, by construction -- an invoice
@@ -62,27 +88,19 @@ def list_urgent_invoices(db: Session) -> list[Invoice]:
     to total invoice count. If it isn't rare, that's a real operational
     signal, not a reason to hide the list.
 
-    Decision 093: urgent = has at least one InvoiceReviewNote AND
-    (never acknowledged, or the latest note is newer than the last
-    acknowledgment) -- computed from the notes' own timestamps every
-    time, not from a field that has to be remembered and cleared. This
-    is the actual fix for a real, DB-traced bug in the old
-    review_flag+flag_acknowledged_at pair: a second flag after
-    acknowledgment updated the text but never reset
-    flag_acknowledged_at, so it silently never re-appeared here."""
-    latest_note_at = (
-        db.query(func.max(InvoiceReviewNote.created_at))
-        .filter(InvoiceReviewNote.invoice_id == Invoice.id)
-        .correlate(Invoice)
-        .scalar_subquery()
-    )
+    Decision 108: rewritten as a thin wrapper over list_urgent_booking_ids
+    (the new real source of truth) -- returns non-Void invoices whose
+    booking_id is in that set. Preserves this function's exact existing
+    response contract (used by Финансы→Счета's own "Требует внимания"
+    panel) with zero frontend changes needed there; the underlying
+    urgency signal is now identical to Бронирования's own panel, not a
+    second parallel computation."""
+    urgent_booking_ids = list_urgent_booking_ids(db)
+    if not urgent_booking_ids:
+        return []
     return db.query(Invoice).filter(
         Invoice.status != "Void",
-        exists().where(InvoiceReviewNote.invoice_id == Invoice.id),
-        or_(
-            Invoice.flag_acknowledged_at.is_(None),
-            latest_note_at > Invoice.flag_acknowledged_at,
-        ),
+        Invoice.booking_id.in_(urgent_booking_ids),
     ).all()
 
 
@@ -128,6 +146,39 @@ def list_review_notes_by_invoice_ids(db: Session, invoice_ids: list[int]) -> dic
     for note in notes:
         grouped[note.invoice_id].append(note)
     return grouped
+
+
+def list_review_notes_by_booking(db: Session, booking_id: int) -> list[InvoiceReviewNote]:
+    """Decision 108: booking-rooted equivalent of list_review_notes_by_invoice
+    -- a booking's full numbered change history, independent of whether
+    an invoice exists (or ever existed) for it."""
+    return (
+        db.query(InvoiceReviewNote)
+        .filter(InvoiceReviewNote.booking_id == booking_id)
+        .order_by(InvoiceReviewNote.sequence_number)
+        .all()
+    )
+
+
+# ---------------------------------------------------------------------------
+# BookingReviewAcknowledgment (Decision 108) -- one row per booking, upserted.
+# ---------------------------------------------------------------------------
+
+def get_booking_acknowledgment(db: Session, booking_id: int) -> Optional[BookingReviewAcknowledgment]:
+    return db.query(BookingReviewAcknowledgment).filter(BookingReviewAcknowledgment.booking_id == booking_id).first()
+
+
+def upsert_booking_acknowledgment(db: Session, booking_id: int, acknowledged_by: int) -> BookingReviewAcknowledgment:
+    row = get_booking_acknowledgment(db, booking_id)
+    if row is None:
+        row = BookingReviewAcknowledgment(booking_id=booking_id, acknowledged_at=datetime.utcnow(), acknowledged_by=acknowledged_by)
+        db.add(row)
+    else:
+        row.acknowledged_at = datetime.utcnow()
+        row.acknowledged_by = acknowledged_by
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def create_invoice(db: Session, **fields) -> Invoice:

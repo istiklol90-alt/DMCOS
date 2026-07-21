@@ -289,9 +289,7 @@ function saleTotal(b: Booking): number {
 
 type AIFlag =
   | { kind: "pending_soon"; booking: Booking; daysUntilArrival: number }
-  | { kind: "cancellation_deadline"; booking: Booking; nextThreshold: number; daysUntilCross: number }
-  | { kind: "recently_changed"; booking: Booking; hoursAgo: number }
-  | { kind: "recently_cancelled"; booking: Booking; hoursAgo: number };
+  | { kind: "cancellation_deadline"; booking: Booking; nextThreshold: number; daysUntilCross: number };
 
 function computePendingSoonFlags(bookings: Booking[]): AIFlag[] {
   const today = todayStr();
@@ -338,59 +336,7 @@ function computeCancellationDeadlineFlags(
   return flags;
 }
 
-// Admin-view-only rule (caller filters by scope): bookings whose dates were
-// changed by an agent within the last 24h — a "here's what changed, worth a
-// glance" signal, not an approval queue (Decision 029: Level 3 autonomous +
-// notification, not a Level 2 gate — the change is already applied).
-const RECENTLY_CHANGED_WINDOW_HOURS = 24;
-
-// Same pattern, cancellation instead of date-change (Decision 029/033
-// addendum: cancellation follows the identical staged rollout as
-// date-change — Stage "next" is this notification, nothing about the
-// cancellation flow itself changes here).
-const RECENTLY_CANCELLED_WINDOW_HOURS = 24;
-
-// The backend serializes datetime.utcnow() as a naive ISO string with no
-// "Z"/offset suffix (e.g. "2026-07-08T13:18:14.668797"). new Date(...) on
-// such a string parses it as LOCAL time, not UTC — for any viewer whose
-// timezone isn't UTC+0, that silently shifts every elapsed-time
-// computation by the local offset. Appending "Z" forces correct UTC parsing.
-function parseUtcTimestamp(isoString: string): number {
-  const withZ = /[zZ]|[+-]\d{2}:?\d{2}$/.test(isoString) ? isoString : `${isoString}Z`;
-  return new Date(withZ).getTime();
-}
-
-function computeRecentlyChangedFlags(bookings: Booking[]): AIFlag[] {
-  const now = Date.now();
-  return bookings
-    .filter((b): b is Booking & { dates_changed_at: string } => b.dates_changed_at !== null)
-    .map((b) => ({ booking: b, hoursAgo: (now - parseUtcTimestamp(b.dates_changed_at)) / (1000 * 60 * 60) }))
-    .filter((x) => x.hoursAgo >= 0 && x.hoursAgo <= RECENTLY_CHANGED_WINDOW_HOURS)
-    .map((x) => ({ kind: "recently_changed" as const, booking: x.booking, hoursAgo: Math.round(x.hoursAgo) }));
-}
-
-function isRecentlyChanged(b: Booking): boolean {
-  if (!b.dates_changed_at) return false;
-  const hoursAgo = (Date.now() - parseUtcTimestamp(b.dates_changed_at)) / (1000 * 60 * 60);
-  return hoursAgo >= 0 && hoursAgo <= RECENTLY_CHANGED_WINDOW_HOURS;
-}
-
-function computeRecentlyCancelledFlags(bookings: Booking[]): AIFlag[] {
-  const now = Date.now();
-  return bookings
-    .filter((b): b is Booking & { cancelled_at: string } => b.cancelled_at !== null)
-    .map((b) => ({ booking: b, hoursAgo: (now - parseUtcTimestamp(b.cancelled_at)) / (1000 * 60 * 60) }))
-    .filter((x) => x.hoursAgo >= 0 && x.hoursAgo <= RECENTLY_CANCELLED_WINDOW_HOURS)
-    .map((x) => ({ kind: "recently_cancelled" as const, booking: x.booking, hoursAgo: Math.round(x.hoursAgo) }));
-}
-
-function isRecentlyCancelled(b: Booking): boolean {
-  if (!b.cancelled_at) return false;
-  const hoursAgo = (Date.now() - parseUtcTimestamp(b.cancelled_at)) / (1000 * 60 * 60);
-  return hoursAgo >= 0 && hoursAgo <= RECENTLY_CANCELLED_WINDOW_HOURS;
-}
-
-function flagText(flag: AIFlag, hotelName: string, agentNames: Record<number, string>): string {
+function flagText(flag: AIFlag, hotelName: string): string {
   if (flag.kind === "pending_soon") {
     const days = flag.daysUntilArrival;
     const when =
@@ -400,16 +346,6 @@ function flagText(flag: AIFlag, hotelName: string, agentNames: Record<number, st
           ? "заезд сегодня"
           : `заезд через ${days} дн.`;
     return `${flag.booking.booking_number} (${hotelName}) всё ещё "В ожидании" — ${when}`;
-  }
-  if (flag.kind === "recently_changed") {
-    const agentName = agentNames[flag.booking.agent_id] ?? `#${flag.booking.agent_id}`;
-    const when = flag.hoursAgo <= 0 ? "только что" : `${flag.hoursAgo} ч. назад`;
-    return `${flag.booking.booking_number} (${hotelName}) — даты изменены агентом ${agentName} ${when}`;
-  }
-  if (flag.kind === "recently_cancelled") {
-    const agentName = agentNames[flag.booking.agent_id] ?? `#${flag.booking.agent_id}`;
-    const when = flag.hoursAgo <= 0 ? "только что" : `${flag.hoursAgo} ч. назад`;
-    return `${flag.booking.booking_number} (${hotelName}) — отменено агентом ${agentName} ${when}`;
   }
   return `${flag.booking.booking_number} (${hotelName}) — через ${flag.daysUntilCross} дн. ужесточаются условия отмены (штраф начинает действовать за ${flag.nextThreshold} дн. до заезда)`;
 }
@@ -425,11 +361,9 @@ function IconSparkle({ className = "w-4 h-4" }: { className?: string }) {
 function AIInsightStrip({
   flags,
   hotels,
-  agentNames,
 }: {
   flags: AIFlag[];
   hotels: Record<number, string>;
-  agentNames: Record<number, string>;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -446,13 +380,13 @@ function AIInsightStrip({
         </span>
         <div className="text-sm leading-relaxed text-white/90">
           <p>
-            <span className="font-medium text-white">AI заметил:</span> {flagText(first, firstHotelName, agentNames)}
+            <span className="font-medium text-white">AI заметил:</span> {flagText(first, firstHotelName)}
             {flags.length > 1 && <span className="text-white/60"> (и ещё {flags.length - 1})</span>}
           </p>
           {expanded && flags.length > 1 && (
             <ul className="mt-2 space-y-1 text-white/70">
               {flags.slice(1).map((f, i) => (
-                <li key={i}>— {flagText(f, hotels[f.booking.hotel_id] ?? `#${f.booking.hotel_id}`, agentNames)}</li>
+                <li key={i}>— {flagText(f, hotels[f.booking.hotel_id] ?? `#${f.booking.hotel_id}`)}</li>
               ))}
             </ul>
           )}
@@ -1842,15 +1776,19 @@ const BookingsList = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope.type, scope.type === "agent" ? scope.agentId : null]);
 
+  // Decision 108: the "recently changed"/"recently cancelled" flags that
+  // used to live here (24h ephemeral, no acknowledgment) were retired --
+  // replaced by AdminBookingFinance.tsx's persistent, acknowledgment-aware
+  // "Требует внимания" panel, which also correctly covers bookings that
+  // have never had an invoice (the old mechanism's gap). pending_soon/
+  // cancellation_deadline are unrelated forward-looking predictions, kept
+  // as-is.
   const aiFlags = useMemo(() => {
     return [
       ...computePendingSoonFlags(bookings),
       ...computeCancellationDeadlineFlags(bookings, cancellationTiers),
-      // Admin-view only — an agent doesn't need to be told about their own edit.
-      ...(scope.type === "all" ? computeRecentlyChangedFlags(bookings) : []),
-      ...(scope.type === "all" ? computeRecentlyCancelledFlags(bookings) : []),
     ];
-  }, [bookings, cancellationTiers, scope.type]);
+  }, [bookings, cancellationTiers]);
 
   const availableStatuses = useMemo(
     () => Array.from(new Set(bookings.map((b) => b.status))).sort(),
@@ -1942,7 +1880,7 @@ const BookingsList = ({
 
   return (
     <div>
-      <AIInsightStrip flags={aiFlags} hotels={hotels} agentNames={agentNames} />
+      <AIInsightStrip flags={aiFlags} hotels={hotels} />
 
       <div className="mt-6 flex flex-wrap items-center gap-2.5">
         <select
@@ -2149,22 +2087,6 @@ const BookingsList = ({
                         {needsAttention && (
                           <span className="rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
                             Требует внимания
-                          </span>
-                        )}
-                        {scope.type === "all" && isRecentlyChanged(b) && (
-                          <span
-                            className="rounded-full bg-coral/15 px-1.5 py-0.5 text-[10px] font-medium text-coral"
-                            title="Даты изменены агентом менее 24 часов назад"
-                          >
-                            Изменено
-                          </span>
-                        )}
-                        {scope.type === "all" && isRecentlyCancelled(b) && (
-                          <span
-                            className="rounded-full bg-red-500/15 px-1.5 py-0.5 text-[10px] font-medium text-red-600"
-                            title="Отменено агентом менее 24 часов назад"
-                          >
-                            Отменено
                           </span>
                         )}
                       </span>

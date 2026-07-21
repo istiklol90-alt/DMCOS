@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { InvoiceReviewNote } from "./financeShared";
-import { formatSingleNote, computeBookingFinancials, fetchJson } from "./financeShared";
+import { computeBookingFinancials, fetchJson } from "./financeShared";
 import BookingsList from "./Reservations";
 import type { Booking, Permissions, Scope, AdminBookingExtensions, DetailCtx, BookingCorrespondenceRow } from "./Reservations";
 
@@ -809,23 +809,92 @@ function InvoiceHeaderActions({
 }
 
 // ---------------------------------------------------------------------------
-// renderStatusBadgeExtra slot -- urgent-invoice badge, sourced from ONE
-// bulk GET /invoices/urgent fetch owned by AdminBookingsList (Decision
-// 100's efficiency property preserved: never fetched per-row/per-detail).
+// Decision 108: booking-rooted "needs attention" data -- ONE bulk
+// GET /bookings/urgent fetch owned by AdminBookingsList (Decision 100's
+// efficiency property preserved: never fetched per-row/per-detail),
+// replacing the old invoice-only urgentInvoicesByBooking. This is the
+// SAME underlying signal Финансы→Счета's own /invoices/urgent panel now
+// derives from (both read list_urgent_booking_ids server-side) -- a
+// booking shows up here whether or not it has ever had an invoice.
 // ---------------------------------------------------------------------------
 
-function UrgentInvoiceBadge({ invoice }: { invoice: InvoiceInfo }) {
+interface UrgentBookingSummary {
+  booking_id: number;
+  booking_number: string;
+  latest_change_description: string | null;
+  latest_note_at: string | null;
+}
+
+// renderStatusBadgeExtra slot -- same visual badge as before, now
+// sourced from the booking-rooted set instead of an invoice-only one.
+function NeedsAttentionBadge({ summary }: { summary: UrgentBookingSummary }) {
   return (
     <span
       className="inline-flex cursor-help items-center gap-1 rounded-full bg-coral/15 px-2 py-0.5 text-[11px] font-medium text-coral"
-      title={
-        invoice.review_notes.length > 0
-          ? formatSingleNote(invoice.review_notes[invoice.review_notes.length - 1], invoice.currency)
-          : undefined
-      }
+      title={summary.latest_change_description ?? undefined}
     >
       ⚠ Счёт
     </span>
+  );
+}
+
+// New dedicated "Требует внимания" panel -- Бронирования's own
+// equivalent of Финансы→Счета's always-loaded urgent panel (Decision
+// 088), same proven pattern: a small, always-loaded section above the
+// full list, so a manager doesn't have to scroll hundreds of rows to
+// find what changed. Parallel to (not sharing a component with)
+// Invoices.tsx's own panel -- the shapes differ enough (Invoice rows
+// with void/approve/send actions vs. a booking summary with one
+// acknowledge action) that forcing a shared generic component isn't
+// worth it.
+function UrgentBookingsPanel({
+  bookings,
+  loading,
+  onAcknowledge,
+  acknowledgingId,
+}: {
+  bookings: UrgentBookingSummary[];
+  loading: boolean;
+  onAcknowledge: (bookingId: number) => void;
+  acknowledgingId: number | null;
+}) {
+  return (
+    <div className="mt-6">
+      <h3 className="font-display text-lg font-semibold text-ink">Требует внимания</h3>
+      {loading ? (
+        <p className="mt-3 text-sm text-slate/60">Загрузка...</p>
+      ) : bookings.length === 0 ? (
+        <p className="mt-3 rounded-2xl border border-ink/10 bg-white px-5 py-6 text-center text-sm text-slate/50">
+          Нет бронирований, требующих внимания
+        </p>
+      ) : (
+        <div className="mt-3 overflow-hidden rounded-2xl border border-ink/10 bg-white">
+          <table className="w-full text-left text-sm">
+            <tbody>
+              {bookings.map((b) => (
+                <tr key={b.booking_id} className="border-b border-ink/5 last:border-b-0">
+                  <td className="whitespace-nowrap px-4 py-3 font-medium text-ink">{b.booking_number}</td>
+                  <td className="px-4 py-3 text-slate/70">{b.latest_change_description ?? "—"}</td>
+                  <td className="whitespace-nowrap px-4 py-3 text-slate/50">
+                    {b.latest_note_at ? formatDate(b.latest_note_at) : "—"}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() => onAcknowledge(b.booking_id)}
+                      disabled={acknowledgingId === b.booking_id}
+                      className="rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {acknowledgingId === b.booking_id ? "..." : "Отметить как проверено"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -847,11 +916,13 @@ const FULL_ADMIN_PERMISSIONS: Permissions = {
 };
 
 export default function AdminBookingsList({ scope }: { scope: Scope }) {
-  // Decision 100: keyed by booking_id, populated from ONE bulk
-  // GET /invoices/urgent call -- the exact same server-bounded query
-  // Финансы→Счета's own urgent panel already uses, so this badge can
-  // never drift from what that panel shows.
-  const [urgentInvoicesByBooking, setUrgentInvoicesByBooking] = useState<Record<number, InvoiceInfo>>({});
+  // Decision 108: keyed by booking_id, populated from ONE bulk
+  // GET /bookings/urgent call -- the booking-rooted source of truth,
+  // replacing the old invoice-only urgentInvoicesByBooking. Also drives
+  // the new dedicated "Требует внимания" panel above the list.
+  const [urgentBookings, setUrgentBookings] = useState<UrgentBookingSummary[]>([]);
+  const [urgentLoading, setUrgentLoading] = useState(true);
+  const [acknowledgingId, setAcknowledgingId] = useState<number | null>(null);
   // Per-booking invoice cache -- undefined (key absent) means "not yet
   // fetched", null means "fetched, none exists". Shared between
   // renderHeaderActions (reads/seeds it) and onAfterClaim (writes it
@@ -859,19 +930,43 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
   // other since onAfterClaim is a plain callback, not a component.
   const [invoicesByBooking, setInvoicesByBooking] = useState<Record<number, InvoiceInfo | null>>({});
 
-  useEffect(() => {
+  async function loadUrgentBookings() {
     const token = localStorage.getItem("token") || "";
-    fetchJson<InvoiceInfo[]>("/finance-engine/invoices/urgent", token)
-      .then((urgentInvoices) => {
-        const map: Record<number, InvoiceInfo> = {};
-        urgentInvoices.forEach((inv) => {
-          if (inv.booking_id !== undefined) map[inv.booking_id] = inv;
-        });
-        setUrgentInvoicesByBooking(map);
-      })
-      .catch(() => setUrgentInvoicesByBooking({}));
+    try {
+      setUrgentLoading(true);
+      setUrgentBookings(await fetchJson<UrgentBookingSummary[]>("/finance-engine/bookings/urgent", token));
+    } catch {
+      setUrgentBookings([]);
+    } finally {
+      setUrgentLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadUrgentBookings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope.type, scope.type === "agent" ? scope.agentId : null]);
+
+  const urgentByBooking: Record<number, UrgentBookingSummary> = {};
+  urgentBookings.forEach((b) => {
+    urgentByBooking[b.booking_id] = b;
+  });
+
+  async function handleAcknowledge(bookingId: number) {
+    const summary = urgentByBooking[bookingId];
+    const confirmMessage = `⚠ ${summary?.latest_change_description ?? ""}\n\nОтметить как проверено?`;
+    if (!window.confirm(confirmMessage)) return;
+    const token = localStorage.getItem("token") || "";
+    try {
+      setAcknowledgingId(bookingId);
+      await fetchJson(`/finance-engine/bookings/${bookingId}/acknowledge-review`, token, { method: "POST" });
+      await loadUrgentBookings();
+    } catch (err: any) {
+      alert(err.message || "Не удалось отметить бронирование как проверенное");
+    } finally {
+      setAcknowledgingId(null);
+    }
+  }
 
   function setInvoiceFor(bookingId: number, inv: InvoiceInfo | null) {
     setInvoicesByBooking((prev) => ({ ...prev, [bookingId]: inv }));
@@ -906,7 +1001,7 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
     },
     extraColumnCount: 2,
     renderStatusBadgeExtra: (booking) =>
-      urgentInvoicesByBooking[booking.id] ? <UrgentInvoiceBadge invoice={urgentInvoicesByBooking[booking.id]} /> : null,
+      urgentByBooking[booking.id] ? <NeedsAttentionBadge summary={urgentByBooking[booking.id]} /> : null,
     renderHeaderActions: (ctx) => (
       <InvoiceHeaderActions
         booking={ctx.booking}
@@ -934,5 +1029,15 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
     },
   };
 
-  return <BookingsList scope={scope} permissions={FULL_ADMIN_PERMISSIONS} adminExtensions={adminExtensions} />;
+  return (
+    <div>
+      <UrgentBookingsPanel
+        bookings={urgentBookings}
+        loading={urgentLoading}
+        onAcknowledge={handleAcknowledge}
+        acknowledgingId={acknowledgingId}
+      />
+      <BookingsList scope={scope} permissions={FULL_ADMIN_PERMISSIONS} adminExtensions={adminExtensions} />
+    </div>
+  );
 }
