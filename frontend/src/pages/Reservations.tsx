@@ -1,14 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { API_URL } from "../config";
 import { DateRangePicker } from "./HotelSearch";
-import type { InvoiceReviewNote } from "./financeShared";
-import { isUrgentFlag, formatSingleNote, computeBookingFinancials } from "./financeShared";
 
 // ---------------------------------------------------------------------------
 // Types (only the fields this screen actually reads)
 // ---------------------------------------------------------------------------
 
-interface Booking {
+export interface Booking {
   id: number;
   booking_number: string;
   agent_id: number;
@@ -93,7 +92,7 @@ interface UserRecord {
   name: string;
 }
 
-interface BookingCorrespondenceRow {
+export interface BookingCorrespondenceRow {
   id: number;
   booking_id: number;
   direction: string;
@@ -118,54 +117,7 @@ interface CancellationPolicy {
   description: string | null;
 }
 
-interface RoomPriceBreakdown {
-  base_total: number;
-  supplements_total: number;
-  price_before_promotions: number;
-  applied_promotions: number[];
-  final_total: number;
-  currency: string;
-}
-
-interface TransferPriceBreakdown {
-  transfer_name: string;
-  price_adult: number;
-  price_child: number;
-  price_infant: number;
-  total: number;
-  currency: string;
-}
-
-interface MandatoryTaxBreakdown {
-  label: string | null;
-  rate_per_person_per_night: number;
-  chargeable_guests: number;
-  nights: number;
-  total: number;
-  currency: string;
-}
-
-interface InvoiceInfo {
-  id: number;
-  invoice_number: string;
-  total: number;
-  currency: string;
-  status: string;
-  // Decision 099: reuses the shared InvoiceReviewNote type from
-  // financeShared.tsx rather than redefining it -- lets this booking
-  // detail view show the same "needs review" indicator Финансы already
-  // has, via the same shared isUrgentFlag() function.
-  review_notes: InvoiceReviewNote[];
-  flag_acknowledged_at: string | null;
-  // Decision 100: only populated when this InvoiceInfo comes from the
-  // list-level GET /invoices/urgent fetch (BookingDetail's own
-  // GET .../bookings/{id}/invoice fetch already knows which booking
-  // it's for from the URL, so it never needs this) -- lets the main
-  // table key urgent invoices back to their booking row.
-  booking_id?: number;
-}
-
-type SortKey = "created_at" | "arrival_date" | "status" | "net";
+type SortKey = "created_at" | "arrival_date" | "status";
 type SortDir = "asc" | "desc";
 
 export interface Permissions {
@@ -174,14 +126,45 @@ export interface Permissions {
   canEditFlights: boolean;
   canCancel: boolean;
   canClaim: boolean;
-  // Decision 079: gates the entire invoice button/badge block below --
-  // Draft invoices are accounting-only, not agent-visible, so an agent
-  // must not see the "Создать счёт" button or any invoice info at all
-  // (not just a disabled version of it).
-  canManageInvoices: boolean;
+  // Admin/Agent Component Separation refactor: replaces the old invoice-
+  // visibility permission flag (removed entirely -- nothing financial is
+  // left in this base component to gate with it). Gates
+  // ConfirmationNumberEdit's edit control and the
+  // CancellationConfirmationEdit section -- both stay in this base file,
+  // but for "hotel-confirmation authority" reasons (a manager records
+  // what the hotel said), not money-secrecy.
+  canConfirmWithHotel: boolean;
 }
 
 export type Scope = { type: "all" } | { type: "agent"; agentId: number };
+
+// ---------------------------------------------------------------------------
+// Composition boundary (Admin/Agent Component Separation refactor) --
+// AdminBookingFinance.tsx implements this interface and passes it into
+// BookingsList via the adminExtensions prop; AgentDashboard_v2.tsx's own
+// usage omits it entirely, so nothing financial is even importable from
+// that file's source, not just permission-gated at render time.
+// ---------------------------------------------------------------------------
+
+export interface DetailCtx {
+  booking: Booking;
+  onBookingUpdated: (b: Booking) => void;
+}
+
+export interface AdminBookingExtensions {
+  // list-level
+  financialColumnHeaders?: ReactNode; // extra <th>s (Net cost, Profit)
+  renderFinancialColumnCells?: (booking: Booking) => ReactNode; // extra <td>s per row
+  extraColumnCount?: number; // for empty-state colSpan math
+  renderStatusBadgeExtra?: (booking: Booking) => ReactNode; // urgent-invoice badge, list row + detail header (same fn, two call sites)
+
+  // detail-level
+  renderHeaderActions?: (ctx: DetailCtx) => ReactNode; // "Создать счёт" button + invoice summary
+  renderCorrespondencePanel?: (ctx: DetailCtx) => ReactNode; // whole LPO compose/send block
+  renderReplyLogButton?: (ctx: DetailCtx) => ReactNode; // "Добавить ответ отеля вручную" button
+  renderFinancialSummary?: (ctx: DetailCtx) => ReactNode; // Net/Sale/Profit block; replaces the base's default "Итого" line when present
+  onAfterClaim?: (ctx: DetailCtx) => void; // auto-invoice-on-claim side effect
+}
 
 const TERMINAL_STATUSES = ["Cancelled", "Rejected", "Completed"];
 
@@ -289,155 +272,13 @@ function formatDate(dateStr: string) {
   return d.toLocaleDateString("ru-RU");
 }
 
-interface Promotion {
-  id: number;
-  promotion_name: string;
-}
-
-interface SpecialOffer {
-  id: number;
-  offer_name: string;
-}
-
-// Plain-text Markdown-style table -- chosen over manually-padded fixed-
-// width columns because LPO values vary wildly in length (a one-word
-// meal plan code next to a full price-breakdown sentence); a Markdown
-// pipe table stays unambiguous and self-labeled as raw plain text even
-// where nothing renders it as an actual table, which matters since this
-// is pasted into a plain-text email compose box, not an HTML surface.
-function renderTextTable(rows: [string, string][]): string {
-  const lines = ["| Field | Details |", "|---|---|"];
-  for (const [label, value] of rows) {
-    lines.push(`| ${label} | ${value.replace(/\|/g, "\\|")} |`);
-  }
-  return lines.join("\n");
-}
-
-// Decision 047: the guest's real flight date/time is a genuinely
-// separate fact from the room's check-in/check-out date -- a flight can
-// land the morning after check-in. Never conflates the two, and is
-// honest about partial data: a flight NUMBER on file with no date (the
-// state of every booking created before these fields existed) is still
-// surfaced, not silently dropped, while making clear the date itself
-// isn't confirmed.
-function formatFlightDetail(date: string | null, time: string | null, flightNumber: string | null): string {
-  if (!date) {
-    return flightNumber ? `to follow (flight number on file: ${flightNumber})` : "to follow";
-  }
-  const dateTime = time ? `${formatDate(date)} ${time}` : formatDate(date);
-  return flightNumber ? `${dateTime} (Flight ${flightNumber})` : `${dateTime} (flight number: to follow)`;
-}
-
-// LPO (booking confirmation request) email text -- Decision 046, Level 3
-// per the AI Autonomy Levels framework (autonomous generation/display,
-// no model inference: a straightforward template fill from data already
-// fetched by BookingDetail's own cost-breakdown useEffect, never
-// re-derived). Every number here is read from roomBreakdown/
-// transferBreakdown/mandatoryTaxBreakdown -- the SAME objects the
-// on-screen cost breakdown already renders -- so this can never drift
-// from what the manager sees on screen. Special Offer Code combines two
-// distinct, honestly-separate sources (Decision 048): promotionNames
-// (generic Promotion ids from get_room_price's applied_promotions) and
-// specialOfferName (booking.applied_special_offer_id, set at
-// create_booking time from get_room_price's applied_special_offer_ids --
-// only when exactly one offer applied, never guessed when zero or
-// multiple did).
-function buildLpoEmailText(
-  booking: Booking,
-  hotelName: string,
-  roomTypeName: string,
-  mealPlanInfo: MealPlanInfo | undefined,
-  guests: Guest[] | null,
-  roomBreakdown: RoomPriceBreakdown | null,
-  transferBreakdown: TransferPriceBreakdown | null,
-  mandatoryTaxBreakdown: MandatoryTaxBreakdown | null,
-  promotionNames: string[],
-  specialOfferName: string | null,
-  managerName: string
-): { subject: string; body: string } | null {
-  // Never generate from partial/unconfirmed numbers -- if the same
-  // breakdown data the on-screen cost display depends on hasn't loaded,
-  // there is nothing honest to show yet.
-  if (!roomBreakdown || !mandatoryTaxBreakdown) return null;
-
-  const guestNames = (guests ?? [])
-    .map((g) => `${g.first_name} ${g.last_name}${g.is_lead_guest ? " (Lead Guest)" : ""}`)
-    .join(", ") || "—";
-
-  const mealPlanLabel = mealPlanInfo?.meal_name || mealPlanInfo?.meal_code || "—";
-
-  const includesParts = [`room rate ${formatMoney(roomBreakdown.base_total, booking.currency)}`];
-  if (roomBreakdown.supplements_total > 0) {
-    includesParts.push(`supplements ${formatMoney(roomBreakdown.supplements_total, booking.currency)}`);
-  }
-  if (mandatoryTaxBreakdown.total > 0) {
-    const taxLabel = mandatoryTaxBreakdown.label || "mandatory tax";
-    includesParts.push(`${taxLabel} ${formatMoney(mandatoryTaxBreakdown.total, booking.currency)}`);
-  }
-  const lpoTotal = roomBreakdown.final_total + mandatoryTaxBreakdown.total;
-
-  const rows: [string, string][] = [
-    ["Room Type", roomTypeName],
-    [
-      "Room Check-in — Check-out",
-      `${formatDate(booking.arrival_date)} — ${formatDate(booking.departure_date)} (${booking.nights} nights)`,
-    ],
-    ["Meal Plan", mealPlanLabel],
-    ["Guest Names", guestNames],
-    ["Occupancy", `${booking.adults} Adults, ${booking.children} Children, ${booking.infants} Infants`],
-  ];
-
-  const offerLabels = [...promotionNames, ...(specialOfferName ? [specialOfferName] : [])];
-  if (offerLabels.length > 0) {
-    rows.push(["Special Offer Code", offerLabels.join(", ")]);
-  }
-
-  rows.push(["Total Amount", `${formatMoney(lpoTotal, booking.currency)} (includes: ${includesParts.join(" + ")})`]);
-
-  if (booking.transfer_type && transferBreakdown) {
-    rows.push([
-      "Transfer",
-      `${transferBreakdown.transfer_name}, for ${booking.adults} Adults + ${booking.children} Children — ${formatMoney(transferBreakdown.total, booking.currency)}`,
-    ]);
-  }
-
-  // Deliberately separate rows from "Room Check-in — Check-out" above --
-  // the whole point of Decision 047 is that these can legitimately be
-  // different dates, and a hotel reading this must never have to guess
-  // which one it's looking at.
-  rows.push(
-    [
-      "Flight Arrival",
-      formatFlightDetail(booking.arrival_flight_date, booking.arrival_flight_time, booking.arrival_flight_number),
-    ],
-    [
-      "Flight Departure",
-      formatFlightDetail(
-        booking.departure_flight_date,
-        booking.departure_flight_time,
-        booking.departure_flight_number
-      ),
-    ]
-  );
-
-  const subject = `Booking Confirmation Request — ${booking.booking_number} — ${hotelName}`;
-
-  const bodyLines = [
-    `Dear ${hotelName} Team,`,
-    "",
-    "Greetings from DMC OS.",
-    "",
-    "We would like to ask you to confirm the below reservation as per the following details:",
-    "",
-    renderTextTable(rows),
-    "",
-    "Please confirm this reservation exactly as per the above details.",
-    "",
-    "Best regards,",
-    managerName || "—",
-  ];
-
-  return { subject, body: bodyLines.join("\n") };
+// Admin/Agent Component Separation refactor: replaces the shared finance
+// module's computeBookingFinancials (now imported only by
+// AdminBookingFinance.tsx) for the one figure the operations base still
+// needs -- the plain sale total an agent is charged. This base file must
+// have zero imports from that finance-only module.
+function saleTotal(b: Booking): number {
+  return b.total_amount + (b.transfer_total ?? 0) + (b.mandatory_tax_total ?? 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1257,6 +1098,7 @@ function BookingDetail({
   onBookingUpdated,
   permissions,
   claimerNames,
+  adminExtensions,
 }: {
   booking: Booking;
   hotelName: string;
@@ -1266,33 +1108,18 @@ function BookingDetail({
   onBookingUpdated: (updated: Booking) => void;
   permissions: Permissions;
   claimerNames: Record<number, string>;
+  adminExtensions?: AdminBookingExtensions;
 }) {
   const [guests, setGuests] = useState<Guest[] | null>(null);
   const [guestsError, setGuestsError] = useState<string | null>(null);
-  const [roomBreakdown, setRoomBreakdown] = useState<RoomPriceBreakdown | null>(null);
-  const [transferBreakdown, setTransferBreakdown] = useState<TransferPriceBreakdown | null>(null);
-  const [mandatoryTaxBreakdown, setMandatoryTaxBreakdown] = useState<MandatoryTaxBreakdown | null>(null);
-  const [breakdownError, setBreakdownError] = useState<string | null>(null);
-  const [breakdownLoading, setBreakdownLoading] = useState(true);
-  const [promotionNames, setPromotionNames] = useState<string[]>([]);
-  const [specialOfferName, setSpecialOfferName] = useState<string | null>(null);
-  const [lpoCopied, setLpoCopied] = useState(false);
-  const [sendSubmitting, setSendSubmitting] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
-  // Decision 050: hotel's stored email (Hotel.email -- the field already
-  // existed on LOCKED Hotel Engine, just unpopulated for every hotel
-  // today) seeds the "To" field once, but stays independently editable.
-  const [hotelEmail, setHotelEmail] = useState<string | null>(null);
-  const [recipientEmail, setRecipientEmail] = useState("");
-  const [recipientEmailSecondary, setRecipientEmailSecondary] = useState("");
-  const [editableLpoBody, setEditableLpoBody] = useState("");
 
+  // Read-only thread display stays here (both roles); the compose/send
+  // (LPO) and reply-log write actions moved to AdminBookingFinance.tsx,
+  // reached only via the renderCorrespondencePanel/renderReplyLogButton
+  // slots below. Depends on the whole `booking` reference, not just
+  // booking.id, so it re-fetches after those extensions call
+  // onBookingUpdated to signal "the thread may have changed."
   const [correspondence, setCorrespondence] = useState<BookingCorrespondenceRow[] | null>(null);
-  const [replyOpen, setReplyOpen] = useState(false);
-  const [replySubject, setReplySubject] = useState("");
-  const [replyBody, setReplyBody] = useState("");
-  const [replySubmitting, setReplySubmitting] = useState(false);
-  const [replyError, setReplyError] = useState<string | null>(null);
 
   const [changeDatesOpen, setChangeDatesOpen] = useState(false);
   const [newCheckIn, setNewCheckIn] = useState(booking.arrival_date);
@@ -1312,46 +1139,6 @@ function BookingDetail({
   const [claimSubmitting, setClaimSubmitting] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
 
-  const [invoice, setInvoice] = useState<InvoiceInfo | null>(null);
-  const [invoiceLoading, setInvoiceLoading] = useState(true);
-  const [invoiceSubmitting, setInvoiceSubmitting] = useState(false);
-  const [invoiceError, setInvoiceError] = useState<string | null>(null);
-
-  // A 400 here just means "not yet invoiced" (the common case) --
-  // treated the same as BookingCorrespondence's fetch above, not
-  // surfaced as an error. Gated on canManageInvoices so a view without
-  // that permission (e.g. the agent's own dashboard) never even fires
-  // the request -- the endpoint is admin-only server-side anyway, but
-  // there's no reason to make a doomed call.
-  useEffect(() => {
-    if (!permissions.canManageInvoices) {
-      setInvoiceLoading(false);
-      return;
-    }
-    const token = localStorage.getItem("token") || "";
-    setInvoiceLoading(true);
-    fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/invoice`, token)
-      .then(setInvoice)
-      .catch(() => setInvoice(null))
-      .finally(() => setInvoiceLoading(false));
-  }, [booking.id, permissions.canManageInvoices]);
-
-  async function handleCreateInvoice() {
-    const token = localStorage.getItem("token") || "";
-    setInvoiceSubmitting(true);
-    setInvoiceError(null);
-    try {
-      const created = await fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/invoice`, token, {
-        method: "POST",
-      });
-      setInvoice(created);
-    } catch (err: any) {
-      setInvoiceError(err.message || "Не удалось создать счёт");
-    } finally {
-      setInvoiceSubmitting(false);
-    }
-  }
-
   async function handleClaimSubmit() {
     const token = localStorage.getItem("token") || "";
     setClaimSubmitting(true);
@@ -1361,26 +1148,12 @@ function BookingDetail({
         method: "POST",
       });
       onBookingUpdated(updated);
-      // Decision 080: claiming auto-creates a Draft invoice as a
-      // second, best-effort request -- frontend orchestration only,
-      // calling the same unmodified /finance-engine endpoint the
-      // fallback "Создать счёт" button below already uses. A failure
-      // here (e.g. one already exists) must never undo or fail the
-      // claim itself, which has already succeeded above -- it
-      // surfaces as a non-blocking error, and the fallback button
-      // (still rendered whenever !invoice) stays as the recovery path.
-      if (permissions.canManageInvoices && !invoice) {
-        try {
-          const created = await fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/invoice`, token, {
-            method: "POST",
-          });
-          setInvoice(created);
-        } catch (invoiceErr: any) {
-          setInvoiceError(
-            invoiceErr.message || "Не удалось автоматически создать счёт — используйте кнопку «Создать счёт» ниже"
-          );
-        }
-      }
+      // Admin/Agent Component Separation refactor: the auto-invoice-on-
+      // claim side effect (Decision 080) is now AdminBookingFinance.tsx's
+      // own concern, reached only through this optional slot -- the base
+      // has no invoice state left to manage, and AgentDashboard_v2.tsx's
+      // usage never provides this slot at all.
+      adminExtensions?.onAfterClaim?.({ booking: updated, onBookingUpdated });
     } catch (err: any) {
       setClaimError(err.message || "Не удалось взять бронирование в работу");
     } finally {
@@ -1432,18 +1205,15 @@ function BookingDetail({
       // call above -- no request body (the note is built server-side
       // from booking.cancellation_reason, never trusting client-supplied
       // prose for a permanent audit record, per Decision 094's own
-      // established principle).
-      fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/flag-cancellation-requested`, token, {
+      // established principle). Fires unconditionally regardless of role
+      // (Decision 098) -- this base no longer has any invoice state to
+      // populate from the response, so the result is simply discarded;
+      // AdminBookingFinance.tsx's own invoice slot re-fetches independently.
+      fetchJson(`/finance-engine/bookings/${booking.id}/flag-cancellation-requested`, token, {
         method: "POST",
-      })
-        .then((result) => {
-          if (permissions.canManageInvoices && result) {
-            setInvoice(result);
-          }
-        })
-        .catch(() => {
-          // Best-effort -- nothing to recover here even if this fails.
-        });
+      }).catch(() => {
+        // Best-effort -- nothing to recover here even if this fails.
+      });
     } catch (err: any) {
       setCancelError(err.message || "Не удалось запросить отмену бронирования");
     } finally {
@@ -1484,39 +1254,26 @@ function BookingDetail({
       // number for a permanent audit record. Never affects the date
       // change itself, which already succeeded above.
       //
-      // Decision 098: deliberately NOT gated by permissions.canManageInvoices
-      // anymore -- a real, traced bug found that gate (meant only for
-      // "can this user see Draft invoice data") also silently blocked an
-      // agent's own date change from ever flagging their own booking's
-      // invoice, since AgentDashboard_v2.tsx passes canManageInvoices:
-      // false. This call now fires for ANY successful date change,
-      // agent or admin; Finance Engine's own endpoint independently
-      // enforces who's actually allowed to do this
-      // (_require_admin_or_owning_agent).
-      fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/flag-for-review`, token, {
+      // Decision 098: deliberately NOT gated by permissions.canConfirmWithHotel
+      // (nor the old invoice-visibility flag it replaced) -- a real, traced
+      // bug found that gate (meant only for "can this user see Draft invoice
+      // data") also silently blocked an agent's own date change from ever
+      // flagging their own booking's invoice, since AgentDashboard_v2.tsx
+      // passes no adminExtensions at all. This call now fires for ANY
+      // successful date change, agent or admin; Finance Engine's own
+      // endpoint independently enforces who's actually allowed to do this
+      // (_require_admin_or_owning_agent). This base has no invoice state
+      // to populate from the response anymore -- AdminBookingFinance.tsx's
+      // own invoice/urgent-badge slots re-fetch independently.
+      fetchJson(`/finance-engine/bookings/${booking.id}/flag-for-review`, token, {
         method: "POST",
         body: JSON.stringify({
           old_arrival_date: oldArrival,
           old_departure_date: oldDeparture,
         }),
-      })
-        .then((result) => {
-          // Decision 099: only surface the refreshed invoice locally
-          // for a caller who's actually allowed to see invoice data at
-          // all (canManageInvoices) -- Decision 098 lets an agent
-          // trigger this flag on their own booking, but they still
-          // can't see Финансы data, so their own local `invoice` state
-          // must stay whatever it already was (null), not get
-          // populated from this response. Also feeds the "needs
-          // review" badge next to StatusBadge, so it appears
-          // immediately without reopening this view.
-          if (permissions.canManageInvoices && result) {
-            setInvoice(result);
-          }
-        })
-        .catch(() => {
-          // Best-effort -- nothing to recover here even if this fails.
-        });
+      }).catch(() => {
+        // Best-effort -- nothing to recover here even if this fails.
+      });
     } catch (err: any) {
       setChangeDatesError(err.message || "Не удалось изменить даты");
     } finally {
@@ -1533,228 +1290,22 @@ function BookingDetail({
 
   // Correspondence thread (Decision 049) -- fetched independently of
   // status/claim state so history stays visible even after a booking
-  // moves past Pending.
+  // moves past Pending. Depends on the whole `booking` reference (not
+  // just booking.id) so that a successful send/reply from
+  // AdminBookingFinance.tsx's renderCorrespondencePanel/renderReplyLogButton
+  // extensions -- which cannot reach this component's setCorrespondence
+  // directly, since DetailCtx is deliberately just {booking,
+  // onBookingUpdated} -- can trigger a re-fetch here by calling
+  // onBookingUpdated with a fresh object reference.
   useEffect(() => {
     const token = localStorage.getItem("token") || "";
     fetchJson<BookingCorrespondenceRow[]>(`/booking-engine/bookings/${booking.id}/correspondence`, token)
       .then(setCorrespondence)
       .catch(() => setCorrespondence([]));
-  }, [booking.id]);
+  }, [booking]);
 
-  // Decision 050: the hotel's stored email, to default the "To" field.
-  useEffect(() => {
-    const token = localStorage.getItem("token") || "";
-    fetchJson<Hotel>(`/hotel-engine/hotels/${booking.hotel_id}`, token)
-      .then((hotel) => setHotelEmail(hotel.email ?? null))
-      .catch(() => setHotelEmail(null));
-  }, [booking.hotel_id]);
-
-  // Seed "To" from the hotel's stored email exactly once, when it first
-  // arrives -- never overwrites a value the manager already typed.
-  useEffect(() => {
-    if (hotelEmail && !recipientEmail) setRecipientEmail(hotelEmail);
-  }, [hotelEmail]);
-
-  useEffect(() => {
-    const token = localStorage.getItem("token") || "";
-    if (!mealPlanInfo) {
-      setBreakdownError("Не удалось определить план питания для пересчёта");
-      setBreakdownLoading(false);
-      return;
-    }
-    setBreakdownLoading(true);
-    setBreakdownError(null);
-
-    const roomPriceParams = new URLSearchParams({
-      check_in: booking.arrival_date,
-      check_out: booking.departure_date,
-      meal_plan: mealPlanInfo.meal_code,
-      adults: String(booking.adults),
-      children: String(booking.children),
-      infants: String(booking.infants),
-    });
-
-    const mandatoryTaxParams = new URLSearchParams({
-      nights: String(booking.nights),
-      adults: String(booking.adults),
-      children: String(booking.children),
-    });
-
-    const promises: Promise<void>[] = [
-      fetchJson<RoomPriceBreakdown>(
-        `/contract-engine/contracts/${booking.contract_id}/room-types/${booking.room_type_id}/price?${roomPriceParams}`,
-        token
-      )
-        .then(setRoomBreakdown)
-        .catch((err) => setBreakdownError(err.message)),
-      fetchJson<MandatoryTaxBreakdown>(
-        `/contract-engine/contracts/${booking.contract_id}/mandatory-tax?${mandatoryTaxParams}`,
-        token
-      )
-        .then(setMandatoryTaxBreakdown)
-        .catch((err) => setBreakdownError(err.message)),
-    ];
-
-    if (booking.transfer_type) {
-      const transferParams = new URLSearchParams({
-        transfer_type: booking.transfer_type,
-        check_in: booking.arrival_date,
-        check_out: booking.departure_date,
-        adults: String(booking.adults),
-        children: String(booking.children),
-        infants: String(booking.infants),
-      });
-      promises.push(
-        fetchJson<TransferPriceBreakdown>(
-          `/contract-engine/contracts/${booking.contract_id}/transfer-price?${transferParams}`,
-          token
-        )
-          .then(setTransferBreakdown)
-          .catch((err) => setBreakdownError(err.message))
-      );
-    }
-
-    Promise.all(promises).finally(() => setBreakdownLoading(false));
-  }, [booking, mealPlanInfo]);
-
-  // Resolve generic Promotion ids (get_room_price's applied_promotions)
-  // to real names for the LPO's optional "Special Offer Code" line --
-  // only fires when at least one actually applied to this booking's
-  // price.
-  useEffect(() => {
-    if (!roomBreakdown || roomBreakdown.applied_promotions.length === 0) {
-      setPromotionNames([]);
-      return;
-    }
-    const token = localStorage.getItem("token") || "";
-    Promise.all(
-      roomBreakdown.applied_promotions.map((id) =>
-        fetchJson<Promotion>(`/contract-engine/promotions/${id}`, token).catch(() => null)
-      )
-    ).then((results) => setPromotionNames(results.filter((p): p is Promotion => p !== null).map((p) => p.promotion_name)));
-  }, [roomBreakdown]);
-
-  // Resolve booking.applied_special_offer_id (Decision 048, set by
-  // create_booking from get_room_price's applied_special_offer_ids) to
-  // the real SpecialOffer.offer_name -- e.g. "KM26_03" -- for the same
-  // "Special Offer Code" line, alongside any generic Promotion names.
-  useEffect(() => {
-    if (booking.applied_special_offer_id === null) {
-      setSpecialOfferName(null);
-      return;
-    }
-    const token = localStorage.getItem("token") || "";
-    fetchJson<SpecialOffer>(`/contract-engine/special-offers/${booking.applied_special_offer_id}`, token)
-      .then((offer) => setSpecialOfferName(offer.offer_name))
-      .catch(() => setSpecialOfferName(null));
-  }, [booking.applied_special_offer_id]);
-
-  const managerName = (() => {
-    try {
-      return JSON.parse(localStorage.getItem("user") || "{}").name || "";
-    } catch {
-      return "";
-    }
-  })();
-
-  const lpo = buildLpoEmailText(
-    booking,
-    hotelName,
-    roomTypeName,
-    mealPlanInfo,
-    guests,
-    roomBreakdown,
-    transferBreakdown,
-    mandatoryTaxBreakdown,
-    promotionNames,
-    specialOfferName,
-    managerName
-  );
-  // Seed the editable body exactly once, when the auto-generated LPO
-  // first becomes available -- never overwrites text the manager has
-  // already started editing, even if breakdown data re-fetches later.
-  useEffect(() => {
-    if (lpo && !editableLpoBody) setEditableLpoBody(lpo.body);
-  }, [lpo?.body]);
-
-  const lpoFullText = lpo ? `Subject: ${lpo.subject}\n\n${editableLpoBody || lpo.body}` : null;
-
-  function handleCopyLpo() {
-    if (!lpoFullText) return;
-    navigator.clipboard.writeText(lpoFullText).then(() => {
-      setLpoCopied(true);
-      setTimeout(() => setLpoCopied(false), 2000);
-    });
-  }
-
-  async function handleSendCorrespondence() {
-    if (!lpo) return;
-    const token = localStorage.getItem("token") || "";
-    setSendSubmitting(true);
-    setSendError(null);
-    try {
-      const created = await fetchJson<BookingCorrespondenceRow>(
-        `/booking-engine/bookings/${booking.id}/correspondence/send`,
-        token,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            subject: lpo.subject,
-            body: editableLpoBody || lpo.body,
-            recipient_email: recipientEmail.trim() || null,
-            recipient_email_secondary: recipientEmailSecondary.trim() || null,
-          }),
-        }
-      );
-      setCorrespondence((prev) => [...(prev ?? []), created]);
-    } catch (err: any) {
-      setSendError(err.message || "Не удалось отправить письмо");
-    } finally {
-      setSendSubmitting(false);
-    }
-  }
-
-  async function handleAddReply() {
-    if (replyBody.trim().length < 1) {
-      setReplyError("Введите текст ответа отеля");
-      return;
-    }
-    const token = localStorage.getItem("token") || "";
-    setReplySubmitting(true);
-    setReplyError(null);
-    try {
-      await fetchJson<BookingCorrespondenceRow>(
-        `/booking-engine/bookings/${booking.id}/correspondence/reply`,
-        token,
-        {
-          method: "POST",
-          body: JSON.stringify({ subject: replySubject.trim() || null, body: replyBody.trim() }),
-        }
-      );
-      // The reply may have flipped an earlier outbound row's status to
-      // "replied" server-side -- refetch the whole thread rather than
-      // just appending, so that resolved state shows correctly too.
-      const thread = await fetchJson<BookingCorrespondenceRow[]>(
-        `/booking-engine/bookings/${booking.id}/correspondence`,
-        token
-      );
-      setCorrespondence(thread);
-      setReplyOpen(false);
-      setReplySubject("");
-      setReplyBody("");
-    } catch (err: any) {
-      setReplyError(err.message || "Не удалось добавить ответ");
-    } finally {
-      setReplySubmitting(false);
-    }
-  }
-
-  // Decision 101: real Net/Sale/Profit, replacing a hardcoded formula
-  // that made Net always equal Sale and a fake "—" Profit with a stale
-  // "not implemented" tooltip -- Pricing Engine has been live since
-  // Decision 069. Same shared computeBookingFinancials() the list table
-  // and financeShared.tsx's InvoiceDetailModal both use.
-  const financials = computeBookingFinancials(booking);
+  // DetailCtx passed to every adminExtensions slot below.
+  const ctx: DetailCtx = { booking, onBookingUpdated };
 
   return (
     <div
@@ -1781,18 +1332,7 @@ function BookingDetail({
         <div className="mt-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <StatusBadge status={booking.status} />
-            {invoice && isUrgentFlag(invoice) && (
-              <span
-                className="inline-flex cursor-help items-center gap-1 rounded-full bg-coral/15 px-2.5 py-1 text-xs font-medium text-coral"
-                title={
-                  invoice.review_notes.length > 0
-                    ? formatSingleNote(invoice.review_notes[invoice.review_notes.length - 1], invoice.currency)
-                    : undefined
-                }
-              >
-                ⚠ Требуется проверка счёта
-              </span>
-            )}
+            {adminExtensions?.renderStatusBadgeExtra?.(booking)}
           </div>
           <div className="flex items-center gap-2">
             {permissions.canClaim && booking.status === "Pending" && booking.claimed_by === null && (
@@ -1828,28 +1368,9 @@ function BookingDetail({
                 Отменить бронь
               </button>
             )}
-            {permissions.canManageInvoices && !invoiceLoading && !invoice && booking.status !== "Cancelled" && booking.status !== "Rejected" && booking.status !== "Cancellation Requested" && (
-              <button
-                type="button"
-                onClick={handleCreateInvoice}
-                disabled={invoiceSubmitting}
-                className="rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {invoiceSubmitting ? "Создание..." : "Создать счёт"}
-              </button>
-            )}
+            {adminExtensions?.renderHeaderActions?.(ctx)}
           </div>
         </div>
-
-        {permissions.canManageInvoices && invoice && (
-          <div className="mt-3 rounded-lg bg-ink/5 px-3 py-2 text-xs text-slate/70">
-            Счёт <strong className="text-ink">{invoice.invoice_number}</strong> ({invoice.status}) на{" "}
-            <strong className="text-ink">{formatMoney(invoice.total, invoice.currency)}</strong>
-          </div>
-        )}
-        {invoiceError && (
-          <div className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{invoiceError}</div>
-        )}
 
         {claimError && (
           <div className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{claimError}</div>
@@ -1877,74 +1398,11 @@ function BookingDetail({
             invoice management, not something an individual agent
             should be able to compose/dispatch themselves. The backend
             (claim_booking/send_correspondence) now enforces this too;
-            this gate keeps the UI from offering an action that would
-            403 anyway. */}
-        {permissions.canManageInvoices && booking.status === "Pending" && booking.claimed_by !== null && (
-          <div className="mt-3 rounded-lg border border-ink/10 bg-sand/30 p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
-                LPO — запрос на подтверждение отелю
-              </p>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleCopyLpo}
-                  disabled={!lpoFullText}
-                  className="rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-ink/80 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {lpoCopied ? "Скопировано ✓" : "Копировать"}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSendCorrespondence}
-                  disabled={!lpo || sendSubmitting}
-                  className="rounded-lg bg-coral px-3 py-1.5 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
-                >
-                  {sendSubmitting ? "Отправка..." : "Отправить"}
-                </button>
-              </div>
-            </div>
-            {lpo ? (
-              <>
-                <div className="mb-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <input
-                    type="email"
-                    placeholder="Кому (email отеля)"
-                    value={recipientEmail}
-                    onChange={(e) => setRecipientEmail(e.target.value)}
-                    className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
-                  />
-                  <input
-                    type="email"
-                    placeholder="Второй email (опционально)"
-                    value={recipientEmailSecondary}
-                    onChange={(e) => setRecipientEmailSecondary(e.target.value)}
-                    className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
-                  />
-                </div>
-                {!hotelEmail && (
-                  <p className="mb-2 text-[11px] text-slate/40">
-                    У отеля не указан email в системе — заполните вручную.
-                  </p>
-                )}
-                <p className="mb-1 text-[11px] font-medium text-slate/50">Тема: {lpo.subject}</p>
-                <textarea
-                  value={editableLpoBody || lpo.body}
-                  onChange={(e) => setEditableLpoBody(e.target.value)}
-                  rows={14}
-                  className="w-full rounded-lg border border-ink/15 bg-white p-3 font-mono text-xs text-ink focus:border-coral focus:outline-none"
-                />
-              </>
-            ) : (
-              <p className="text-xs text-slate/50">
-                {breakdownLoading ? "Расчёт стоимости..." : "Не удалось сформировать письмо — проверьте расчёт стоимости выше."}
-              </p>
-            )}
-            {sendError && (
-              <div className="mt-2 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{sendError}</div>
-            )}
-          </div>
-        )}
+            structurally absent here rather than merely gated -- entirely
+            AdminBookingFinance.tsx's concern via renderCorrespondencePanel,
+            still wrapped in the SAME booking-state condition the LPO panel
+            always checked. */}
+        {booking.status === "Pending" && booking.claimed_by !== null && adminExtensions?.renderCorrespondencePanel?.(ctx)}
 
         {/* ===== Переписка с отелем (Decision 049) ===== */}
         <div className="mt-3 rounded-lg border border-ink/10 bg-white p-4">
@@ -1952,24 +1410,11 @@ function BookingDetail({
             <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Переписка с отелем</p>
             {/* Decision 103: logging a hotel's reply is a write action on
                 the same admin-only add_correspondence_reply endpoint the
-                LPO panel uses -- gated here too, so an agent never sees a
-                button that would now 403. Reading the thread below stays
-                visible to everyone (their own booking's correspondence
-                history is reasonable to see). */}
-            {permissions.canManageInvoices && !replyOpen && (
-              <button
-                type="button"
-                onClick={() => {
-                  setReplyError(null);
-                  setReplySubject("");
-                  setReplyBody("");
-                  setReplyOpen(true);
-                }}
-                className="rounded-lg border border-ink/15 bg-white px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:bg-sand"
-              >
-                Добавить ответ отеля вручную
-              </button>
-            )}
+                LPO panel uses -- reading the thread below stays visible to
+                everyone (their own booking's correspondence history is
+                reasonable to see); only the write button is
+                AdminBookingFinance.tsx's concern now. */}
+            {adminExtensions?.renderReplyLogButton?.(ctx)}
           </div>
 
           {correspondence === null ? (
@@ -2009,45 +1454,6 @@ function BookingDetail({
                   </div>
                 );
               })}
-            </div>
-          )}
-
-          {replyOpen && (
-            <div className="mt-3 space-y-2 rounded-lg border border-ink/10 bg-sand/30 p-3">
-              <input
-                placeholder="Тема (опционально)"
-                value={replySubject}
-                onChange={(e) => setReplySubject(e.target.value)}
-                className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
-              />
-              <textarea
-                placeholder="Текст ответа отеля *"
-                value={replyBody}
-                onChange={(e) => setReplyBody(e.target.value)}
-                rows={4}
-                className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
-              />
-              {replyError && (
-                <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{replyError}</div>
-              )}
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleAddReply}
-                  disabled={replySubmitting}
-                  className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
-                >
-                  {replySubmitting ? "Сохранение..." : "Сохранить ответ"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setReplyOpen(false)}
-                  disabled={replySubmitting}
-                  className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Отмена
-                </button>
-              </div>
             </div>
           )}
         </div>
@@ -2193,43 +1599,21 @@ function BookingDetail({
           )}
         </div>
 
-        {/* ===== Net / Sale / Profit (Decision 101, gated by Decision 102) =====
-            Decision 102: URGENT fix -- this block rendered unconditionally
-            (a real, confirmed leak: Cost/Profit are internal commercial
-            data, an agent must never see them, only the total they're
-            charged). Same permission boundary Decision 099/100 already
-            established for invoice visibility generally. */}
-        {permissions.canManageInvoices ? (
-          <div className="mt-4 grid grid-cols-3 gap-3 rounded-lg bg-sand/50 p-3 text-sm">
-            <div>
-              <p className="text-slate/50">Net cost</p>
-              <p className="font-medium text-ink">{formatMoney(financials.netTotal, booking.currency)}</p>
-            </div>
-            <div>
-              <p className="text-slate/50">Sale price</p>
-              <p className="font-medium text-ink">{formatMoney(financials.saleTotal, booking.currency)}</p>
-            </div>
-            <div>
-              <p className="flex items-center gap-1 text-slate/50">
-                Profit
-                {financials.profit === null && (
-                  <span
-                    className="cursor-help text-slate/40"
-                    title="Не рассчитано — бронирование создано до внедрения Pricing Engine (Decision 069)"
-                  >
-                    ⓘ
-                  </span>
-                )}
-              </p>
-              <p className="font-medium text-ink">
-                {financials.profit !== null ? formatMoney(financials.profit, booking.currency) : "—"}
-              </p>
-            </div>
-          </div>
+        {/* ===== Financial summary (Decision 101/102/106 lineage) =====
+            AdminBookingFinance.tsx's renderFinancialSummary now owns Net/
+            Sale/Profit AND the "Разбивка стоимости" price-breakdown block
+            (the fixed 9-slot interface has no separate slot for the
+            breakdown, so it's folded into this one, in the same position
+            "Итого" used to occupy) -- structurally absent, not just
+            gated, for any caller (e.g. AgentDashboard_v2.tsx) that never
+            supplies adminExtensions. The base's own default is the plain
+            sale total an agent needs to know they're charged. */}
+        {adminExtensions?.renderFinancialSummary ? (
+          adminExtensions.renderFinancialSummary(ctx)
         ) : (
           <div className="mt-4 rounded-lg bg-sand/50 p-3 text-sm">
             <p className="text-slate/50">Итого</p>
-            <p className="font-medium text-ink">{formatMoney(financials.saleTotal, booking.currency)}</p>
+            <p className="font-medium text-ink">{formatMoney(saleTotal(booking), booking.currency)}</p>
           </div>
         )}
 
@@ -2239,19 +1623,21 @@ function BookingDetail({
           <ConfirmationNumberEdit
             booking={booking}
             onUpdated={onBookingUpdated}
-            canEdit={permissions.canManageInvoices}
+            canEdit={permissions.canConfirmWithHotel}
           />
         </div>
 
         {/* ===== Подтверждение отмены отелем (Decision 104) — stage 2 of
             the two-step cancellation workflow. Admin-only, same
-            canManageInvoices boundary as confirmation_number above (an
+            canConfirmWithHotel boundary as confirmation_number above (an
             agent can request cancellation on their own booking, but does
-            not confirm the hotel processed it). Only shown while status
-            is still "Cancellation Requested" -- once confirmed, status
-            flips to "Cancelled" and this section naturally stops
-            rendering. ===== */}
-        {permissions.canManageInvoices && booking.status === "Cancellation Requested" && (
+            not confirm the hotel processed it) -- this is hotel-
+            confirmation authority, not money-secrecy, per the Admin/Agent
+            Component Separation refactor's renamed permission. Only shown
+            while status is still "Cancellation Requested" -- once
+            confirmed, status flips to "Cancelled" and this section
+            naturally stops rendering. ===== */}
+        {permissions.canConfirmWithHotel && booking.status === "Cancellation Requested" && (
           <div className="mt-4 flex items-center justify-between">
             <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">
               Подтверждение отмены
@@ -2261,45 +1647,10 @@ function BookingDetail({
         )}
 
         {/* ===== Документы (Decision 102) — visible to admin and the
-            owning agent alike; not gated by canManageInvoices since this
+            owning agent alike; not gated by permissions at all since this
             is about document access/ownership, not the Cost/Profit
             confidentiality boundary. ===== */}
         <DocumentsSection booking={booking} />
-
-        {/* ===== Re-derived price breakdown ===== */}
-        <div className="mt-4 rounded-lg border border-ink/10 p-3 text-sm">
-          <div className="flex items-center justify-between">
-            <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">Разбивка стоимости</h4>
-          </div>
-          <p className="mt-1 text-xs text-slate/50">
-            Расчёт на текущих условиях контракта — может отличаться, если цены изменились после бронирования.
-          </p>
-          {breakdownLoading && <p className="mt-2 text-slate/50">Пересчёт...</p>}
-          {breakdownError && <p className="mt-2 text-red-600">{breakdownError}</p>}
-          {roomBreakdown && (
-            <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1">
-              <div><span className="text-slate/50">База: </span><span className="text-ink">{formatMoney(roomBreakdown.base_total, roomBreakdown.currency)}</span></div>
-              <div><span className="text-slate/50">Доплаты: </span><span className="text-ink">{formatMoney(roomBreakdown.supplements_total, roomBreakdown.currency)}</span></div>
-              <div><span className="text-slate/50">До промо: </span><span className="text-ink">{formatMoney(roomBreakdown.price_before_promotions, roomBreakdown.currency)}</span></div>
-              <div><span className="text-slate/50">Итог проживания: </span><span className="text-ink">{formatMoney(roomBreakdown.final_total, roomBreakdown.currency)}</span></div>
-            </div>
-          )}
-          {transferBreakdown && (
-            <div className="mt-2 border-t border-ink/5 pt-2">
-              <p className="text-slate/50">Трансфер ({transferBreakdown.transfer_name}): <span className="text-ink">{formatMoney(transferBreakdown.total, transferBreakdown.currency)}</span></p>
-            </div>
-          )}
-          {mandatoryTaxBreakdown && mandatoryTaxBreakdown.total > 0 && (
-            <div className="mt-2 border-t border-ink/5 pt-2">
-              <p className="text-slate/50">
-                {mandatoryTaxBreakdown.label || "Обязательный налог"} ({mandatoryTaxBreakdown.chargeable_guests} чел. ×{" "}
-                {formatMoney(mandatoryTaxBreakdown.rate_per_person_per_night, mandatoryTaxBreakdown.currency)} ×{" "}
-                {mandatoryTaxBreakdown.nights} ноч., начисляется после скидок и не подлежит скидке):{" "}
-                <span className="text-ink">{formatMoney(mandatoryTaxBreakdown.total, mandatoryTaxBreakdown.currency)}</span>
-              </p>
-            </div>
-          )}
-        </div>
 
         {/* Decision 104: covers both stages now -- a "Cancellation
             Requested" booking already has the request-side fields
@@ -2367,20 +1718,21 @@ function BookingDetail({
 // Main Reservations screen
 // ---------------------------------------------------------------------------
 
-const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permissions }) => {
+const BookingsList = ({
+  scope,
+  permissions,
+  adminExtensions,
+}: {
+  scope: Scope;
+  permissions: Permissions;
+  adminExtensions?: AdminBookingExtensions;
+}) => {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [hotels, setHotels] = useState<Record<number, string>>({});
   const [roomTypes, setRoomTypes] = useState<Record<number, string>>({});
   const [mealPlans, setMealPlans] = useState<Record<number, MealPlanInfo>>({});
   const [agentNames, setAgentNames] = useState<Record<number, string>>({});
   const [cancellationTiers, setCancellationTiers] = useState<Record<string, CancellationPolicy[]>>({});
-  // Decision 100: keyed by booking_id, populated from ONE bulk
-  // GET /invoices/urgent call -- the exact same server-bounded query
-  // Финансы→Счета's own urgent panel already uses (Decision 087), so
-  // this list badge can never drift from what that panel shows. Never
-  // fetched per-row -- that's the N-individual-requests trap this
-  // reuse specifically avoids.
-  const [urgentInvoicesByBooking, setUrgentInvoicesByBooking] = useState<Record<number, InvoiceInfo>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -2420,19 +1772,6 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
         const hotelMap: Record<number, string> = {};
         hotelsData.forEach((h) => (hotelMap[h.id] = h.hotel_name));
         setHotels(hotelMap);
-
-        // Decision 100: same guard as Decision 099's detail-view badge
-        // -- an agent never sees invoice data, their own bookings
-        // included, so this list-level badge is gated on the same
-        // canManageInvoices permission, not fetched at all otherwise.
-        if (permissions.canManageInvoices) {
-          const urgentInvoices = await fetchJson<InvoiceInfo[]>("/finance-engine/invoices/urgent", token);
-          const urgentMap: Record<number, InvoiceInfo> = {};
-          urgentInvoices.forEach((inv) => {
-            if (inv.booking_id !== undefined) urgentMap[inv.booking_id] = inv;
-          });
-          setUrgentInvoicesByBooking(urgentMap);
-        }
 
         // Agent-scoped view never shows the Агент column/filter, so skip
         // fetching the full user list — no reason to expose other users'
@@ -2501,7 +1840,7 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
     // passing an inline object literal would otherwise create a new
     // reference every render and refetch in a loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope.type, scope.type === "agent" ? scope.agentId : null, permissions.canManageInvoices]);
+  }, [scope.type, scope.type === "agent" ? scope.agentId : null]);
 
   const aiFlags = useMemo(() => {
     return [
@@ -2522,11 +1861,6 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
     () => Array.from(new Set(bookings.map((b) => b.agent_id))),
     [bookings]
   );
-
-  // Decision 101: real net total (was previously identical to sale
-  // total by construction -- the same bug the detail modal had, sorting
-  // by "net" was actually sorting by sale price).
-  const netOf = (b: Booking) => computeBookingFinancials(b).netTotal;
 
   const filteredSorted = useMemo(() => {
     let list = bookings;
@@ -2570,7 +1904,6 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
       if (sortKey === "created_at") cmp = a.created_at.localeCompare(b.created_at);
       else if (sortKey === "arrival_date") cmp = a.arrival_date.localeCompare(b.arrival_date);
       else if (sortKey === "status") cmp = a.status.localeCompare(b.status);
-      else if (sortKey === "net") cmp = netOf(a) - netOf(b);
       return sortDir === "asc" ? cmp : -cmp;
     });
     return sorted;
@@ -2764,23 +2097,15 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
                 Статус{sortArrow("status")}
               </th>
               <th className="px-4 py-3 font-medium">Валюта</th>
-              {permissions.canManageInvoices && (
-                <th
-                  className="cursor-pointer select-none px-4 py-3 font-medium"
-                  onClick={() => toggleSort("net")}
-                >
-                  Net cost{sortArrow("net")}
-                </th>
-              )}
               <th className="px-4 py-3 font-medium">Sale price</th>
-              {permissions.canManageInvoices && <th className="px-4 py-3 font-medium">Profit</th>}
+              {adminExtensions?.financialColumnHeaders}
             </tr>
           </thead>
           <tbody>
             {filteredSorted.length === 0 ? (
               <tr>
                 <td
-                  colSpan={8 + (scope.type === "all" ? 1 : 0) + (permissions.canManageInvoices ? 2 : 0)}
+                  colSpan={8 + (scope.type === "all" ? 1 : 0) + (adminExtensions?.extraColumnCount ?? 0)}
                   className="px-4 py-10 text-center text-sm text-slate/50"
                 >
                   Бронирования не найдены
@@ -2788,7 +2113,6 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
               </tr>
             ) : (
               filteredSorted.map((b) => {
-                const financials = computeBookingFinancials(b);
                 // "Взято в работу" overlay (independent of the status
                 // badge): only meaningful for Pending bookings -- a
                 // Cancelled/old booking doesn't need an "has anyone
@@ -2848,44 +2172,12 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
                     <td className="px-4 py-3.5">
                       <div className="flex items-center gap-1.5">
                         <StatusBadge status={b.status} />
-                        {urgentInvoicesByBooking[b.id] && (
-                          <span
-                            className="inline-flex cursor-help items-center gap-1 rounded-full bg-coral/15 px-2 py-0.5 text-[11px] font-medium text-coral"
-                            title={
-                              urgentInvoicesByBooking[b.id].review_notes.length > 0
-                                ? formatSingleNote(
-                                    urgentInvoicesByBooking[b.id].review_notes[
-                                      urgentInvoicesByBooking[b.id].review_notes.length - 1
-                                    ],
-                                    urgentInvoicesByBooking[b.id].currency
-                                  )
-                                : undefined
-                            }
-                          >
-                            ⚠ Счёт
-                          </span>
-                        )}
+                        {adminExtensions?.renderStatusBadgeExtra?.(b)}
                       </div>
                     </td>
                     <td className="px-4 py-3.5 text-slate/70">{b.currency}</td>
-                    {permissions.canManageInvoices && (
-                      <td className="whitespace-nowrap px-4 py-3.5 font-medium text-ink">{formatNumber(financials.netTotal)}</td>
-                    )}
-                    <td className="whitespace-nowrap px-4 py-3.5 font-medium text-ink">{formatNumber(financials.saleTotal)}</td>
-                    {permissions.canManageInvoices && (
-                      <td className="whitespace-nowrap px-4 py-3.5 font-medium text-ink">
-                        {financials.profit !== null ? (
-                          formatNumber(financials.profit)
-                        ) : (
-                          <span
-                            className="cursor-help text-slate/40"
-                            title="Не рассчитано — бронирование создано до внедрения Pricing Engine (Decision 069)"
-                          >
-                            —
-                          </span>
-                        )}
-                      </td>
-                    )}
+                    <td className="whitespace-nowrap px-4 py-3.5 font-medium text-ink">{formatNumber(saleTotal(b))}</td>
+                    {adminExtensions?.renderFinancialColumnCells?.(b)}
                   </tr>
                 );
               })
@@ -2911,6 +2203,7 @@ const BookingsList = ({ scope, permissions }: { scope: Scope; permissions: Permi
           }}
           permissions={permissions}
           claimerNames={agentNames}
+          adminExtensions={adminExtensions}
         />
       )}
     </div>

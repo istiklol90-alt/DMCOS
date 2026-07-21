@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { API_URL } from "../config";
-import BookingsList from "./Reservations";
+import AdminBookingsList from "./AdminBookingFinance";
 import Contracts from "./Contracts";
 import ContractsAI from "./ContractsAI";
 import PriceCalculator from "./PriceCalculator";
@@ -188,12 +188,7 @@ const AdminPanel = () => {
 
         {activeTab === "cashback" && <Cashback />}
 
-        {activeTab === "reservations" && (
-          <BookingsList
-            scope={{ type: "all" }}
-            permissions={{ canChangeDates: true, canEditGuestDetails: true, canEditFlights: true, canCancel: true, canClaim: true, canManageInvoices: true }}
-          />
-        )}
+        {activeTab === "reservations" && <AdminBookingsList scope={{ type: "all" }} />}
 
         {activeTab === "contracts" && <Contracts />}
 

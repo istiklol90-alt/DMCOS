@@ -5468,6 +5468,48 @@ Status: Implemented and verified. All 12 rows created via the real `POST /contra
 
 ---
 
+# Decision 106
+
+Date: 2026-07-21
+
+Decision: Urgent priority-interrupt fix, found while inventorying `Reservations.tsx` for the larger Admin/Agent component-separation refactor (Decision 107, logged next): the "Разбивка стоимости" (re-derived price breakdown) block inside `BookingDetail` had **no permission gate at all** — it rendered `base_total`/`supplements_total`/`price_before_promotions`/`final_total` (the DMC's real net cost from the hotel's contract) to any viewer, agents included, in `AgentDashboard_v2.tsx` right now. Same severity class as Decision 102's Net/Sale/Profit leak.
+
+Fixed the same way Decision 102 was: wrapped the entire block in `permissions.canManageInvoices` (this predates Decision 107's later removal of that flag — the fix and the full refactor were done as two separate steps in the same session, this one first, immediately, per the project owner's explicit "don't wait for the full refactor" instruction). No backend change — pure frontend render-gate; the underlying `roomBreakdown`/`transferBreakdown`/`mandatoryTaxBreakdown` fetches continued running for both roles at this point (they were later removed from the base entirely as part of Decision 107).
+
+Reason: an active leak of real commercial data shouldn't persist for the duration of a multi-session architectural redesign — same principle as Decision 102's own urgency.
+
+Approved By: Daler
+
+Status: Implemented and verified. `tsc -b` clean (same 9 pre-existing unrelated errors). Code-trace confirmed the block is unreachable in the DOM for `canManageInvoices: false`; confirmed the admin view renders it unchanged. No browser tool available this session, disclosed as with every prior frontend verification.
+
+---
+
+# Decision 107
+
+Date: 2026-07-21
+
+Decision: Structural separation of `Reservations.tsx` (~2950 lines, the project's only genuinely shared component between `AdminPanel.tsx` and `AgentDashboard_v2.tsx`) into a financially-neutral **operations base** (stays in `Reservations.tsx`) and a new **`AdminBookingFinance.tsx`** module containing everything financial, composed into the base via a render-prop/slot mechanism (`adminExtensions` prop) rather than permission-gated inline rendering. `AgentDashboard_v2.tsx`'s own source file now has zero reference to `AdminBookingFinance.tsx` anywhere — financial content is structurally unreachable from the agent code path, not merely hidden by a runtime check. Prompted directly by this session's own history: two real production leaks (Decision 102's Net/Sale/Profit, Decision 106's price breakdown, both fixed today) were both render-gating omissions in an otherwise-fully-shared file — the project owner determined this was the right moment to fix the underlying structure, since both `AdminPanel.tsx` (~20%) and `AgentDashboard_v2.tsx` (~30%) are still early enough that the cost of separating them only grows with every feature built on top of the current shared structure.
+
+**Composition mechanism:** one new optional prop, `adminExtensions?: AdminBookingExtensions`, on the base's exported `BookingsList`. Nine named slots, each mapping 1:1 to a real, previously-existing UI location: `financialColumnHeaders`/`renderFinancialColumnCells`/`extraColumnCount` (list table's Net cost/Profit columns), `renderStatusBadgeExtra` (urgent-invoice badge, both list row and detail header), `renderHeaderActions` (invoice creation button + summary), `renderCorrespondencePanel` (the whole LPO compose/send block, still wrapped in the base's own `booking.status === "Pending" && booking.claimed_by !== null` condition — booking-state gating, not permission gating), `renderReplyLogButton` ("Добавить ответ отеля вручную" — the correspondence thread's *read* display stays in the base, only this write-action moved), `renderFinancialSummary` (Net/Sale/Profit **and** the price-breakdown block folded together, since the fixed 9-slot interface has no separate slot for the latter — occupies the same position the base's default "Итого" line used to), and `onAfterClaim` (the auto-invoice-on-claim side effect, previously bundled inline inside the shared claim handler behind a permission check).
+
+**`Permissions` interface changed:** `canManageInvoices` removed entirely — nothing financial is left in the base to gate with it. New `canConfirmWithHotel: boolean` added, gating `ConfirmationNumberEdit`'s edit control and the `CancellationConfirmationEdit` section (Decision 104) — both of these **stay in the base**, per the project owner's explicit categorization: they're admin-only for "a manager records what the hotel told them" reasons, not money-secrecy, and are conceptually operational (booking-lifecycle) actions, not financial-visibility ones.
+
+**Deliberately preserved, not moved:** the `flag-for-review`/`flag-cancellation-requested`/`flag-cancellation-confirmed` orchestration calls stay in the base and continue firing unconditionally regardless of role — Decision 098 fixed a real bug where these were previously blocked for agent-initiated changes, and moving them behind the extension mechanism would have silently regressed that fix (a manager must see the review note regardless of who made the change). Only the *reading* of each call's response was removed from the base (no `invoice` state left there); `AdminBookingFinance.tsx`'s own slots independently re-fetch whenever the `booking` prop reference changes.
+
+**Real network-tab-level finding, flagged not fixed, explicitly out of scope for this frontend-only refactor:** the flag-for-review/flag-cancellation-* endpoints return a full `Invoice` object (number, total, currency, review notes) even though nothing in the agent-facing render tree reads it — the bytes still cross the wire to an agent's browser regardless of what JS parses from them. Closing this fully needs a LOCKED Finance Engine backend change (returning 204/minimal instead of the full object) — a future decision, not folded into this one.
+
+**Disclosed implementation deviations, all forced by the fixed 9-slot interface rather than a redesign:**
+- `renderStatusBadgeExtra` is the identical function at both call sites, unifying two previously-different badge label texts ("⚠ Требуется проверка счёта" in detail vs. "⚠ Счёт" in the list) to "⚠ Счёт" everywhere.
+- The list table's "Net cost" column lost click-to-sort — the extension-provided header is inert `ReactNode` with no access to the base's private sort state. The `"net"` `SortKey` was removed as now-dead code.
+- `DetailCtx` is fixed at `{booking, onBookingUpdated}` — extension components that need to trigger a re-fetch of base-owned state they can't reach directly (the correspondence thread, after an LPO send or manual reply-log) call `onBookingUpdated({...booking})` to force a new object reference, which the base's correspondence-fetch effect (widened from depending on `[booking.id]` to `[booking]`) picks up as a signal to re-run.
+- `AdminBookingFinance.tsx`'s LPO-panel slot independently re-fetches hotel name/room type name (new calls to `GET /hotel-engine/hotels/{id}` and `GET /hotel-engine/room-types/{id}`, both pre-existing real endpoints) rather than receiving them as props, since `DetailCtx` doesn't carry them — a small, accepted efficiency cost (two extra requests, admin-only) for keeping the slot interface narrow.
+
+Approved By: Daler
+
+Status: Implemented and independently verified — the mechanical extraction (moving ~800 lines from `Reservations.tsx` into a new `AdminBookingFinance.tsx`, threading the 9-slot interface, updating `AdminPanel.tsx`/`AgentDashboard_v2.tsx`) was executed by a delegated agent given the complete, pre-approved plan, then independently re-verified line-by-line rather than trusting its self-report, per this project's own "trust but verify" discipline. Confirmed by direct re-read of both full files: every one of the 9 slots wired at both definition (`AdminBookingFinance.tsx`) and call site (`Reservations.tsx`); `GuestRow`/`FlightNumbersEdit`/`ConfirmationNumberEdit`/`CancellationConfirmationEdit`/`DocumentsSection`/`AIInsightStrip`/`StatusBadge` and all AI-flag computation functions completely untouched (zero diff); `buildLpoEmailText`/`renderTextTable`/`formatFlightDetail` moved verbatim, byte-for-byte identical logic; the new `saleTotal()` helper's formula matches `computeBookingFinancials`'s `sale_total` exactly; `financeShared.tsx` itself untouched (confirmed zero diff), and its own `fetchJson` confirmed behaviorally identical to the one it replaces in the new file. Independently re-ran (not just trusted) all four required checks: `tsc -b` clean (same 9 pre-existing unrelated errors), `grep -rn "canManageInvoices" frontend/src/` returns zero results anywhere in the codebase, `grep "financeShared" Reservations.tsx` returns zero results, `grep "AdminBookingFinance" AgentDashboard_v2.tsx` returns zero results. Additionally ran a full `vite build` directly (beyond what was asked) to confirm the bundler itself resolves the new two-file module split with no circular-import or resolution issues — succeeded cleanly. No browser tool available this session — verification is code-level/build-level only, disclosed explicitly, consistent with every prior frontend verification this session.
+
+---
+
 # Decision Template
 
 Decision Number:
