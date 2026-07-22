@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import { I18nextProvider } from "react-i18next";
+import adminI18n from "../i18n/i18nAdmin";
 import { API_URL } from "../config";
 import AdminBookingsList from "./AdminBookingFinance";
 import Contracts from "./Contracts";
@@ -167,6 +169,7 @@ const AdminPanel = () => {
   }
 
   return (
+    <I18nextProvider i18n={adminI18n}>
     <div className="min-h-screen bg-sand px-5 py-4 font-sans text-slate">
       <div className="mx-auto max-w-[1400px]">
         <div className="flex items-center justify-between gap-4 border-b border-ink/10">
@@ -377,6 +380,7 @@ const AdminPanel = () => {
         )}
       </div>
     </div>
+    </I18nextProvider>
   );
 };
 

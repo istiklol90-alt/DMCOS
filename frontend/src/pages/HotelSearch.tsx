@@ -355,9 +355,14 @@ async function fetchJson<T>(path: string, token: string, init?: RequestInit): Pr
     },
   });
   if (!response.ok) {
-    // Module-scope helper -- uses the shared i18n singleton's t() directly,
-    // same pattern as Reservations.tsx's fetchJson.
-    let detail = i18n.t("hotelSearch:errors.requestError", { status: response.status });
+    // Module-scope helper -- can't use the useTranslation() hook, and can't
+    // safely call the ambient i18n singleton's t() either: DateRangePicker
+    // (this file) is also rendered inside AdminPanel.tsx via an
+    // I18nextProvider-scoped English-only instance (see Reservations.tsx's
+    // fetchJson for the full reasoning). Kept language-neutral (English)
+    // instead of translated; this generic fallback almost never surfaces
+    // since every real backend error path already returns {"detail": "..."}.
+    let detail = `Request error (${response.status})`;
     try {
       const body = await response.json();
       if (body?.detail) detail = body.detail;

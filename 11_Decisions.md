@@ -5556,6 +5556,26 @@ Status: Implemented and verified. `npx tsc -b` clean (same 9 pre-existing, unrel
 
 ---
 
+# Decision 110
+
+Date: 2026-07-22
+
+Decision: Closed a real gap in Decision 109 found immediately by the project owner: Russian text was still visible inside the Admin Panel despite all 11 admin-only files verified at zero Cyrillic. Root cause was architectural, not a missed file — `AdminBookingFinance.tsx` (admin-only) renders `Reservations.tsx`'s shared `BookingsList`/`BookingDetail`/`StatusBadge`/etc. components (the same real i18next components Decision 109 converted for the agent panel), which call `useTranslation("reservations")` bound to the **ambient global** i18n instance, defaulting to `"ru"`. The RU/EN toggle lives in `Header.tsx`, which `App.tsx` explicitly never renders on the `"admin-panel"` page (`page !== "admin-panel" && <Header .../>`) — so an admin had no way to switch that embedded subtree to English at all. Same gap, smaller surface: `BookingDetail`'s change-dates panel renders `HotelSearch.tsx`'s `DateRangePicker` with no `forceLang`, leaking its weekday labels too (`PriceCalculator.tsx`'s own `DateRangePicker` call already had `forceLang="en"` from Decision 109 and was unaffected).
+
+**Fix — a second, independent i18next instance, not a `forceLang` prop threaded through 9 components:** new `frontend/src/i18n/i18nAdmin.ts` (`i18next.createInstance()`, English-only resources — `common`/`reservations`/`hotelSearch` namespaces, no `ru` bundle, no `agentDashboard` namespace since that page is never rendered inside `AdminPanel.tsx`), wired via `<I18nextProvider i18n={adminI18n}>` wrapping `AdminPanel.tsx`'s entire render tree. Every `useTranslation()` call anywhere beneath it — including inside `Reservations.tsx`'s shared components — resolves through the forced-English instance automatically (react-i18next's context takes precedence over the module's default `initReactI18next` instance), with zero changes needed to the already-verified `Reservations.tsx`/`HotelSearch.tsx` component internals. Deliberately **not** implemented by calling `i18n.changeLanguage("en")` on the shared singleton on admin-mount: `i18n.ts`'s own `languageChanged` listener persists to the same `localStorage["lang"]` key an agent's own session relies on, so that approach would have silently overwritten an agent's saved language preference the moment an admin loaded the page in the same browser.
+
+**A second, subtler leak found while verifying the fix, not part of the original plan:** both files' module-scope `fetchJson` helpers (used by 36 call sites total across `Reservations.tsx`/`HotelSearch.tsx`) called `i18n.t(...)` directly on the imported global singleton for their generic HTTP-error fallback message — a plain async function has no React context to read, so this bypassed the new `I18nextProvider` entirely regardless of where it was rendered from. Fixed by making this one fallback string language-neutral (hardcoded English, `` `Request error (${response.status})` ``) instead of translated, rather than threading a `t`/language parameter through all 36 call sites — justified because this fallback is already normally unreachable in practice: every real backend error path in this project already returns `{"detail": "..."}` (the established `ValueError`→HTTP 400 mapping in every Engine's `api.py`), which overwrites this generic string the moment a JSON body with `.detail` exists; it only ever surfaces on a genuinely non-JSON error response (e.g. a proxy/network-level failure), not a real application error.
+
+**Going forward:** all new Admin Panel code/text must be written in English from the start — no Russian introduced into any admin-only file or admin-reachable code path going forward, confirmed directly by the project owner.
+
+Reason: the project owner caught Decision 109's verification gap directly — the 11 admin-only files were genuinely clean, but the actual admin-visible experience wasn't, because Decision 107's shared-component architecture means "grep 11 files for Cyrillic" doesn't cover text arriving from a shared, i18n-ified component tree with no reachable language switch.
+
+Approved By: Daler
+
+Status: Implemented and verified. `npx tsc -b` clean (same 9-error baseline, zero new — including after removing the now-unused `i18n` import from `Reservations.tsx`). `npx vite build` clean. Confirmed via direct resource lookup that every string the project owner explicitly flagged (`"Требует внимания"`, `"Все статусы"`/`"Все отели"`/`"Все агенты"`, `"Поиск по № брони"`, `"Отменено"`, `DateRangePicker`'s weekday labels) resolves to its English value in `locales/en/reservations.json`/`hotelSearch.json` — the exact bundles `adminI18n` loads. Confirmed no other direct, context-unaware `i18n.t()`/`i18n.language` access remains in the admin-reachable file set (`Reservations.tsx`, `HotelSearch.tsx`, `AgentDashboard_v2.tsx`, `AdminBookingFinance.tsx`, `AdminPanel.tsx`, `PriceCalculator.tsx`) other than `HotelSearch.tsx`'s intentional, `forceLang`-gated `i18n.getFixedT` call. No browser tool available this session — verification is code-level/resource-resolution-level, disclosed explicitly, not a literal click-through.
+
+---
+
 # Decision Template
 
 Decision Number:

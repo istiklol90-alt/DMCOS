@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import i18n from "../i18n/i18n";
 import { API_URL } from "../config";
 import { DateRangePicker } from "./HotelSearch";
 
@@ -185,10 +184,18 @@ async function fetchJson<T>(path: string, token: string, init?: RequestInit): Pr
     },
   });
   if (!response.ok) {
-    // Module-scope helper (not a component) -- uses the shared i18n
-    // singleton's t() directly rather than the useTranslation() hook,
-    // which only works inside a component/hook context.
-    let detail = i18n.t("reservations:errors.requestError", { status: response.status });
+    // Module-scope helper (not a component) -- can't use the useTranslation()
+    // hook, and can't safely call the ambient i18n singleton's t() either:
+    // this function is shared by components rendered both standalone
+    // (agent, ambient global i18n instance) and inside AdminPanel.tsx (via
+    // AdminBookingFinance.tsx's I18nextProvider-scoped English-only
+    // instance) -- a plain module-scope call has no way to know which
+    // context is actually rendering. Kept language-neutral (English)
+    // instead of translated; in practice this generic fallback almost
+    // never surfaces since every real backend error path already returns
+    // {"detail": "..."} (see api.py's ValueError->400 mapping), overwritten
+    // below the moment a JSON body with .detail exists.
+    let detail = `Request error (${response.status})`;
     try {
       const body = await response.json();
       if (body?.detail) detail = body.detail;
