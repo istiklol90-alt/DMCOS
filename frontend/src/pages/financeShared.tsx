@@ -194,6 +194,25 @@ export function hasPriceSnapshot(note: InvoiceReviewNote): boolean {
   return note.old_total !== null && note.new_total !== null;
 }
 
+// Decision 111: dates are captured unconditionally by add_invoice_review_note
+// (backend/app/engines/finance/service.py) even when old-price repricing
+// fails and old_total/new_total stay null -- so a note can have a full date
+// snapshot without a full price snapshot. Building the sentence from these
+// language-neutral fields client-side, in English, means this path never
+// depends on the backend's Russian change_description fallback string at
+// all (defense in depth: that fallback is still translated server-side too,
+// but is never actually read as long as this tier exists), and works
+// retroactively for any existing row shaped this way, same as the
+// full-price-snapshot tier above already does.
+export function hasDateSnapshot(note: InvoiceReviewNote): boolean {
+  return (
+    note.old_arrival_date !== null &&
+    note.old_departure_date !== null &&
+    note.new_arrival_date !== null &&
+    note.new_departure_date !== null
+  );
+}
+
 export function formatSingleNote(note: InvoiceReviewNote, currency: string): string {
   if (hasPriceSnapshot(note)) {
     const diff = note.new_total! - note.old_total!;
@@ -205,6 +224,14 @@ export function formatSingleNote(note: InvoiceReviewNote, currency: string): str
       `Now [${formatDate(note.new_arrival_date!)} – ${formatDate(note.new_departure_date!)}], ` +
       `${note.new_offer_name ?? "contract only"}, total ${formatMoney(note.new_total!, currency)} ` +
       `(difference: ${diffStr})`
+    );
+  }
+  if (hasDateSnapshot(note)) {
+    return (
+      `Change ${note.sequence_number} (${formatDate(note.created_at)}): ` +
+      `Dates [${formatDate(note.old_arrival_date!)} – ${formatDate(note.old_departure_date!)}] → ` +
+      `[${formatDate(note.new_arrival_date!)} – ${formatDate(note.new_departure_date!)}] ` +
+      `(amounts unavailable)`
     );
   }
   return `Change ${note.sequence_number}: ${note.change_description ?? ""} (${formatDate(note.created_at)})`;

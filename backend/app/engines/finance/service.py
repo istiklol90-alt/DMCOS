@@ -335,8 +335,8 @@ def add_invoice_review_note(
     existing_notes = repository.list_review_notes_by_booking(db, booking_id)
     next_sequence = len(existing_notes) + 1
     fallback_description = (
-        f"Даты изменены: {old_arrival_date.isoformat()} – {old_departure_date.isoformat()} "
-        f"→ {booking.arrival_date.isoformat()} – {booking.departure_date.isoformat()}"
+        f"Dates changed: {old_arrival_date.isoformat()} - {old_departure_date.isoformat()} "
+        f"-> {booking.arrival_date.isoformat()} - {booking.departure_date.isoformat()}"
     )
     repository.create_review_note(
         db,
@@ -393,7 +393,7 @@ def add_cancellation_requested_note(db: Session, booking_id: int) -> Invoice | N
         booking_id=booking_id,
         invoice_id=invoice.id if invoice is not None else None,
         sequence_number=next_sequence,
-        change_description=f"Запрошена отмена бронирования: {booking.cancellation_reason}",
+        change_description=f"Cancellation requested: {booking.cancellation_reason}",
     )
     if invoice is None or invoice.status == "Void":
         return None
@@ -411,7 +411,7 @@ def add_cancellation_confirmed_note(db: Session, booking_id: int) -> Invoice | N
         booking_id=booking_id,
         invoice_id=invoice.id if invoice is not None else None,
         sequence_number=next_sequence,
-        change_description=f"Отмена подтверждена отелем (номер: {booking.cancellation_confirmation_number})",
+        change_description=f"Cancellation confirmed by hotel (number: {booking.cancellation_confirmation_number})",
     )
     if invoice is None or invoice.status == "Void":
         return None
