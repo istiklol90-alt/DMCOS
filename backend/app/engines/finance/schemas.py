@@ -70,11 +70,20 @@ class UrgentBookingResponse(BaseModel):
     """Decision 108: Бронирования's own "Требует внимания" panel --
     not a real ORM model (a computed cross-engine summary), same
     'plain dict validated structurally' shape service.list_urgent_bookings
-    returns."""
+    returns.
+
+    Decision 112: latest_change_description/latest_note_at (raw, flattened
+    strings) replaced with the full latest_note object (reusing
+    InvoiceReviewNoteResponse) plus currency -- so the frontend can run the
+    exact same formatSingleNote() logic InvoiceDetailModal already uses,
+    instead of displaying change_description raw. Two different display
+    paths reading the same underlying data were exactly the kind of drift
+    this project avoids everywhere else; this makes them structurally the
+    same code, not just visually consistent by coincidence."""
     booking_id: int
     booking_number: str
-    latest_change_description: Optional[str] = None
-    latest_note_at: Optional[datetime] = None
+    currency: str
+    latest_note: Optional[InvoiceReviewNoteResponse] = None
 
 
 # ---------------------------------------------------------------------------

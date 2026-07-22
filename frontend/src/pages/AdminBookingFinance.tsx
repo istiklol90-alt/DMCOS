@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { InvoiceReviewNote } from "./financeShared";
-import { computeBookingFinancials, fetchJson } from "./financeShared";
+import { computeBookingFinancials, fetchJson, formatSingleNote } from "./financeShared";
 import BookingsList from "./Reservations";
 import type { Booking, Permissions, Scope, AdminBookingExtensions, DetailCtx, BookingCorrespondenceRow } from "./Reservations";
 
@@ -821,8 +821,17 @@ function InvoiceHeaderActions({
 interface UrgentBookingSummary {
   booking_id: number;
   booking_number: string;
-  latest_change_description: string | null;
-  latest_note_at: string | null;
+  currency: string;
+  latest_note: InvoiceReviewNote | null;
+}
+
+// Decision 112: derives the display string via the exact same
+// formatSingleNote() InvoiceDetailModal already uses, instead of the
+// raw change_description string the backend used to send directly --
+// this panel and InvoiceDetailModal's note history can no longer
+// disagree about how the same note displays, since it's the same code.
+function latestNoteText(summary: UrgentBookingSummary): string | undefined {
+  return summary.latest_note ? formatSingleNote(summary.latest_note, summary.currency) : undefined;
 }
 
 // renderStatusBadgeExtra slot -- same visual badge as before, now
@@ -831,7 +840,7 @@ function NeedsAttentionBadge({ summary }: { summary: UrgentBookingSummary }) {
   return (
     <span
       className="inline-flex cursor-help items-center gap-1 rounded-full bg-coral/15 px-2 py-0.5 text-[11px] font-medium text-coral"
-      title={summary.latest_change_description ?? undefined}
+      title={latestNoteText(summary)}
     >
       ⚠ Invoice
     </span>
@@ -874,9 +883,9 @@ function UrgentBookingsPanel({
               {bookings.map((b) => (
                 <tr key={b.booking_id} className="border-b border-ink/5 last:border-b-0">
                   <td className="whitespace-nowrap px-4 py-3 font-medium text-ink">{b.booking_number}</td>
-                  <td className="px-4 py-3 text-slate/70">{b.latest_change_description ?? "—"}</td>
+                  <td className="px-4 py-3 text-slate/70">{latestNoteText(b) ?? "—"}</td>
                   <td className="whitespace-nowrap px-4 py-3 text-slate/50">
-                    {b.latest_note_at ? formatDate(b.latest_note_at) : "—"}
+                    {b.latest_note?.created_at ? formatDate(b.latest_note.created_at) : "—"}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-right">
                     <button
@@ -954,7 +963,7 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
 
   async function handleAcknowledge(bookingId: number) {
     const summary = urgentByBooking[bookingId];
-    const confirmMessage = `⚠ ${summary?.latest_change_description ?? ""}\n\nMark as reviewed?`;
+    const confirmMessage = `⚠ ${(summary && latestNoteText(summary)) ?? ""}\n\nMark as reviewed?`;
     if (!window.confirm(confirmMessage)) return;
     const token = localStorage.getItem("token") || "";
     try {

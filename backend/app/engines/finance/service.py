@@ -484,10 +484,20 @@ def list_urgent_bookings(db: Session) -> list[dict]:
     wrapper over the identical repository.list_urgent_booking_ids this
     calls too). Returns one summary dict per urgent booking (not a
     real ORM model -- this is a computed cross-engine join): booking_id,
-    booking_number (resolved from Booking Engine), and the latest
-    note's change_description/created_at -- enough for a manager to see
-    what happened without opening the booking. Most-recently-changed
-    first.
+    booking_number (resolved from Booking Engine), currency, and the
+    full latest note object -- enough for the frontend to run the same
+    formatSingleNote() display logic InvoiceDetailModal already uses,
+    rather than a pre-flattened description string. Most-recently-
+    changed first.
+
+    Decision 112: previously returned only latest.change_description/
+    latest.created_at (a flattened summary) -- UrgentBookingsPanel
+    displayed that raw string directly, a second, inconsistent display
+    path for the same InvoiceReviewNote data InvoiceDetailModal already
+    renders correctly via formatSingleNote's price/date-snapshot-aware
+    English reconstruction. Returning the full note object (plus
+    currency, needed by formatSingleNote to format money) lets both
+    panels share the exact same client-side formatting code.
     """
     booking_ids = repository.list_urgent_booking_ids(db)
     result = []
@@ -501,10 +511,10 @@ def list_urgent_bookings(db: Session) -> list[dict]:
         result.append({
             "booking_id": booking_id,
             "booking_number": booking.booking_number,
-            "latest_change_description": latest.change_description if latest else None,
-            "latest_note_at": latest.created_at if latest else None,
+            "currency": booking.currency,
+            "latest_note": latest,
         })
-    result.sort(key=lambda r: r["latest_note_at"] or datetime.min, reverse=True)
+    result.sort(key=lambda r: (r["latest_note"].created_at if r["latest_note"] else None) or datetime.min, reverse=True)
     return result
 
 
