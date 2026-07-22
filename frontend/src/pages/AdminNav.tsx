@@ -17,25 +17,25 @@ export interface NavItem {
 }
 
 export const NAV_STRUCTURE: NavItem[] = [
-  { key: "users", label: "Пользователи" },
-  { key: "reservations", label: "Бронирования" },
+  { key: "users", label: "Users" },
+  { key: "reservations", label: "Bookings" },
   {
     key: "contracts-group",
-    label: "Контракты",
+    label: "Contracts",
     children: [
-      { key: "contracts", label: "Контракты" },
-      { key: "contracts-ai", label: "Контракты — ИИ" },
+      { key: "contracts", label: "Contracts" },
+      { key: "contracts-ai", label: "Contracts — AI" },
     ],
   },
-  { key: "price-calculator", label: "Расчёт цены" },
-  { key: "counteragents", label: "Контрагенты" },
+  { key: "price-calculator", label: "Price calculator" },
+  { key: "counteragents", label: "Counteragents" },
   {
     key: "finance-group",
-    label: "Финансы",
+    label: "Finance",
     children: [
-      { key: "invoices", label: "Счета" },
-      { key: "balance", label: "Баланс" },
-      { key: "cashback", label: "Кэшбэк" },
+      { key: "invoices", label: "Invoices" },
+      { key: "balance", label: "Balance" },
+      { key: "cashback", label: "Cashback" },
     ],
   },
 ];

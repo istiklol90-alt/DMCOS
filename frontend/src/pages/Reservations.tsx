@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
+import i18n from "../i18n/i18n";
 import { API_URL } from "../config";
 import { DateRangePicker } from "./HotelSearch";
 
@@ -182,7 +185,10 @@ async function fetchJson<T>(path: string, token: string, init?: RequestInit): Pr
     },
   });
   if (!response.ok) {
-    let detail = `Ошибка запроса (${response.status})`;
+    // Module-scope helper (not a component) -- uses the shared i18n
+    // singleton's t() directly rather than the useTranslation() hook,
+    // which only works inside a component/hook context.
+    let detail = i18n.t("reservations:errors.requestError", { status: response.status });
     try {
       const body = await response.json();
       if (body?.detail) detail = body.detail;
@@ -221,17 +227,27 @@ function resolveCancellationFeePreview(
   return { fee, currency: tier.currency || booking.currency };
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  Draft: "Черновик",
-  Pending: "В ожидании",
-  Confirmed: "Подтверждено",
+// Maps a raw status string onto its statusBadge.* translation key suffix.
+// Kept as a data map (not translated text itself) so StatusBadge and
+// BookingsList's status filter can share one lookup via statusLabel()
+// below; a status with no mapping falls back to the raw string, same as
+// the old STATUS_LABELS[status] ?? status behavior.
+const STATUS_LABEL_KEYS: Record<string, string> = {
+  Draft: "draft",
+  Pending: "pending",
+  Confirmed: "confirmed",
   // Decision 104: intermediate stage -- allotment is still held, the
   // hotel hasn't yet acknowledged the cancellation.
-  "Cancellation Requested": "Запрос на отмену",
-  Cancelled: "Отменено",
-  Rejected: "Отклонено",
-  Completed: "Завершено",
+  "Cancellation Requested": "cancellationRequested",
+  Cancelled: "cancelled",
+  Rejected: "rejected",
+  Completed: "completed",
 };
+
+function statusLabel(t: TFunction, status: string): string {
+  const key = STATUS_LABEL_KEYS[status];
+  return key ? t(`statusBadge.${key}`) : status;
+}
 
 const STATUS_CLASSES: Record<string, string> = {
   Draft: "bg-slate/10 text-slate",
@@ -246,13 +262,14 @@ const STATUS_CLASSES: Record<string, string> = {
 };
 
 function StatusBadge({ status }: { status: string }) {
+  const { t } = useTranslation("reservations");
   return (
     <span
       className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
         STATUS_CLASSES[status] ?? "bg-slate/10 text-slate"
       }`}
     >
-      {STATUS_LABELS[status] ?? status}
+      {statusLabel(t, status)}
     </span>
   );
 }
@@ -336,18 +353,27 @@ function computeCancellationDeadlineFlags(
   return flags;
 }
 
-function flagText(flag: AIFlag, hotelName: string): string {
+function flagText(t: TFunction, flag: AIFlag, hotelName: string): string {
   if (flag.kind === "pending_soon") {
     const days = flag.daysUntilArrival;
     const when =
       days < 0
-        ? `заезд уже прошёл ${Math.abs(days)} дн. назад`
+        ? t("aiInsightStrip.arrivalPassed", { count: Math.abs(days) })
         : days === 0
-          ? "заезд сегодня"
-          : `заезд через ${days} дн.`;
-    return `${flag.booking.booking_number} (${hotelName}) всё ещё "В ожидании" — ${when}`;
+          ? t("aiInsightStrip.arrivalToday")
+          : t("aiInsightStrip.arrivalIn", { count: days });
+    return t("aiInsightStrip.pendingSoon", {
+      bookingNumber: flag.booking.booking_number,
+      hotelName,
+      when,
+    });
   }
-  return `${flag.booking.booking_number} (${hotelName}) — через ${flag.daysUntilCross} дн. ужесточаются условия отмены (штраф начинает действовать за ${flag.nextThreshold} дн. до заезда)`;
+  return t("aiInsightStrip.cancellationDeadline", {
+    bookingNumber: flag.booking.booking_number,
+    hotelName,
+    daysPhrase: t("aiInsightStrip.daysCount", { count: flag.daysUntilCross }),
+    thresholdPhrase: t("aiInsightStrip.daysCount", { count: flag.nextThreshold }),
+  });
 }
 
 function IconSparkle({ className = "w-4 h-4" }: { className?: string }) {
@@ -365,6 +391,7 @@ function AIInsightStrip({
   flags: AIFlag[];
   hotels: Record<number, string>;
 }) {
+  const { t } = useTranslation("reservations");
   const [expanded, setExpanded] = useState(false);
 
   if (flags.length === 0) return null;
@@ -380,19 +407,20 @@ function AIInsightStrip({
         </span>
         <div className="text-sm leading-relaxed text-white/90">
           <p>
-            <span className="font-medium text-white">AI заметил:</span> {flagText(first, firstHotelName)}
-            {flags.length > 1 && <span className="text-white/60"> (и ещё {flags.length - 1})</span>}
+            <span className="font-medium text-white">{t("aiInsightStrip.aiNoticed")}</span>{" "}
+            {flagText(t, first, firstHotelName)}
+            {flags.length > 1 && (
+              <span className="text-white/60"> {t("aiInsightStrip.andMore", { count: flags.length - 1 })}</span>
+            )}
           </p>
           {expanded && flags.length > 1 && (
             <ul className="mt-2 space-y-1 text-white/70">
               {flags.slice(1).map((f, i) => (
-                <li key={i}>— {flagText(f, hotels[f.booking.hotel_id] ?? `#${f.booking.hotel_id}`)}</li>
+                <li key={i}>— {flagText(t, f, hotels[f.booking.hotel_id] ?? `#${f.booking.hotel_id}`)}</li>
               ))}
             </ul>
           )}
-          <p className="mt-2 text-xs text-white/40">
-            Правила на основе пороговых значений, вычисляются на лету — не вызов LLM.
-          </p>
+          <p className="mt-2 text-xs text-white/40">{t("aiInsightStrip.ruleBasedDisclaimer")}</p>
         </div>
       </div>
       {flags.length > 1 && (
@@ -401,7 +429,7 @@ function AIInsightStrip({
           onClick={() => setExpanded(!expanded)}
           className="shrink-0 self-start rounded-lg border border-white/25 px-3.5 py-2 text-xs font-medium text-white/90 transition-colors hover:bg-white/10 sm:self-auto"
         >
-          {expanded ? "Свернуть" : "Посмотреть детали"}
+          {expanded ? t("aiInsightStrip.collapse") : t("aiInsightStrip.viewDetails")}
         </button>
       )}
     </div>
@@ -423,6 +451,7 @@ function GuestRow({
   onUpdated: (updated: Guest) => void;
   canEdit: boolean;
 }) {
+  const { t } = useTranslation("reservations");
   const [editing, setEditing] = useState(false);
   const [firstName, setFirstName] = useState(guest.first_name);
   const [lastName, setLastName] = useState(guest.last_name);
@@ -435,7 +464,7 @@ function GuestRow({
 
   async function handleSave() {
     if (!firstName.trim() || !lastName.trim()) {
-      setError("Имя и фамилия обязательны");
+      setError(t("guestRow.nameRequired"));
       return;
     }
     const token = localStorage.getItem("token") || "";
@@ -456,7 +485,7 @@ function GuestRow({
       onUpdated(updated);
       setEditing(false);
     } catch (err: any) {
-      setError(err.message || "Не удалось сохранить гостя");
+      setError(err.message || t("guestRow.saveFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -467,7 +496,7 @@ function GuestRow({
       <li className="flex items-center gap-2 rounded-lg bg-sand/50 px-3 py-2">
         <span className="font-medium text-ink">{guest.first_name} {guest.last_name}</span>
         {guest.is_lead_guest && (
-          <span className="rounded-full bg-coral/15 px-2 py-0.5 text-xs text-coral">Основной</span>
+          <span className="rounded-full bg-coral/15 px-2 py-0.5 text-xs text-coral">{t("guestRow.leadGuest")}</span>
         )}
         {guest.nationality && <span className="text-slate/60">· {guest.nationality}</span>}
         {guest.date_of_birth && <span className="text-slate/60">· {formatDate(guest.date_of_birth)}</span>}
@@ -477,7 +506,7 @@ function GuestRow({
             onClick={() => setEditing(true)}
             className="ml-auto shrink-0 rounded-lg border border-ink/15 bg-white px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:bg-sand"
           >
-            Изменить
+            {t("guestRow.edit")}
           </button>
         )}
       </li>
@@ -488,19 +517,19 @@ function GuestRow({
     <li className="space-y-2 rounded-lg border border-ink/10 bg-sand/30 p-3">
       <div className="grid grid-cols-2 gap-2">
         <input
-          placeholder="Имя *"
+          placeholder={t("guestRow.firstNamePlaceholder")}
           value={firstName}
           onChange={(e) => setFirstName(e.target.value)}
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
         />
         <input
-          placeholder="Фамилия *"
+          placeholder={t("guestRow.lastNamePlaceholder")}
           value={lastName}
           onChange={(e) => setLastName(e.target.value)}
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
         />
         <input
-          placeholder="Гражданство"
+          placeholder={t("guestRow.nationalityPlaceholder")}
           value={nationality}
           onChange={(e) => setNationality(e.target.value)}
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
@@ -512,7 +541,7 @@ function GuestRow({
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
         />
         <input
-          placeholder="Номер паспорта"
+          placeholder={t("guestRow.passportNumberPlaceholder")}
           value={passportNumber}
           onChange={(e) => setPassportNumber(e.target.value)}
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
@@ -534,7 +563,7 @@ function GuestRow({
           disabled={submitting}
           className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
         >
-          {submitting ? "Сохранение..." : "Сохранить"}
+          {submitting ? t("guestRow.saving") : t("guestRow.save")}
         </button>
         <button
           type="button"
@@ -542,7 +571,7 @@ function GuestRow({
           disabled={submitting}
           className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Отмена
+          {t("guestRow.cancel")}
         </button>
       </div>
     </li>
@@ -564,6 +593,7 @@ function FlightNumbersEdit({
   onUpdated: (updated: Booking) => void;
   canEdit: boolean;
 }) {
+  const { t } = useTranslation("reservations");
   const [editing, setEditing] = useState(false);
   const [arrivalFlight, setArrivalFlight] = useState(booking.arrival_flight_number ?? "");
   const [departureFlight, setDepartureFlight] = useState(booking.departure_flight_number ?? "");
@@ -593,7 +623,7 @@ function FlightNumbersEdit({
       onUpdated(updated);
       setEditing(false);
     } catch (err: any) {
-      setError(err.message || "Не удалось сохранить данные рейсов");
+      setError(err.message || t("flightNumbersEdit.saveFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -608,7 +638,7 @@ function FlightNumbersEdit({
         onClick={() => setEditing(true)}
         className="rounded-lg border border-ink/15 bg-white px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:bg-sand"
       >
-        Изменить рейсы
+        {t("flightNumbersEdit.editFlights")}
       </button>
     );
   }
@@ -617,13 +647,13 @@ function FlightNumbersEdit({
     <div className="mt-2 space-y-2 rounded-lg border border-ink/10 bg-sand/30 p-3">
       <div className="grid grid-cols-2 gap-2">
         <input
-          placeholder="Номер рейса прилёта"
+          placeholder={t("flightNumbersEdit.arrivalFlightNumberPlaceholder")}
           value={arrivalFlight}
           onChange={(e) => setArrivalFlight(e.target.value)}
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
         />
         <input
-          placeholder="Номер рейса вылета"
+          placeholder={t("flightNumbersEdit.departureFlightNumberPlaceholder")}
           value={departureFlight}
           onChange={(e) => setDepartureFlight(e.target.value)}
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
@@ -633,14 +663,14 @@ function FlightNumbersEdit({
         <div className="grid grid-cols-2 gap-1.5">
           <input
             type="date"
-            title="Дата прилёта (может отличаться от даты заезда)"
+            title={t("flightNumbersEdit.arrivalFlightDateTitle")}
             value={arrivalFlightDate}
             onChange={(e) => setArrivalFlightDate(e.target.value)}
             className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-coral focus:outline-none"
           />
           <input
             type="time"
-            title="Время прилёта"
+            title={t("flightNumbersEdit.arrivalFlightTimeTitle")}
             value={arrivalFlightTime}
             onChange={(e) => setArrivalFlightTime(e.target.value)}
             className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-coral focus:outline-none"
@@ -649,23 +679,21 @@ function FlightNumbersEdit({
         <div className="grid grid-cols-2 gap-1.5">
           <input
             type="date"
-            title="Дата вылета (может отличаться от даты выезда)"
+            title={t("flightNumbersEdit.departureFlightDateTitle")}
             value={departureFlightDate}
             onChange={(e) => setDepartureFlightDate(e.target.value)}
             className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-coral focus:outline-none"
           />
           <input
             type="time"
-            title="Время вылета"
+            title={t("flightNumbersEdit.departureFlightTimeTitle")}
             value={departureFlightTime}
             onChange={(e) => setDepartureFlightTime(e.target.value)}
             className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-coral focus:outline-none"
           />
         </div>
       </div>
-      <p className="text-[11px] text-slate/50">
-        Дата/время рейса могут отличаться от дат заезда/выезда (например, поздний прилёт на следующее утро).
-      </p>
+      <p className="text-[11px] text-slate/50">{t("flightNumbersEdit.flightDateTimeHint")}</p>
       {error && (
         <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{error}</div>
       )}
@@ -676,7 +704,7 @@ function FlightNumbersEdit({
           disabled={submitting}
           className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
         >
-          {submitting ? "Сохранение..." : "Сохранить"}
+          {submitting ? t("flightNumbersEdit.saving") : t("flightNumbersEdit.save")}
         </button>
         <button
           type="button"
@@ -684,7 +712,7 @@ function FlightNumbersEdit({
           disabled={submitting}
           className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Отмена
+          {t("flightNumbersEdit.cancel")}
         </button>
       </div>
     </div>
@@ -713,6 +741,7 @@ function ConfirmationNumberEdit({
   onUpdated: (updated: Booking) => void;
   canEdit: boolean;
 }) {
+  const { t } = useTranslation("reservations");
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(booking.confirmation_number ?? "");
   const [submitting, setSubmitting] = useState(false);
@@ -737,7 +766,7 @@ function ConfirmationNumberEdit({
         });
       }
     } catch (err: any) {
-      setError(err.message || "Не удалось сохранить номер подтверждения");
+      setError(err.message || t("confirmationNumberEdit.saveFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -752,7 +781,9 @@ function ConfirmationNumberEdit({
         onClick={() => setEditing(true)}
         className="rounded-lg border border-ink/15 bg-white px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:bg-sand"
       >
-        {booking.confirmation_number ? "Изменить номер подтверждения" : "Добавить номер подтверждения"}
+        {booking.confirmation_number
+          ? t("confirmationNumberEdit.editNumber")
+          : t("confirmationNumberEdit.addNumber")}
       </button>
     );
   }
@@ -760,15 +791,13 @@ function ConfirmationNumberEdit({
   return (
     <div className="mt-2 space-y-2 rounded-lg border border-ink/10 bg-sand/30 p-3">
       <input
-        placeholder="Номер подтверждения отеля"
+        placeholder={t("confirmationNumberEdit.numberPlaceholder")}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
       />
       {value.trim() && value.trim() !== (booking.confirmation_number ?? "") && (
-        <p className="text-[11px] text-slate/50">
-          При сохранении агенту автоматически будет отправлен ваучер с этим номером.
-        </p>
+        <p className="text-[11px] text-slate/50">{t("confirmationNumberEdit.voucherHint")}</p>
       )}
       {error && (
         <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{error}</div>
@@ -780,7 +809,7 @@ function ConfirmationNumberEdit({
           disabled={submitting}
           className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
         >
-          {submitting ? "Сохранение..." : "Сохранить"}
+          {submitting ? t("confirmationNumberEdit.saving") : t("confirmationNumberEdit.save")}
         </button>
         <button
           type="button"
@@ -788,7 +817,7 @@ function ConfirmationNumberEdit({
           disabled={submitting}
           className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Отмена
+          {t("confirmationNumberEdit.cancel")}
         </button>
       </div>
     </div>
@@ -815,6 +844,7 @@ function CancellationConfirmationEdit({
   booking: Booking;
   onUpdated: (updated: Booking) => void;
 }) {
+  const { t } = useTranslation("reservations");
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -823,7 +853,7 @@ function CancellationConfirmationEdit({
   async function handleSave() {
     const trimmed = value.trim();
     if (!trimmed) {
-      setError("Укажите номер подтверждения отмены");
+      setError(t("cancellationConfirmationEdit.numberRequired"));
       return;
     }
     const token = localStorage.getItem("token") || "";
@@ -849,7 +879,7 @@ function CancellationConfirmationEdit({
         // Best-effort -- nothing to recover here even if this fails.
       });
     } catch (err: any) {
-      setError(err.message || "Не удалось подтвердить отмену");
+      setError(err.message || t("cancellationConfirmationEdit.confirmFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -862,7 +892,7 @@ function CancellationConfirmationEdit({
         onClick={() => setEditing(true)}
         className="rounded-lg border border-amber-500/30 bg-white px-2.5 py-1 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-50"
       >
-        Подтвердить отмену отелем
+        {t("cancellationConfirmationEdit.confirmWithHotel")}
       </button>
     );
   }
@@ -870,15 +900,12 @@ function CancellationConfirmationEdit({
   return (
     <div className="mt-2 space-y-2 rounded-lg border border-amber-500/20 bg-amber-50/40 p-3">
       <input
-        placeholder="Номер подтверждения отмены (от отеля)"
+        placeholder={t("cancellationConfirmationEdit.numberPlaceholder")}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
       />
-      <p className="text-[11px] text-slate/50">
-        Подтверждает, что отель обработал отмену — только после этого бронирование станет
-        окончательно отменённым и номер вернётся в продажу.
-      </p>
+      <p className="text-[11px] text-slate/50">{t("cancellationConfirmationEdit.hint")}</p>
       {error && (
         <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{error}</div>
       )}
@@ -889,7 +916,7 @@ function CancellationConfirmationEdit({
           disabled={submitting}
           className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
         >
-          {submitting ? "Сохранение..." : "Сохранить"}
+          {submitting ? t("cancellationConfirmationEdit.saving") : t("cancellationConfirmationEdit.save")}
         </button>
         <button
           type="button"
@@ -897,7 +924,7 @@ function CancellationConfirmationEdit({
           disabled={submitting}
           className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Отмена
+          {t("cancellationConfirmationEdit.cancel")}
         </button>
       </div>
     </div>
@@ -917,6 +944,7 @@ function CancellationConfirmationEdit({
 // ---------------------------------------------------------------------------
 
 function DocumentsSection({ booking }: { booking: Booking }) {
+  const { t } = useTranslation("reservations");
   const [invoiceStatus, setInvoiceStatus] = useState<string | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
   const [downloadError, setDownloadError] = useState<string | null>(null);
@@ -950,7 +978,7 @@ function DocumentsSection({ booking }: { booking: Booking }) {
     try {
       const response = await fetch(`${API_URL}${path}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!response.ok) {
-        let detail = `Ошибка запроса (${response.status})`;
+        let detail = t("errors.requestError", { status: response.status });
         try {
           const body = await response.json();
           if (body?.detail) detail = body.detail;
@@ -972,30 +1000,30 @@ function DocumentsSection({ booking }: { booking: Booking }) {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } catch (err: any) {
-      setDownloadError(err.message || "Не удалось скачать документ");
+      setDownloadError(err.message || t("documentsSection.downloadFailed"));
     }
   }
 
   return (
     <div className="mt-4">
-      <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">Документы</h4>
+      <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">{t("documentsSection.title")}</h4>
       <div className="mt-2 space-y-1.5 text-sm">
         <div className="flex items-center justify-between">
-          <span className="text-slate/70">Ваучер</span>
+          <span className="text-slate/70">{t("documentsSection.voucher")}</span>
           {booking.confirmation_number ? (
             <button
               type="button"
               onClick={() => handleDownload("voucher")}
               className="font-medium text-coral hover:underline"
             >
-              Скачать
+              {t("documentsSection.download")}
             </button>
           ) : (
-            <span className="text-slate/40">В работе</span>
+            <span className="text-slate/40">{t("documentsSection.inProgress")}</span>
           )}
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-slate/70">Счёт</span>
+          <span className="text-slate/70">{t("documentsSection.invoice")}</span>
           {statusLoading ? (
             <span className="text-slate/40">...</span>
           ) : invoiceStatus === "Issued" ? (
@@ -1004,10 +1032,10 @@ function DocumentsSection({ booking }: { booking: Booking }) {
               onClick={() => handleDownload("invoice")}
               className="font-medium text-coral hover:underline"
             >
-              Скачать
+              {t("documentsSection.download")}
             </button>
           ) : (
-            <span className="text-slate/40">В работе</span>
+            <span className="text-slate/40">{t("documentsSection.inProgress")}</span>
           )}
         </div>
       </div>
@@ -1044,6 +1072,7 @@ function BookingDetail({
   claimerNames: Record<number, string>;
   adminExtensions?: AdminBookingExtensions;
 }) {
+  const { t } = useTranslation("reservations");
   const [guests, setGuests] = useState<Guest[] | null>(null);
   const [guestsError, setGuestsError] = useState<string | null>(null);
 
@@ -1089,7 +1118,7 @@ function BookingDetail({
       // usage never provides this slot at all.
       adminExtensions?.onAfterClaim?.({ booking: updated, onBookingUpdated });
     } catch (err: any) {
-      setClaimError(err.message || "Не удалось взять бронирование в работу");
+      setClaimError(err.message || t("bookingDetail.claimFailed"));
     } finally {
       setClaimSubmitting(false);
     }
@@ -1109,13 +1138,13 @@ function BookingDetail({
       token
     )
       .then((policies) => setCancelFeePreview(resolveCancellationFeePreview(policies, booking)))
-      .catch((err) => setCancelFeeError(err.message || "Не удалось рассчитать штраф"))
+      .catch((err) => setCancelFeeError(err.message || t("bookingDetail.feeCalcFailed")))
       .finally(() => setCancelFeeLoading(false));
   }
 
   async function handleCancelSubmit() {
     if (cancelReason.trim().length < 2) {
-      setCancelError("Укажите причину отмены (минимум 2 символа)");
+      setCancelError(t("bookingDetail.cancelReasonRequired"));
       return;
     }
     const token = localStorage.getItem("token") || "";
@@ -1149,7 +1178,7 @@ function BookingDetail({
         // Best-effort -- nothing to recover here even if this fails.
       });
     } catch (err: any) {
-      setCancelError(err.message || "Не удалось запросить отмену бронирования");
+      setCancelError(err.message || t("bookingDetail.cancelRequestFailed"));
     } finally {
       setCancelSubmitting(false);
     }
@@ -1157,7 +1186,7 @@ function BookingDetail({
 
   async function handleChangeDatesSubmit() {
     if (!newCheckIn || !newCheckOut || changeDatesReason.trim().length < 2) {
-      setChangeDatesError("Укажите обе даты и причину (минимум 2 символа)");
+      setChangeDatesError(t("bookingDetail.changeDatesRequired"));
       return;
     }
     const token = localStorage.getItem("token") || "";
@@ -1209,7 +1238,7 @@ function BookingDetail({
         // Best-effort -- nothing to recover here even if this fails.
       });
     } catch (err: any) {
-      setChangeDatesError(err.message || "Не удалось изменить даты");
+      setChangeDatesError(err.message || t("bookingDetail.changeDatesFailed"));
     } finally {
       setChangeDatesSubmitting(false);
     }
@@ -1259,7 +1288,7 @@ function BookingDetail({
             onClick={onClose}
             className="appearance-none rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-sm text-slate/70 hover:bg-sand/60"
           >
-            Закрыть
+            {t("bookingDetail.close")}
           </button>
         </div>
 
@@ -1276,7 +1305,7 @@ function BookingDetail({
                 disabled={claimSubmitting}
                 className="rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
               >
-                {claimSubmitting ? "Отправка..." : "Взять в работу"}
+                {claimSubmitting ? t("bookingDetail.sending") : t("bookingDetail.claim")}
               </button>
             )}
             {permissions.canChangeDates && booking.status !== "Cancelled" && booking.status !== "Rejected" && booking.status !== "Cancellation Requested" && !changeDatesOpen && !cancelOpen && (
@@ -1290,7 +1319,7 @@ function BookingDetail({
                 }}
                 className="rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sand"
               >
-                Изменить даты
+                {t("bookingDetail.changeDates")}
               </button>
             )}
             {permissions.canCancel && booking.status !== "Cancelled" && booking.status !== "Rejected" && booking.status !== "Cancellation Requested" && !changeDatesOpen && !cancelOpen && (
@@ -1299,7 +1328,7 @@ function BookingDetail({
                 onClick={openCancelPanel}
                 className="rounded-lg border border-red-500/30 bg-white px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50"
               >
-                Отменить бронь
+                {t("bookingDetail.cancelBooking")}
               </button>
             )}
             {adminExtensions?.renderHeaderActions?.(ctx)}
@@ -1319,8 +1348,9 @@ function BookingDetail({
         {booking.claimed_by !== null && (
           <div className="mt-3 rounded-lg bg-ink/5 p-3 text-sm">
             <p className="text-slate/70">
-              В работе: <strong className="text-ink">{claimerNames[booking.claimed_by] ?? `#${booking.claimed_by}`}</strong>
-              {booking.claimed_at && <> с {formatDate(booking.claimed_at)}</>}
+              {t("bookingDetail.claimedByLabel")}{" "}
+              <strong className="text-ink">{claimerNames[booking.claimed_by] ?? `#${booking.claimed_by}`}</strong>
+              {booking.claimed_at && <> {t("bookingDetail.since")} {formatDate(booking.claimed_at)}</>}
             </p>
           </div>
         )}
@@ -1341,7 +1371,9 @@ function BookingDetail({
         {/* ===== Переписка с отелем (Decision 049) ===== */}
         <div className="mt-3 rounded-lg border border-ink/10 bg-white p-4">
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Переписка с отелем</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
+              {t("bookingDetail.correspondenceTitle")}
+            </p>
             {/* Decision 103: logging a hotel's reply is a write action on
                 the same admin-only add_correspondence_reply endpoint the
                 LPO panel uses -- reading the thread below stays visible to
@@ -1352,9 +1384,9 @@ function BookingDetail({
           </div>
 
           {correspondence === null ? (
-            <p className="text-xs text-slate/50">Загрузка переписки...</p>
+            <p className="text-xs text-slate/50">{t("bookingDetail.correspondenceLoading")}</p>
           ) : correspondence.length === 0 ? (
-            <p className="text-xs text-slate/50">Переписка пока пуста.</p>
+            <p className="text-xs text-slate/50">{t("bookingDetail.correspondenceEmpty")}</p>
           ) : (
             <div className="space-y-2">
               {correspondence.map((msg) => {
@@ -1369,21 +1401,22 @@ function BookingDetail({
                   >
                     <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-slate/50">
                       <span className="font-semibold uppercase tracking-wide">
-                        {outbound ? "DMC OS → Отель" : "Отель → DMC OS"}
+                        {outbound ? t("bookingDetail.correspondenceOutbound") : t("bookingDetail.correspondenceInbound")}
                       </span>
                       <span>{formatDate(timestamp)}</span>
                     </div>
                     {outbound && (msg.recipient_email || msg.recipient_email_secondary) && (
                       <p className="text-[11px] text-slate/50">
-                        Кому: {[msg.recipient_email, msg.recipient_email_secondary].filter(Boolean).join(", ")}
+                        {t("bookingDetail.correspondenceTo")}{" "}
+                        {[msg.recipient_email, msg.recipient_email_secondary].filter(Boolean).join(", ")}
                       </p>
                     )}
                     {msg.subject && <p className="font-medium text-ink">{msg.subject}</p>}
                     <pre className="mt-1 whitespace-pre-wrap font-sans text-xs text-ink">{msg.body}</pre>
                     <p className="mt-1 text-[11px] text-slate/40">
-                      {msg.status === "sent" && "Отправлено, ожидаем ответ отеля"}
-                      {msg.status === "replied" && "Отвечено"}
-                      {msg.status === "draft" && "Черновик"}
+                      {msg.status === "sent" && t("bookingDetail.correspondenceStatusSent")}
+                      {msg.status === "replied" && t("bookingDetail.correspondenceStatusReplied")}
+                      {msg.status === "draft" && t("bookingDetail.correspondenceStatusDraft")}
                     </p>
                   </div>
                 );
@@ -1394,23 +1427,25 @@ function BookingDetail({
 
         {cancelOpen && (
           <div className="mt-3 space-y-3 rounded-lg border border-red-500/20 bg-red-50/40 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-red-600/80">Отмена бронирования</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-red-600/80">
+              {t("bookingDetail.cancelPanelTitle")}
+            </p>
             <div className="rounded-lg bg-white/70 px-3 py-2 text-sm">
-              {cancelFeeLoading && <span className="text-slate/50">Расчёт штрафа...</span>}
+              {cancelFeeLoading && <span className="text-slate/50">{t("bookingDetail.feeCalculating")}</span>}
               {cancelFeeError && <span className="text-red-600">{cancelFeeError}</span>}
               {!cancelFeeLoading && !cancelFeeError && cancelFeePreview && (
                 <span className="text-ink">
-                  Штраф за отмену:{" "}
+                  {t("bookingDetail.cancellationFeeLabel")}{" "}
                   <strong>
                     {cancelFeePreview.fee === null
-                      ? "без штрафа"
+                      ? t("bookingDetail.noFee")
                       : formatMoney(cancelFeePreview.fee, cancelFeePreview.currency)}
                   </strong>
                 </span>
               )}
             </div>
             <textarea
-              placeholder="Причина отмены *"
+              placeholder={t("bookingDetail.cancelReasonPlaceholder")}
               value={cancelReason}
               onChange={(e) => setCancelReason(e.target.value)}
               rows={2}
@@ -1426,7 +1461,7 @@ function BookingDetail({
                 disabled={cancelSubmitting || cancelFeeLoading}
                 className="rounded-lg bg-red-600 px-4 py-2 text-xs font-medium text-white shadow-sm shadow-red-600/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
               >
-                {cancelSubmitting ? "Отправка..." : "Подтвердить отмену"}
+                {cancelSubmitting ? t("bookingDetail.sending") : t("bookingDetail.confirmCancel")}
               </button>
               <button
                 type="button"
@@ -1437,7 +1472,7 @@ function BookingDetail({
                 disabled={cancelSubmitting}
                 className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Отмена
+                {t("bookingDetail.cancel")}
               </button>
             </div>
           </div>
@@ -1445,7 +1480,9 @@ function BookingDetail({
 
         {changeDatesOpen && (
           <div className="mt-3 space-y-3 rounded-lg border border-ink/10 bg-sand/30 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Изменить даты</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
+              {t("bookingDetail.changeDatesPanelTitle")}
+            </p>
             <DateRangePicker
               checkIn={newCheckIn}
               checkOut={newCheckOut}
@@ -1455,7 +1492,7 @@ function BookingDetail({
               }}
             />
             <textarea
-              placeholder="Причина изменения дат *"
+              placeholder={t("bookingDetail.changeDatesReasonPlaceholder")}
               value={changeDatesReason}
               onChange={(e) => setChangeDatesReason(e.target.value)}
               rows={2}
@@ -1473,7 +1510,7 @@ function BookingDetail({
                 disabled={changeDatesSubmitting}
                 className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
               >
-                {changeDatesSubmitting ? "Отправка..." : "Подтвердить"}
+                {changeDatesSubmitting ? t("bookingDetail.sending") : t("bookingDetail.confirm")}
               </button>
               <button
                 type="button"
@@ -1484,7 +1521,7 @@ function BookingDetail({
                 disabled={changeDatesSubmitting}
                 className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Отмена
+                {t("bookingDetail.cancel")}
               </button>
             </div>
           </div>
@@ -1492,42 +1529,49 @@ function BookingDetail({
 
         <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
           <div>
-            <span className="text-slate/50">Дата брони: </span>
+            <span className="text-slate/50">{t("bookingDetail.bookingDateLabel")} </span>
             <span className="text-ink">{formatDate(booking.created_at)}</span>
           </div>
           <div>
-            <span className="text-slate/50">Даты: </span>
-            <span className="text-ink">{formatDate(booking.arrival_date)} — {formatDate(booking.departure_date)} ({booking.nights} ноч.)</span>
+            <span className="text-slate/50">{t("bookingDetail.datesLabel")} </span>
+            <span className="text-ink">
+              {formatDate(booking.arrival_date)} — {formatDate(booking.departure_date)} (
+              {t("bookingDetail.nights", { count: booking.nights })})
+            </span>
           </div>
           <div>
-            <span className="text-slate/50">Гости: </span>
-            <span className="text-ink">{booking.adults} взр. / {booking.children} дет. / {booking.infants} млад.</span>
+            <span className="text-slate/50">{t("bookingDetail.guestsLabel")} </span>
+            <span className="text-ink">
+              {t("bookingDetail.adultsCount", { count: booking.adults })} /{" "}
+              {t("bookingDetail.childrenCount", { count: booking.children })} /{" "}
+              {t("bookingDetail.infantsCount", { count: booking.infants })}
+            </span>
           </div>
           <div>
-            <span className="text-slate/50">Питание: </span>
+            <span className="text-slate/50">{t("bookingDetail.mealPlanLabel")} </span>
             <span className="text-ink">{mealPlanInfo?.meal_name || mealPlanInfo?.meal_code || `#${booking.meal_plan_id}`}</span>
           </div>
           {booking.confirmation_number && (
             <div>
-              <span className="text-slate/50">Номер подтверждения: </span>
+              <span className="text-slate/50">{t("bookingDetail.confirmationNumberLabel")} </span>
               <span className="text-ink">{booking.confirmation_number}</span>
             </div>
           )}
           {booking.arrival_flight_number && (
             <div>
-              <span className="text-slate/50">Рейс прилёта: </span>
+              <span className="text-slate/50">{t("bookingDetail.arrivalFlightLabel")} </span>
               <span className="text-ink">{booking.arrival_flight_number}</span>
             </div>
           )}
           {booking.departure_flight_number && (
             <div>
-              <span className="text-slate/50">Рейс вылета: </span>
+              <span className="text-slate/50">{t("bookingDetail.departureFlightLabel")} </span>
               <span className="text-ink">{booking.departure_flight_number}</span>
             </div>
           )}
           {booking.special_requests && (
             <div className="col-span-2">
-              <span className="text-slate/50">Пожелания: </span>
+              <span className="text-slate/50">{t("bookingDetail.specialRequestsLabel")} </span>
               <span className="text-ink">{booking.special_requests}</span>
             </div>
           )}
@@ -1546,14 +1590,16 @@ function BookingDetail({
           adminExtensions.renderFinancialSummary(ctx)
         ) : (
           <div className="mt-4 rounded-lg bg-sand/50 p-3 text-sm">
-            <p className="text-slate/50">Итого</p>
+            <p className="text-slate/50">{t("bookingDetail.total")}</p>
             <p className="font-medium text-ink">{formatMoney(saleTotal(booking), booking.currency)}</p>
           </div>
         )}
 
         {/* ===== Подтверждение отеля (Decision 097) ===== */}
         <div className="mt-4 flex items-center justify-between">
-          <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">Подтверждение отеля</h4>
+          <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">
+            {t("bookingDetail.hotelConfirmationTitle")}
+          </h4>
           <ConfirmationNumberEdit
             booking={booking}
             onUpdated={onBookingUpdated}
@@ -1574,7 +1620,7 @@ function BookingDetail({
         {permissions.canConfirmWithHotel && booking.status === "Cancellation Requested" && (
           <div className="mt-4 flex items-center justify-between">
             <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">
-              Подтверждение отмены
+              {t("bookingDetail.cancellationConfirmationTitle")}
             </h4>
             <CancellationConfirmationEdit booking={booking} onUpdated={onBookingUpdated} />
           </div>
@@ -1593,32 +1639,44 @@ function BookingDetail({
             fields (populated only once stage 2 completes). */}
         {(booking.status === "Cancellation Requested" || booking.status === "Cancelled") && (
           <div className="mt-4 rounded-lg bg-slate/5 p-3 text-sm">
-            <p className="font-medium text-ink">Отмена</p>
-            <p className="mt-1 text-slate/70">Причина: {booking.cancellation_reason || "—"}</p>
-            <p className="text-slate/70">Запрошена: {booking.cancelled_at ? formatDate(booking.cancelled_at) : "—"}</p>
-            <p className="text-slate/70">
-              Запросил: <strong className="text-ink">{booking.cancelled_by !== null ? (claimerNames[booking.cancelled_by] ?? `#${booking.cancelled_by}`) : "—"}</strong>
+            <p className="font-medium text-ink">{t("bookingDetail.cancellationSectionTitle")}</p>
+            <p className="mt-1 text-slate/70">
+              {t("bookingDetail.reasonLabel")} {booking.cancellation_reason || "—"}
             </p>
-            <p className="text-slate/70">Штраф: {formatMoney(booking.cancellation_fee, booking.currency)}</p>
+            <p className="text-slate/70">
+              {t("bookingDetail.requestedLabel")}{" "}
+              {booking.cancelled_at ? formatDate(booking.cancelled_at) : "—"}
+            </p>
+            <p className="text-slate/70">
+              {t("bookingDetail.requestedByLabel")}{" "}
+              <strong className="text-ink">{booking.cancelled_by !== null ? (claimerNames[booking.cancelled_by] ?? `#${booking.cancelled_by}`) : "—"}</strong>
+            </p>
+            <p className="text-slate/70">
+              {t("bookingDetail.feeLabel")} {formatMoney(booking.cancellation_fee, booking.currency)}
+            </p>
             {booking.status === "Cancelled" ? (
               <>
                 <p className="mt-2 text-slate/70">
-                  Подтверждена отелем: {booking.cancellation_confirmed_at ? formatDate(booking.cancellation_confirmed_at) : "—"}
-                  {booking.cancellation_confirmation_number && <> (номер: {booking.cancellation_confirmation_number})</>}
+                  {t("bookingDetail.confirmedByHotelLabel")}{" "}
+                  {booking.cancellation_confirmed_at ? formatDate(booking.cancellation_confirmed_at) : "—"}
+                  {booking.cancellation_confirmation_number && (
+                    <> ({t("bookingDetail.numberLabel")} {booking.cancellation_confirmation_number})</>
+                  )}
                 </p>
                 <p className="text-slate/70">
-                  Подтвердил: <strong className="text-ink">{booking.cancellation_confirmed_by !== null ? (claimerNames[booking.cancellation_confirmed_by] ?? `#${booking.cancellation_confirmed_by}`) : "—"}</strong>
+                  {t("bookingDetail.confirmedByLabel")}{" "}
+                  <strong className="text-ink">{booking.cancellation_confirmed_by !== null ? (claimerNames[booking.cancellation_confirmed_by] ?? `#${booking.cancellation_confirmed_by}`) : "—"}</strong>
                 </p>
               </>
             ) : (
-              <p className="mt-2 text-amber-600">Ожидает подтверждения отелем — номер ещё не освобождён.</p>
+              <p className="mt-2 text-amber-600">{t("bookingDetail.awaitingHotelConfirmation")}</p>
             )}
           </div>
         )}
 
         <div className="mt-5">
           <div className="mb-2 flex items-center justify-between">
-            <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">Гости</h4>
+            <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.guestsTitle")}</h4>
             <FlightNumbersEdit
               booking={booking}
               onUpdated={onBookingUpdated}
@@ -1626,8 +1684,8 @@ function BookingDetail({
             />
           </div>
           {guestsError && <p className="text-sm text-red-600">{guestsError}</p>}
-          {!guests && !guestsError && <p className="text-sm text-slate/50">Загрузка...</p>}
-          {guests && guests.length === 0 && <p className="text-sm text-slate/50">Гости не добавлены</p>}
+          {!guests && !guestsError && <p className="text-sm text-slate/50">{t("bookingDetail.guestsLoading")}</p>}
+          {guests && guests.length === 0 && <p className="text-sm text-slate/50">{t("bookingDetail.noGuests")}</p>}
           {guests && guests.length > 0 && (
             <ul className="space-y-1.5 text-sm">
               {guests.map((g) => (
@@ -1661,6 +1719,7 @@ const BookingsList = ({
   permissions: Permissions;
   adminExtensions?: AdminBookingExtensions;
 }) => {
+  const { t } = useTranslation("reservations");
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [hotels, setHotels] = useState<Record<number, string>>({});
   const [roomTypes, setRoomTypes] = useState<Record<number, string>>({});
@@ -1764,7 +1823,7 @@ const BookingsList = ({
         );
         setCancellationTiers(tiersMap);
       } catch (err: any) {
-        setError(err.message || "Ошибка загрузки бронирований");
+        setError(err.message || t("bookingsList.loadFailed"));
       } finally {
         setLoading(false);
       }
@@ -1871,11 +1930,15 @@ const BookingsList = ({
   const sortArrow = (key: SortKey) => (sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : "");
 
   if (loading) {
-    return <p className="mt-10 text-center text-sm text-slate/60">Загрузка бронирований...</p>;
+    return <p className="mt-10 text-center text-sm text-slate/60">{t("bookingsList.loading")}</p>;
   }
 
   if (error) {
-    return <p className="mt-10 text-center text-sm text-red-600">Ошибка: {error}</p>;
+    return (
+      <p className="mt-10 text-center text-sm text-red-600">
+        {t("bookingsList.errorLabel")} {error}
+      </p>
+    );
   }
 
   return (
@@ -1888,10 +1951,10 @@ const BookingsList = ({
           onChange={(e) => setStatusFilter(e.target.value)}
           className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
         >
-          <option value="all">Все статусы</option>
+          <option value="all">{t("bookingsList.allStatuses")}</option>
           {availableStatuses.map((s) => (
             <option key={s} value={s}>
-              {STATUS_LABELS[s] ?? s}
+              {statusLabel(t, s)}
             </option>
           ))}
         </select>
@@ -1901,7 +1964,7 @@ const BookingsList = ({
           onChange={(e) => setHotelFilter(e.target.value)}
           className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
         >
-          <option value="all">Все отели</option>
+          <option value="all">{t("bookingsList.allHotels")}</option>
           {Object.entries(hotels).map(([id, name]) => (
             <option key={id} value={id}>
               {name}
@@ -1915,7 +1978,7 @@ const BookingsList = ({
             onChange={(e) => setAgentFilter(e.target.value)}
             className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
           >
-            <option value="all">Все агенты</option>
+            <option value="all">{t("bookingsList.allAgents")}</option>
             {availableAgentIds.map((id) => (
               <option key={id} value={id}>
                 {agentNames[id] ?? `#${id}`}
@@ -1928,7 +1991,7 @@ const BookingsList = ({
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Поиск по № брони..."
+          placeholder={t("bookingsList.searchPlaceholder")}
           className="w-48 appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
         />
 
@@ -1941,7 +2004,7 @@ const BookingsList = ({
               : "border-ink/15 bg-white text-slate hover:bg-sand/60"
           }`}
         >
-          По дате
+          {t("bookingsList.byDate")}
         </button>
 
         {(statusFilter !== "all" || hotelFilter !== "all" || agentFilter !== "all" || searchQuery.trim() || dateModeEnabled) && (
@@ -1956,7 +2019,7 @@ const BookingsList = ({
             }}
             className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-xs font-medium text-slate/70 transition-colors hover:bg-sand/60"
           >
-            Сбросить фильтры
+            {t("bookingsList.resetFilters")}
           </button>
         )}
       </div>
@@ -1977,7 +2040,7 @@ const BookingsList = ({
                 dateModeView === "staying" ? "bg-coral text-white" : "text-slate/70 hover:bg-sand/60"
               }`}
             >
-              Заезды
+              {t("bookingsList.dateModeStaying")}
             </button>
             <button
               type="button"
@@ -1986,7 +2049,7 @@ const BookingsList = ({
                 dateModeView === "created" ? "bg-coral text-white" : "text-slate/70 hover:bg-sand/60"
               }`}
             >
-              Созданы
+              {t("bookingsList.dateModeCreated")}
             </button>
             <button
               type="button"
@@ -1995,15 +2058,15 @@ const BookingsList = ({
                 dateModeView === "cancellations" ? "bg-coral text-white" : "text-slate/70 hover:bg-sand/60"
               }`}
             >
-              Отмены
+              {t("bookingsList.dateModeCancellations")}
             </button>
           </div>
           <span className="text-xs text-slate/50">
             {dateModeView === "staying"
-              ? "Бронирования, у которых выбранная дата попадает в период проживания (заезд ≤ дата < выезд), кроме отменённых/отклонённых"
+              ? t("bookingsList.dateModeStayingDescription")
               : dateModeView === "created"
-                ? "Бронирования, созданные в выбранную дату, независимо от дат заезда/выезда"
-                : "Бронирования с заездом на выбранную дату, которые были отменены"}
+                ? t("bookingsList.dateModeCreatedDescription")
+                : t("bookingsList.dateModeCancellationsDescription")}
           </span>
         </div>
       )}
@@ -2016,26 +2079,26 @@ const BookingsList = ({
                 className="cursor-pointer select-none px-4 py-3 font-medium"
                 onClick={() => toggleSort("created_at")}
               >
-                Дата брони{sortArrow("created_at")}
+                {t("bookingsList.columnBookingDate")}{sortArrow("created_at")}
               </th>
               <th
                 className="cursor-pointer select-none px-4 py-3 font-medium"
                 onClick={() => toggleSort("arrival_date")}
               >
-                Заезд → Выезд{sortArrow("arrival_date")}
+                {t("bookingsList.columnArrivalDeparture")}{sortArrow("arrival_date")}
               </th>
-              {scope.type === "all" && <th className="px-4 py-3 font-medium">Агент</th>}
-              <th className="px-4 py-3 font-medium">Отель</th>
-              <th className="px-4 py-3 font-medium">Тип номера</th>
-              <th className="px-4 py-3 font-medium">№ брони</th>
+              {scope.type === "all" && <th className="px-4 py-3 font-medium">{t("bookingsList.columnAgent")}</th>}
+              <th className="px-4 py-3 font-medium">{t("bookingsList.columnHotel")}</th>
+              <th className="px-4 py-3 font-medium">{t("bookingsList.columnRoomType")}</th>
+              <th className="px-4 py-3 font-medium">{t("bookingsList.columnBookingNumber")}</th>
               <th
                 className="cursor-pointer select-none px-4 py-3 font-medium"
                 onClick={() => toggleSort("status")}
               >
-                Статус{sortArrow("status")}
+                {t("bookingsList.columnStatus")}{sortArrow("status")}
               </th>
-              <th className="px-4 py-3 font-medium">Валюта</th>
-              <th className="px-4 py-3 font-medium">Sale price</th>
+              <th className="px-4 py-3 font-medium">{t("bookingsList.columnCurrency")}</th>
+              <th className="px-4 py-3 font-medium">{t("bookingsList.columnSalePrice")}</th>
               {adminExtensions?.financialColumnHeaders}
             </tr>
           </thead>
@@ -2046,7 +2109,7 @@ const BookingsList = ({
                   colSpan={8 + (scope.type === "all" ? 1 : 0) + (adminExtensions?.extraColumnCount ?? 0)}
                   className="px-4 py-10 text-center text-sm text-slate/50"
                 >
-                  Бронирования не найдены
+                  {t("bookingsList.noBookingsFound")}
                 </td>
               </tr>
             ) : (
@@ -2086,7 +2149,7 @@ const BookingsList = ({
                         {b.booking_number}
                         {needsAttention && (
                           <span className="rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                            Требует внимания
+                            {t("bookingsList.needsAttention")}
                           </span>
                         )}
                       </span>
@@ -2109,7 +2172,10 @@ const BookingsList = ({
       </div>
 
       <div className="mt-4 text-sm text-slate/60">
-        Всего: <strong className="text-ink">{filteredSorted.length}</strong> бронирований
+        {t("bookingsList.totalLabel")}{" "}
+        <strong className="text-ink">
+          {t("bookingsList.totalCount", { count: filteredSorted.length })}
+        </strong>
       </div>
 
       {selectedBooking && (

@@ -1,0 +1,76 @@
+{
+  "demoTag": "demo data",
+  "accessDenied": "⛔ Access denied! Agents only.",
+  "roleLabel": {
+    "agent": "Travel Agent",
+    "admin": "Administrator",
+    "manager": "Manager"
+  },
+  "nav": {
+    "groupWork": "WORK",
+    "groupFinance": "FINANCE",
+    "groupHelp": "HELP",
+    "dashboard": "Dashboard",
+    "hotelSearch": "Search & Booking",
+    "bookings": "Bookings",
+    "hotels": "Hotels",
+    "clients": "Clients",
+    "balance": "Balance",
+    "invoices": "Invoices",
+    "commissions": "Commissions",
+    "aiAssistant": "AI Assistant",
+    "support": "Support",
+    "settings": "Settings"
+  },
+  "checklist": {
+    "requestReceived": "Request received",
+    "paymentCheck": "Payment verification",
+    "hotelConfirmation": "Hotel confirmation",
+    "voucherGeneration": "Voucher generation",
+    "sendToClient": "Sent to client"
+  },
+  "chat": {
+    "title": "AI Assistant",
+    "message1": "Hello! Payment for booking BR-10432 (Velaa Private Island) is due tomorrow. Should I send the client a reminder?",
+    "message2": "Yes, please send it",
+    "message3": "Done ✅ Reminder sent to Rustam Aliyev via WhatsApp and email.",
+    "inputPlaceholder": "Ask AI something…",
+    "sendAriaLabel": "Send"
+  },
+  "kpi": {
+    "activeBookings": "Active bookings",
+    "activeBookingsDelta": "+12% this month",
+    "revenue": "Revenue (USD)",
+    "revenueDelta": "+8.4% this month",
+    "pendingPayment": "Pending payment",
+    "pendingPaymentDelta": "+3 this week",
+    "avgCheck": "Average booking value",
+    "avgCheckDelta": "−2.1% this month"
+  },
+  "mobileNav": {
+    "openMenu": "Open menu",
+    "closeMenu": "Close menu"
+  },
+  "header": {
+    "panelLabel": "AGENT PANEL",
+    "greeting": "Good afternoon, {{name}}!",
+    "summary": "Today is July 4 — you have 5 active bookings and 2 need attention.",
+    "newBooking": "New booking"
+  },
+  "aiInsight": {
+    "noticedLabel": "AI noticed:",
+    "part1": "booking at",
+    "part2": "is confirmed by the hotel, and payment for",
+    "part3": "is due tomorrow.",
+    "viewDetails": "View details"
+  },
+  "overview": {
+    "title": "Overview"
+  },
+  "bookingsSection": {
+    "title": "My bookings"
+  },
+  "checklistPanel": {
+    "title": "Approval stages"
+  }
+}

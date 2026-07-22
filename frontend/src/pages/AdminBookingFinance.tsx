@@ -8,8 +8,8 @@ import type { Booking, Permissions, Scope, AdminBookingExtensions, DetailCtx, Bo
 // Admin/Agent Component Separation refactor — everything genuinely
 // financial that used to live inline in Reservations.tsx, physically
 // moved here: invoice creation/display, the LPO compose/send panel, the
-// "Добавить ответ отеля вручную" write action, the re-derived price
-// breakdown ("Разбивка стоимости"), Net/Sale/Profit, and the list
+// "Add hotel reply manually" write action, the re-derived price
+// breakdown ("Price breakdown"), Net/Sale/Profit, and the list
 // table's Net cost/Profit columns + urgent-invoice badges. Reached only
 // through the base's optional `adminExtensions` prop (render-prop/slot
 // pattern) -- AgentDashboard_v2.tsx never imports this file at all, so
@@ -41,7 +41,7 @@ function formatNumber(amount: number | null | undefined) {
 }
 
 function formatDate(dateStr: string) {
-  return new Date(dateStr).toLocaleDateString("ru-RU");
+  return new Date(dateStr).toLocaleDateString("en-US");
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +246,7 @@ function useOwnBreakdown(booking: Booking, mealPlanInfo: MealPlanRef | undefined
   useEffect(() => {
     const token = localStorage.getItem("token") || "";
     if (!mealPlanInfo) {
-      setBreakdownError("Не удалось определить план питания для пересчёта");
+      setBreakdownError("Could not determine meal plan for recalculation");
       setBreakdownLoading(false);
       return;
     }
@@ -460,7 +460,7 @@ function CorrespondencePanel({ ctx }: { ctx: DetailCtx }) {
       // object, not just booking.id) re-run and pick up the new message.
       onBookingUpdated({ ...booking });
     } catch (err: any) {
-      setSendError(err.message || "Не удалось отправить письмо");
+      setSendError(err.message || "Failed to send email");
     } finally {
       setSendSubmitting(false);
     }
@@ -470,7 +470,7 @@ function CorrespondencePanel({ ctx }: { ctx: DetailCtx }) {
     <div className="mt-3 rounded-lg border border-ink/10 bg-sand/30 p-4">
       <div className="mb-2 flex items-center justify-between">
         <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
-          LPO — запрос на подтверждение отелю
+          LPO — booking confirmation request to hotel
         </p>
         <div className="flex items-center gap-2">
           <button
@@ -479,7 +479,7 @@ function CorrespondencePanel({ ctx }: { ctx: DetailCtx }) {
             disabled={!lpoFullText}
             className="rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-ink/80 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {lpoCopied ? "Скопировано ✓" : "Копировать"}
+            {lpoCopied ? "Copied ✓" : "Copy"}
           </button>
           <button
             type="button"
@@ -487,7 +487,7 @@ function CorrespondencePanel({ ctx }: { ctx: DetailCtx }) {
             disabled={!lpo || sendSubmitting}
             className="rounded-lg bg-coral px-3 py-1.5 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
           >
-            {sendSubmitting ? "Отправка..." : "Отправить"}
+            {sendSubmitting ? "Sending..." : "Send"}
           </button>
         </div>
       </div>
@@ -496,23 +496,23 @@ function CorrespondencePanel({ ctx }: { ctx: DetailCtx }) {
           <div className="mb-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
             <input
               type="email"
-              placeholder="Кому (email отеля)"
+              placeholder="To (hotel email)"
               value={recipientEmail}
               onChange={(e) => setRecipientEmail(e.target.value)}
               className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
             />
             <input
               type="email"
-              placeholder="Второй email (опционально)"
+              placeholder="Second email (optional)"
               value={recipientEmailSecondary}
               onChange={(e) => setRecipientEmailSecondary(e.target.value)}
               className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
             />
           </div>
           {!hotelEmail && (
-            <p className="mb-2 text-[11px] text-slate/40">У отеля не указан email в системе — заполните вручную.</p>
+            <p className="mb-2 text-[11px] text-slate/40">The hotel has no email on file — enter one manually.</p>
           )}
-          <p className="mb-1 text-[11px] font-medium text-slate/50">Тема: {lpo.subject}</p>
+          <p className="mb-1 text-[11px] font-medium text-slate/50">Subject: {lpo.subject}</p>
           <textarea
             value={editableLpoBody || lpo.body}
             onChange={(e) => setEditableLpoBody(e.target.value)}
@@ -522,7 +522,7 @@ function CorrespondencePanel({ ctx }: { ctx: DetailCtx }) {
         </>
       ) : (
         <p className="text-xs text-slate/50">
-          {breakdownLoading ? "Расчёт стоимости..." : "Не удалось сформировать письмо — проверьте расчёт стоимости выше."}
+          {breakdownLoading ? "Calculating price..." : "Could not generate the email — check the price calculation above."}
         </p>
       )}
       {sendError && (
@@ -533,7 +533,7 @@ function CorrespondencePanel({ ctx }: { ctx: DetailCtx }) {
 }
 
 // ---------------------------------------------------------------------------
-// renderReplyLogButton slot -- "Добавить ответ отеля вручную" button and
+// renderReplyLogButton slot -- "Add hotel reply manually" button and
 // its form. The base's correspondence THREAD READ-DISPLAY stays put; this
 // only writes a new inbound row, then nudges the base to re-fetch by
 // calling onBookingUpdated with a fresh object reference (same technique
@@ -550,7 +550,7 @@ function ReplyLogButton({ ctx }: { ctx: DetailCtx }) {
 
   async function handleAddReply() {
     if (replyBody.trim().length < 1) {
-      setReplyError("Введите текст ответа отеля");
+      setReplyError("Enter the hotel's reply text");
       return;
     }
     const token = localStorage.getItem("token") || "";
@@ -566,7 +566,7 @@ function ReplyLogButton({ ctx }: { ctx: DetailCtx }) {
       setReplyBody("");
       onBookingUpdated({ ...booking });
     } catch (err: any) {
-      setReplyError(err.message || "Не удалось добавить ответ");
+      setReplyError(err.message || "Failed to add reply");
     } finally {
       setReplySubmitting(false);
     }
@@ -584,7 +584,7 @@ function ReplyLogButton({ ctx }: { ctx: DetailCtx }) {
         }}
         className="rounded-lg border border-ink/15 bg-white px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:bg-sand"
       >
-        Добавить ответ отеля вручную
+        Add hotel reply manually
       </button>
     );
   }
@@ -592,13 +592,13 @@ function ReplyLogButton({ ctx }: { ctx: DetailCtx }) {
   return (
     <div className="w-full space-y-2 rounded-lg border border-ink/10 bg-sand/30 p-3">
       <input
-        placeholder="Тема (опционально)"
+        placeholder="Subject (optional)"
         value={replySubject}
         onChange={(e) => setReplySubject(e.target.value)}
         className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
       />
       <textarea
-        placeholder="Текст ответа отеля *"
+        placeholder="Hotel reply text *"
         value={replyBody}
         onChange={(e) => setReplyBody(e.target.value)}
         rows={4}
@@ -614,7 +614,7 @@ function ReplyLogButton({ ctx }: { ctx: DetailCtx }) {
           disabled={replySubmitting}
           className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
         >
-          {replySubmitting ? "Сохранение..." : "Сохранить ответ"}
+          {replySubmitting ? "Saving..." : "Save reply"}
         </button>
         <button
           type="button"
@@ -622,7 +622,7 @@ function ReplyLogButton({ ctx }: { ctx: DetailCtx }) {
           disabled={replySubmitting}
           className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Отмена
+          Cancel
         </button>
       </div>
     </div>
@@ -631,9 +631,9 @@ function ReplyLogButton({ ctx }: { ctx: DetailCtx }) {
 
 // ---------------------------------------------------------------------------
 // renderFinancialSummary slot -- Net/Sale/Profit (Decision 101) AND the
-// "Разбивка стоимости" price breakdown (Decision 106) folded into one
+// "Price breakdown" price breakdown (Decision 106) folded into one
 // slot, since the fixed 9-slot interface has no separate slot for the
-// breakdown; both occupy the single position "Итого" used to.
+// breakdown; both occupy the single position "Total" used to.
 // ---------------------------------------------------------------------------
 
 function FinancialSummaryBlock({ ctx }: { ctx: DetailCtx }) {
@@ -660,7 +660,7 @@ function FinancialSummaryBlock({ ctx }: { ctx: DetailCtx }) {
             {financials.profit === null && (
               <span
                 className="cursor-help text-slate/40"
-                title="Не рассчитано — бронирование создано до внедрения Pricing Engine (Decision 069)"
+                title="Not computed — booking was created before Pricing Engine (Decision 069)"
               >
                 ⓘ
               </span>
@@ -673,30 +673,30 @@ function FinancialSummaryBlock({ ctx }: { ctx: DetailCtx }) {
       </div>
 
       <div className="rounded-lg border border-ink/10 p-3 text-sm">
-        <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">Разбивка стоимости</h4>
+        <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">Price breakdown</h4>
         <p className="mt-1 text-xs text-slate/50">
-          Расчёт на текущих условиях контракта — может отличаться, если цены изменились после бронирования.
+          Calculated using the contract's current terms — may differ if prices changed after booking.
         </p>
-        {breakdownLoading && <p className="mt-2 text-slate/50">Пересчёт...</p>}
+        {breakdownLoading && <p className="mt-2 text-slate/50">Recalculating...</p>}
         {breakdownError && <p className="mt-2 text-red-600">{breakdownError}</p>}
         {roomBreakdown && (
           <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1">
             <div>
-              <span className="text-slate/50">База: </span>
+              <span className="text-slate/50">Base: </span>
               <span className="text-ink">{formatMoney(roomBreakdown.base_total, roomBreakdown.currency)}</span>
             </div>
             <div>
-              <span className="text-slate/50">Доплаты: </span>
+              <span className="text-slate/50">Supplements: </span>
               <span className="text-ink">{formatMoney(roomBreakdown.supplements_total, roomBreakdown.currency)}</span>
             </div>
             <div>
-              <span className="text-slate/50">До промо: </span>
+              <span className="text-slate/50">Before promo: </span>
               <span className="text-ink">
                 {formatMoney(roomBreakdown.price_before_promotions, roomBreakdown.currency)}
               </span>
             </div>
             <div>
-              <span className="text-slate/50">Итог проживания: </span>
+              <span className="text-slate/50">Room total: </span>
               <span className="text-ink">{formatMoney(roomBreakdown.final_total, roomBreakdown.currency)}</span>
             </div>
           </div>
@@ -704,7 +704,7 @@ function FinancialSummaryBlock({ ctx }: { ctx: DetailCtx }) {
         {transferBreakdown && (
           <div className="mt-2 border-t border-ink/5 pt-2">
             <p className="text-slate/50">
-              Трансфер ({transferBreakdown.transfer_name}):{" "}
+              Transfer ({transferBreakdown.transfer_name}):{" "}
               <span className="text-ink">{formatMoney(transferBreakdown.total, transferBreakdown.currency)}</span>
             </p>
           </div>
@@ -712,9 +712,9 @@ function FinancialSummaryBlock({ ctx }: { ctx: DetailCtx }) {
         {mandatoryTaxBreakdown && mandatoryTaxBreakdown.total > 0 && (
           <div className="mt-2 border-t border-ink/5 pt-2">
             <p className="text-slate/50">
-              {mandatoryTaxBreakdown.label || "Обязательный налог"} ({mandatoryTaxBreakdown.chargeable_guests} чел. ×{" "}
+              {mandatoryTaxBreakdown.label || "Mandatory tax"} ({mandatoryTaxBreakdown.chargeable_guests} pax ×{" "}
               {formatMoney(mandatoryTaxBreakdown.rate_per_person_per_night, mandatoryTaxBreakdown.currency)} ×{" "}
-              {mandatoryTaxBreakdown.nights} ноч., начисляется после скидок и не подлежит скидке):{" "}
+              {mandatoryTaxBreakdown.nights} nights, charged after discounts and not itself discountable):{" "}
               <span className="text-ink">{formatMoney(mandatoryTaxBreakdown.total, mandatoryTaxBreakdown.currency)}</span>
             </p>
           </div>
@@ -725,7 +725,7 @@ function FinancialSummaryBlock({ ctx }: { ctx: DetailCtx }) {
 }
 
 // ---------------------------------------------------------------------------
-// renderHeaderActions slot -- "Создать счёт" button + invoice summary.
+// renderHeaderActions slot -- "Create invoice" button + invoice summary.
 // Caches its fetched/created InvoiceInfo at the AdminBookingsList level
 // (via cachedInvoice/setInvoice props) rather than owning its own state,
 // specifically so onAfterClaim (a plain callback, not a component --
@@ -765,7 +765,7 @@ function InvoiceHeaderActions({
       });
       setInvoice(created);
     } catch (err: any) {
-      setError(err.message || "Не удалось создать счёт");
+      setError(err.message || "Failed to create invoice");
     } finally {
       setCreating(false);
     }
@@ -777,7 +777,7 @@ function InvoiceHeaderActions({
     return (
       <div className="flex flex-col items-end gap-1">
         <div className="rounded-lg bg-ink/5 px-3 py-1.5 text-xs text-slate/70">
-          Счёт <strong className="text-ink">{cachedInvoice.invoice_number}</strong> ({cachedInvoice.status}) на{" "}
+          Invoice <strong className="text-ink">{cachedInvoice.invoice_number}</strong> ({cachedInvoice.status}) for{" "}
           <strong className="text-ink">{formatMoney(cachedInvoice.total, cachedInvoice.currency)}</strong>
         </div>
         {error && <div className="rounded-lg bg-coral/10 px-2 py-1 text-xs font-medium text-coral">{error}</div>}
@@ -801,7 +801,7 @@ function InvoiceHeaderActions({
         disabled={creating}
         className="rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {creating ? "Создание..." : "Создать счёт"}
+        {creating ? "Creating..." : "Create invoice"}
       </button>
       {error && <div className="rounded-lg bg-coral/10 px-2 py-1 text-xs font-medium text-coral">{error}</div>}
     </div>
@@ -813,7 +813,7 @@ function InvoiceHeaderActions({
 // GET /bookings/urgent fetch owned by AdminBookingsList (Decision 100's
 // efficiency property preserved: never fetched per-row/per-detail),
 // replacing the old invoice-only urgentInvoicesByBooking. This is the
-// SAME underlying signal Финансы→Счета's own /invoices/urgent panel now
+// SAME underlying signal Finance→Invoices's own /invoices/urgent panel now
 // derives from (both read list_urgent_booking_ids server-side) -- a
 // booking shows up here whether or not it has ever had an invoice.
 // ---------------------------------------------------------------------------
@@ -833,13 +833,13 @@ function NeedsAttentionBadge({ summary }: { summary: UrgentBookingSummary }) {
       className="inline-flex cursor-help items-center gap-1 rounded-full bg-coral/15 px-2 py-0.5 text-[11px] font-medium text-coral"
       title={summary.latest_change_description ?? undefined}
     >
-      ⚠ Счёт
+      ⚠ Invoice
     </span>
   );
 }
 
-// New dedicated "Требует внимания" panel -- Бронирования's own
-// equivalent of Финансы→Счета's always-loaded urgent panel (Decision
+// New dedicated "Needs Attention" panel -- Bookings' own
+// equivalent of Finance→Invoices's always-loaded urgent panel (Decision
 // 088), same proven pattern: a small, always-loaded section above the
 // full list, so a manager doesn't have to scroll hundreds of rows to
 // find what changed. Parallel to (not sharing a component with)
@@ -860,12 +860,12 @@ function UrgentBookingsPanel({
 }) {
   return (
     <div className="mt-6">
-      <h3 className="font-display text-lg font-semibold text-ink">Требует внимания</h3>
+      <h3 className="font-display text-lg font-semibold text-ink">Needs Attention</h3>
       {loading ? (
-        <p className="mt-3 text-sm text-slate/60">Загрузка...</p>
+        <p className="mt-3 text-sm text-slate/60">Loading...</p>
       ) : bookings.length === 0 ? (
         <p className="mt-3 rounded-2xl border border-ink/10 bg-white px-5 py-6 text-center text-sm text-slate/50">
-          Нет бронирований, требующих внимания
+          No bookings need attention
         </p>
       ) : (
         <div className="mt-3 overflow-hidden rounded-2xl border border-ink/10 bg-white">
@@ -885,7 +885,7 @@ function UrgentBookingsPanel({
                       disabled={acknowledgingId === b.booking_id}
                       className="rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {acknowledgingId === b.booking_id ? "..." : "Отметить как проверено"}
+                      {acknowledgingId === b.booking_id ? "..." : "Mark as reviewed"}
                     </button>
                   </td>
                 </tr>
@@ -919,7 +919,7 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
   // Decision 108: keyed by booking_id, populated from ONE bulk
   // GET /bookings/urgent call -- the booking-rooted source of truth,
   // replacing the old invoice-only urgentInvoicesByBooking. Also drives
-  // the new dedicated "Требует внимания" panel above the list.
+  // the new dedicated "Needs Attention" panel above the list.
   const [urgentBookings, setUrgentBookings] = useState<UrgentBookingSummary[]>([]);
   const [urgentLoading, setUrgentLoading] = useState(true);
   const [acknowledgingId, setAcknowledgingId] = useState<number | null>(null);
@@ -954,7 +954,7 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
 
   async function handleAcknowledge(bookingId: number) {
     const summary = urgentByBooking[bookingId];
-    const confirmMessage = `⚠ ${summary?.latest_change_description ?? ""}\n\nОтметить как проверено?`;
+    const confirmMessage = `⚠ ${summary?.latest_change_description ?? ""}\n\nMark as reviewed?`;
     if (!window.confirm(confirmMessage)) return;
     const token = localStorage.getItem("token") || "";
     try {
@@ -962,7 +962,7 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
       await fetchJson(`/finance-engine/bookings/${bookingId}/acknowledge-review`, token, { method: "POST" });
       await loadUrgentBookings();
     } catch (err: any) {
-      alert(err.message || "Не удалось отметить бронирование как проверенное");
+      alert(err.message || "Failed to mark booking as reviewed");
     } finally {
       setAcknowledgingId(null);
     }
@@ -990,7 +990,7 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
             ) : (
               <span
                 className="cursor-help text-slate/40"
-                title="Не рассчитано — бронирование создано до внедрения Pricing Engine (Decision 069)"
+                title="Not computed — booking was created before Pricing Engine (Decision 069)"
               >
                 —
               </span>
@@ -1017,7 +1017,7 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
       // Decision 080: claiming auto-creates a Draft invoice as a
       // second, best-effort request. A failure here must never undo or
       // fail the claim itself, which has already succeeded by the time
-      // this fires -- InvoiceHeaderActions' own fallback "Создать счёт"
+      // this fires -- InvoiceHeaderActions' own fallback "Create invoice"
       // button stays as the recovery path either way.
       if (invoicesByBooking[bookingId]) return;
       const token = localStorage.getItem("token") || "";

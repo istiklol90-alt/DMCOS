@@ -122,7 +122,7 @@ async function fetchJson<T>(path: string, token: string, options: RequestInit = 
     },
   });
   if (!response.ok) {
-    let detail = `Ошибка запроса (${response.status})`;
+    let detail = `Request error (${response.status})`;
     try {
       const body = await response.json();
       if (body?.detail) detail = body.detail;
@@ -136,16 +136,16 @@ async function fetchJson<T>(path: string, token: string, options: RequestInit = 
 }
 
 function formatDate(dateStr: string) {
-  return new Date(dateStr).toLocaleDateString("ru-RU");
+  return new Date(dateStr).toLocaleDateString("en-US");
 }
 
 const CONTRACT_STATUS_LABELS: Record<string, string> = {
-  Draft: "Черновик",
-  "Waiting Approval": "На согласовании",
-  Active: "Активен",
-  Expired: "Истёк",
-  Cancelled: "Отменён",
-  Archived: "В архиве",
+  Draft: "Draft",
+  "Waiting Approval": "Waiting Approval",
+  Active: "Active",
+  Expired: "Expired",
+  Cancelled: "Cancelled",
+  Archived: "Archived",
 };
 
 const CONTRACT_STATUS_CLASSES: Record<string, string> = {
@@ -158,17 +158,17 @@ const CONTRACT_STATUS_CLASSES: Record<string, string> = {
 };
 
 const ADJUSTMENT_TYPE_LABELS: Record<string, string> = {
-  age_category_price: "Доплата за категорию возраста",
-  meal_plan_supplement: "Доплата за тип питания",
-  extra_bed: "Доп. кровать",
-  single_occupancy: "Одноместное размещение",
-  extra_person: "Доп. человек",
+  age_category_price: "Age category surcharge",
+  meal_plan_supplement: "Meal plan surcharge",
+  extra_bed: "Extra bed",
+  single_occupancy: "Single occupancy",
+  extra_person: "Extra person",
 };
 
 const CALCULATION_BASIS_LABELS: Record<string, string> = {
-  per_person_per_night: "за чел./ночь",
-  per_stay: "за проживание",
-  percentage_of_rate: "% от тарифа",
+  per_person_per_night: "per person/night",
+  per_stay: "per stay",
+  percentage_of_rate: "% of rate",
 };
 
 function ContractStatusBadge({ status }: { status: string }) {
@@ -239,7 +239,7 @@ const Contracts = () => {
       hotelsData.forEach((h) => (hotelMap[h.id] = h.hotel_name));
       setHotels(hotelMap);
 
-      // Coverage ("N сезонов · M типов номеров") isn't returned by
+      // Coverage ("N seasons · M room types") isn't returned by
       // list_contracts itself -- derived client-side per contract from its
       // seasons and rates, same accepted N+1 pattern HotelSearch.tsx
       // already uses for hotel -> room-types.
@@ -274,7 +274,7 @@ const Contracts = () => {
       );
       setExclusiveDiscounts(Object.fromEntries(discountEntries));
     } catch (err: any) {
-      setListError(err.message || "Ошибка загрузки списка контрактов");
+      setListError(err.message || "Failed to load contract list");
     } finally {
       setListLoading(false);
     }
@@ -341,7 +341,7 @@ const Contracts = () => {
       setDetailRoomTypes(roomTypeMap);
       setDetailSupplementsByRate(Object.fromEntries(supplementsEntries));
     } catch (err: any) {
-      setDetailError(err.message || "Не удалось загрузить детали контракта");
+      setDetailError(err.message || "Failed to load contract details");
     } finally {
       setDetailLoading(false);
     }
@@ -388,11 +388,11 @@ const Contracts = () => {
     if (!detailContract) return;
     const value = parseFloat(formPercent);
     if (isNaN(value) || value <= 0 || value >= 100) {
-      setDiscountError("Введите процент от 0 до 100 (не включительно)");
+      setDiscountError("Enter a percentage between 0 and 100 (exclusive)");
       return;
     }
     if (formStartDate && formEndDate && formStartDate > formEndDate) {
-      setDiscountError("Дата начала не может быть позже даты окончания");
+      setDiscountError("Start date cannot be later than end date");
       return;
     }
     const token = localStorage.getItem("token") || "";
@@ -420,21 +420,21 @@ const Contracts = () => {
       await refreshDetailDiscounts();
       closeDiscountForm();
     } catch (err: any) {
-      setDiscountError(err.message || "Не удалось сохранить скидку");
+      setDiscountError(err.message || "Failed to save discount");
     } finally {
       setSavingDiscount(false);
     }
   }
 
   async function handleDeleteDiscount(id: number) {
-    if (!window.confirm("Удалить эту эксклюзивную скидку?")) return;
+    if (!window.confirm("Delete this exclusive discount?")) return;
     const token = localStorage.getItem("token") || "";
     try {
       setSavingDiscount(true);
       await fetchJson(`/pricing-engine/exclusive-discounts/${id}`, token, { method: "DELETE" });
       await refreshDetailDiscounts();
     } catch (err: any) {
-      alert(err.message || "Не удалось удалить скидку");
+      alert(err.message || "Failed to delete discount");
     } finally {
       setSavingDiscount(false);
     }
@@ -458,32 +458,32 @@ const Contracts = () => {
     return (
       <div>
         <p className="mt-6 text-sm text-slate/60">
-          Все контракты из Contract Engine — созданные вручную, через API или через AI Core Engine,
-          без отдельной регистрации: список всегда читает реальную таблицу контрактов напрямую.
+          All contracts from Contract Engine — created manually, via API, or via AI Core Engine, with no
+          separate registration: the list always reads the real contracts table directly.
         </p>
 
-        {listLoading && <p className="mt-10 text-center text-sm text-slate/60">Загрузка...</p>}
-        {listError && <p className="mt-10 text-center text-sm text-red-600">Ошибка: {listError}</p>}
+        {listLoading && <p className="mt-10 text-center text-sm text-slate/60">Loading...</p>}
+        {listError && <p className="mt-10 text-center text-sm text-red-600">Error: {listError}</p>}
 
         {!listLoading && !listError && (
           <div className="mt-4 overflow-x-auto rounded-2xl border border-ink/10 bg-white">
             <table className="w-full min-w-[880px] border-collapse text-left text-sm">
               <thead>
                 <tr className="border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50">
-                  <th className="px-4 py-3 font-medium">Название</th>
-                  <th className="px-4 py-3 font-medium">Отель</th>
-                  <th className="px-4 py-3 font-medium">Период</th>
-                  <th className="px-4 py-3 font-medium">Валюта</th>
-                  <th className="px-4 py-3 font-medium">Статус</th>
-                  <th className="px-4 py-3 font-medium">Охват</th>
-                  <th className="px-4 py-3 font-medium">Скидка (Excl.)</th>
+                  <th className="px-4 py-3 font-medium">Name</th>
+                  <th className="px-4 py-3 font-medium">Hotel</th>
+                  <th className="px-4 py-3 font-medium">Period</th>
+                  <th className="px-4 py-3 font-medium">Currency</th>
+                  <th className="px-4 py-3 font-medium">Status</th>
+                  <th className="px-4 py-3 font-medium">Coverage</th>
+                  <th className="px-4 py-3 font-medium">Discount (Excl.)</th>
                 </tr>
               </thead>
               <tbody>
                 {contracts.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-4 py-10 text-center text-sm text-slate/50">
-                      Контракты не найдены
+                      No contracts found
                     </td>
                   </tr>
                 ) : (
@@ -507,15 +507,15 @@ const Contracts = () => {
                         </td>
                         <td className="px-4 py-3.5 text-slate/70">
                           {cov === undefined && "—"}
-                          {cov === null && <span className="text-red-600">Ошибка загрузки</span>}
-                          {cov && `${cov.seasonCount} сезона(ов) · ${cov.roomTypeCount} тип(ов) номеров`}
+                          {cov === null && <span className="text-red-600">Failed to load</span>}
+                          {cov && `${cov.seasonCount} season(s) · ${cov.roomTypeCount} room type(s)`}
                         </td>
                         <td className="px-4 py-3.5 text-slate/70">
                           {discounts && discounts.length > 0 ? (
                             <span className="inline-flex items-center rounded-full bg-teal/15 px-2.5 py-1 text-xs font-medium text-teal">
                               {discounts.length === 1
                                 ? `${discounts[0].discount_percent}%`
-                                : `${discounts.length} скидки`}
+                                : `${discounts.length} discounts`}
                             </span>
                           ) : (
                             "—"
@@ -542,11 +542,11 @@ const Contracts = () => {
         onClick={() => setMode("list")}
         className="mt-6 text-sm font-medium text-slate/60 hover:text-ink"
       >
-        ← Назад к списку
+        ← Back to list
       </button>
 
-      {detailLoading && <p className="mt-10 text-center text-sm text-slate/60">Загрузка...</p>}
-      {detailError && <p className="mt-10 text-center text-sm text-red-600">Ошибка: {detailError}</p>}
+      {detailLoading && <p className="mt-10 text-center text-sm text-slate/60">Loading...</p>}
+      {detailError && <p className="mt-10 text-center text-sm text-red-600">Error: {detailError}</p>}
 
       {!detailLoading && detailContract && (
         <>
@@ -565,27 +565,27 @@ const Contracts = () => {
               <ContractStatusBadge status={detailContract.contract_status} />
             </div>
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate/60">
-              {detailContract.contract_code && <span>Код: {detailContract.contract_code}</span>}
-              <span>Трансфер обязателен: {detailContract.transfer_required ? "да" : "нет"}</span>
+              {detailContract.contract_code && <span>Code: {detailContract.contract_code}</span>}
+              <span>Transfer required: {detailContract.transfer_required ? "yes" : "no"}</span>
               {detailContract.mandatory_tax_per_person_per_night != null && (
                 <span>
-                  {detailContract.mandatory_tax_label ?? "Налог"}: {detailContract.mandatory_tax_per_person_per_night}{" "}
-                  {detailContract.currency} / чел. / ночь
+                  {detailContract.mandatory_tax_label ?? "Tax"}: {detailContract.mandatory_tax_per_person_per_night}{" "}
+                  {detailContract.currency} / person / night
                 </span>
               )}
             </div>
 
-            {/* ===== Эксклюзивные скидки (Decision 069, extended by 071) ===== */}
+            {/* ===== Exclusive discounts (Decision 069, extended by 071) ===== */}
             <div className="mt-4 border-t border-ink/5 pt-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <p className="text-xs font-medium uppercase tracking-wide text-slate/50">
-                    Эксклюзивные скидки на цену номера
+                    Exclusive room rate discounts
                   </p>
                   <p className="mt-1 text-xs text-slate/60">
-                    Применяются только агентам из эксклюзивной категории на «Контрагенты». Можно задать одну
-                    скидку на весь контракт, либо отдельные скидки по типу номера / типу питания / периоду
-                    заезда — пусто в поле означает «применяется ко всем».
+                    Applied only to agents in the exclusive tier on the "Counteragents" tab. You can set a
+                    single discount for the whole contract, or separate discounts per room type / meal plan /
+                    arrival period — an empty field means "applies to all".
                   </p>
                 </div>
                 {!discountFormOpen && (
@@ -594,13 +594,13 @@ const Contracts = () => {
                     onClick={openNewDiscountForm}
                     className="appearance-none rounded-lg border-0 bg-teal px-4 py-2 text-xs font-medium text-white transition-transform hover:-translate-y-0.5"
                   >
-                    Добавить скидку
+                    Add discount
                   </button>
                 )}
               </div>
 
               {detailDiscounts.length === 0 && !discountFormOpen ? (
-                <p className="mt-3 text-sm text-slate/50">Скидки не настроены для этого контракта.</p>
+                <p className="mt-3 text-sm text-slate/50">No discounts configured for this contract.</p>
               ) : (
                 <div className="mt-3 space-y-2">
                   {detailDiscounts.map((d) => (
@@ -612,16 +612,16 @@ const Contracts = () => {
                         <span className="font-semibold text-coral">{d.discount_percent}%</span>{" "}
                         <span className="text-slate/70">
                           {d.room_type_id != null
-                            ? detailRoomTypes[d.room_type_id] ?? `тип #${d.room_type_id}`
-                            : "все типы номеров"}
+                            ? detailRoomTypes[d.room_type_id] ?? `type #${d.room_type_id}`
+                            : "all room types"}
                           {" · "}
-                          {d.meal_plan_id != null ? mealPlanCode(d.meal_plan_id) : "все типы питания"}
+                          {d.meal_plan_id != null ? mealPlanCode(d.meal_plan_id) : "all meal plans"}
                           {" · "}
                           {d.start_date || d.end_date
                             ? `${d.start_date ? formatDate(d.start_date) : "…"} → ${
                                 d.end_date ? formatDate(d.end_date) : "…"
                               }`
-                            : "всегда активна"}
+                            : "always active"}
                         </span>
                       </div>
                       <div className="flex gap-2">
@@ -630,7 +630,7 @@ const Contracts = () => {
                           onClick={() => openEditDiscountForm(d)}
                           className="appearance-none rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-slate/70 transition-colors hover:bg-sand/60"
                         >
-                          Изменить
+                          Edit
                         </button>
                         <button
                           type="button"
@@ -638,7 +638,7 @@ const Contracts = () => {
                           disabled={savingDiscount}
                           className="appearance-none rounded-lg border border-coral/40 bg-transparent px-3 py-1.5 text-xs font-medium text-coral transition-colors hover:bg-coral/10 disabled:opacity-50"
                         >
-                          Удалить
+                          Delete
                         </button>
                       </div>
                     </div>
@@ -650,13 +650,13 @@ const Contracts = () => {
                 <div className="mt-3 rounded-xl border border-coral/20 bg-coral/5 p-3.5">
                   <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
                     <label className="text-xs text-slate/60">
-                      Тип номера
+                      Room type
                       <select
                         value={formRoomTypeId}
                         onChange={(e) => setFormRoomTypeId(e.target.value)}
                         className="mt-1 w-full appearance-none rounded-lg border border-ink/15 bg-white px-2.5 py-2 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
                       >
-                        <option value="">Все типы номеров</option>
+                        <option value="">All room types</option>
                         {Object.entries(detailRoomTypes).map(([id, name]) => (
                           <option key={id} value={id}>
                             {name}
@@ -665,13 +665,13 @@ const Contracts = () => {
                       </select>
                     </label>
                     <label className="text-xs text-slate/60">
-                      Тип питания
+                      Meal plan
                       <select
                         value={formMealPlanId}
                         onChange={(e) => setFormMealPlanId(e.target.value)}
                         className="mt-1 w-full appearance-none rounded-lg border border-ink/15 bg-white px-2.5 py-2 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
                       >
-                        <option value="">Все типы питания</option>
+                        <option value="">All meal plans</option>
                         {detailMealPlans.map((m) => (
                           <option key={m.id} value={m.id}>
                             {m.meal_code}
@@ -680,7 +680,7 @@ const Contracts = () => {
                       </select>
                     </label>
                     <label className="text-xs text-slate/60">
-                      Дата с
+                      Start date
                       <input
                         type="date"
                         value={formStartDate}
@@ -689,7 +689,7 @@ const Contracts = () => {
                       />
                     </label>
                     <label className="text-xs text-slate/60">
-                      Дата по
+                      End date
                       <input
                         type="date"
                         value={formEndDate}
@@ -698,13 +698,13 @@ const Contracts = () => {
                       />
                     </label>
                     <label className="text-xs text-slate/60">
-                      Скидка, %
+                      Discount, %
                       <input
                         type="number"
                         min={0}
                         max={99}
                         step="0.1"
-                        placeholder="напр. 10"
+                        placeholder="e.g. 10"
                         value={formPercent}
                         onChange={(e) => setFormPercent(e.target.value)}
                         className="mt-1 w-full appearance-none rounded-lg border border-ink/15 bg-white px-2.5 py-2 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
@@ -718,7 +718,7 @@ const Contracts = () => {
                       disabled={savingDiscount}
                       className="appearance-none rounded-lg border-0 bg-coral px-4 py-2 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
                     >
-                      {savingDiscount ? "..." : editingDiscountId ? "Сохранить изменения" : "Добавить"}
+                      {savingDiscount ? "..." : editingDiscountId ? "Save changes" : "Add"}
                     </button>
                     <button
                       type="button"
@@ -726,7 +726,7 @@ const Contracts = () => {
                       disabled={savingDiscount}
                       className="appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2 text-sm font-medium text-slate/70 transition-colors hover:bg-sand/60 disabled:opacity-50"
                     >
-                      Отмена
+                      Cancel
                     </button>
                   </div>
                   {discountError && <p className="mt-2 text-sm text-red-600">{discountError}</p>}
@@ -735,12 +735,12 @@ const Contracts = () => {
             </div>
           </div>
 
-          {/* ===== Сезоны ===== */}
+          {/* ===== Seasons ===== */}
           <h4 className="mb-2 mt-6 font-display text-base font-semibold text-ink">
-            Сезоны ({detailSeasons.length})
+            Seasons ({detailSeasons.length})
           </h4>
           {detailSeasons.length === 0 ? (
-            <p className="text-sm text-slate/50">Сезоны не заданы.</p>
+            <p className="text-sm text-slate/50">No seasons defined.</p>
           ) : (
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {detailSeasons.map((s) => (
@@ -754,12 +754,12 @@ const Contracts = () => {
             </div>
           )}
 
-          {/* ===== Типы питания ===== */}
+          {/* ===== Meal Plans ===== */}
           <h4 className="mb-2 mt-6 font-display text-base font-semibold text-ink">
-            Типы питания ({detailMealPlans.length})
+            Meal Plans ({detailMealPlans.length})
           </h4>
           {detailMealPlans.length === 0 ? (
-            <p className="text-sm text-slate/50">Типы питания не заданы.</p>
+            <p className="text-sm text-slate/50">No meal plans defined.</p>
           ) : (
             <div className="flex flex-wrap gap-2">
               {detailMealPlans.map((m) => (
@@ -774,32 +774,32 @@ const Contracts = () => {
             </div>
           )}
 
-          {/* ===== Трансферы ===== */}
+          {/* ===== Transfers ===== */}
           <h4 className="mb-2 mt-6 font-display text-base font-semibold text-ink">
-            Трансферы ({detailTransferOptions.length})
+            Transfers ({detailTransferOptions.length})
           </h4>
           {detailTransferOptions.length === 0 ? (
-            <p className="text-sm text-slate/50">Трансферы не заданы.</p>
+            <p className="text-sm text-slate/50">No transfers defined.</p>
           ) : (
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {detailTransferOptions.map((t) => (
                 <div key={t.id} className="rounded-xl border border-ink/10 bg-white p-3.5">
                   <p className="font-medium text-ink">{t.transfer_name ?? t.transfer_type}</p>
                   <p className="mt-1 text-xs text-slate/60">
-                    Взрослый: {t.price_adult} · Ребёнок: {t.price_child}
-                    {t.price_infant != null ? ` · Младенец: ${t.price_infant}` : ""}
+                    Adult: {t.price_adult} · Child: {t.price_child}
+                    {t.price_infant != null ? ` · Infant: ${t.price_infant}` : ""}
                   </p>
                 </div>
               ))}
             </div>
           )}
 
-          {/* ===== Тарифы ===== */}
+          {/* ===== Rates ===== */}
           <h4 className="mb-2 mt-6 font-display text-base font-semibold text-ink">
-            Тарифы ({detailRates.length})
+            Rates ({detailRates.length})
           </h4>
           {detailRates.length === 0 ? (
-            <p className="text-sm text-slate/50">Тарифы не заданы.</p>
+            <p className="text-sm text-slate/50">No rates defined.</p>
           ) : (
             <div className="space-y-3">
               {detailRates.map((r) => {
@@ -815,8 +815,8 @@ const Contracts = () => {
                       </span>
                     </div>
                     <p className="mt-1.5 text-sm text-slate/70">
-                      {r.base_price} {r.currency} / ночь (на {r.base_occupancy} взр.)
-                      {r.minimum_stay ? ` · мин. ${r.minimum_stay} ноч.` : ""}
+                      {r.base_price} {r.currency} / night (based on {r.base_occupancy} adult(s))
+                      {r.minimum_stay ? ` · min. ${r.minimum_stay} night(s)` : ""}
                     </p>
                     {supplements.length > 0 && (
                       <div className="mt-2.5 space-y-1 border-t border-ink/5 pt-2.5">

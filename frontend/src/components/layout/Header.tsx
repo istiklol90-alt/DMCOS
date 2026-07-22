@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import Button from "../ui/Button";
 
 type HeaderProps = {
@@ -5,6 +6,8 @@ type HeaderProps = {
 };
 
 function Header({ onHome }: HeaderProps) {
+  const { i18n } = useTranslation();
+
   return (
     <header className="sticky top-0 z-50 w-full border-b border-white/10 bg-ink">
       <div className="mx-auto flex h-[78px] max-w-6xl items-center justify-between px-5 sm:px-10">
@@ -22,6 +25,27 @@ function Header({ onHome }: HeaderProps) {
           >
             Home
           </button>
+
+          <div className="flex items-center gap-0.5 rounded-full border border-white/15 p-0.5">
+            <button
+              type="button"
+              onClick={() => i18n.changeLanguage("ru")}
+              className={`appearance-none rounded-full border-0 px-2.5 py-1 text-xs font-medium transition-colors ${
+                i18n.language === "ru" ? "bg-white/15 text-white" : "bg-transparent text-white/70 hover:text-white"
+              }`}
+            >
+              RU
+            </button>
+            <button
+              type="button"
+              onClick={() => i18n.changeLanguage("en")}
+              className={`appearance-none rounded-full border-0 px-2.5 py-1 text-xs font-medium transition-colors ${
+                i18n.language === "en" ? "bg-white/15 text-white" : "bg-transparent text-white/70 hover:text-white"
+              }`}
+            >
+              EN
+            </button>
+          </div>
         </nav>
       </div>
     </header>

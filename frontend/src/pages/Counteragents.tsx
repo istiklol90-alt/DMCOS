@@ -5,7 +5,7 @@ import { API_URL } from "../config";
 // Admin-only screen for Pricing Engine's agent-category management (Decision
 // 069): the global per-night markup setting, and moving agents between the
 // Standard and Exclusive pricing tiers. Standard is never stored explicitly
-// (absence from ExclusiveAgent means Standard) -- "Стандартные агенты" below
+// (absence from ExclusiveAgent means Standard) -- "Standard agents" below
 // is simply every real agent minus whoever is in the Exclusive list.
 // ---------------------------------------------------------------------------
 
@@ -43,7 +43,7 @@ async function fetchJson<T>(path: string, token: string, options: RequestInit = 
     },
   });
   if (!response.ok) {
-    let detail = `Ошибка запроса (${response.status})`;
+    let detail = `Request error (${response.status})`;
     try {
       const body = await response.json();
       if (body?.detail) detail = body.detail;
@@ -57,7 +57,7 @@ async function fetchJson<T>(path: string, token: string, options: RequestInit = 
 }
 
 function formatDate(dateStr: string) {
-  return new Date(dateStr).toLocaleDateString("ru-RU");
+  return new Date(dateStr).toLocaleDateString("en-US");
 }
 
 const Counteragents = () => {
@@ -92,7 +92,7 @@ const Counteragents = () => {
       setStandardAgents(standardData);
       setExclusiveAgents(exclusiveData);
     } catch (err: any) {
-      setListError(err.message || "Ошибка загрузки данных");
+      setListError(err.message || "Failed to load data");
     } finally {
       setLoading(false);
     }
@@ -105,7 +105,7 @@ const Counteragents = () => {
   async function handleSaveSettings() {
     const value = parseFloat(markupInput);
     if (isNaN(value) || value < 0) {
-      setSettingsError("Введите корректную сумму (0 или больше)");
+      setSettingsError("Enter a valid amount (0 or greater)");
       return;
     }
     const token = localStorage.getItem("token") || "";
@@ -119,7 +119,7 @@ const Counteragents = () => {
       setSettings(updated);
       setMarkupInput(String(updated.standard_markup_amount_per_night));
     } catch (err: any) {
-      setSettingsError(err.message || "Не удалось сохранить настройку");
+      setSettingsError(err.message || "Failed to save setting");
     } finally {
       setSavingSettings(false);
     }
@@ -138,21 +138,21 @@ const Counteragents = () => {
       await loadAll();
       setSubTab("exclusive");
     } catch (err: any) {
-      alert(err.message || "Не удалось добавить агента в эксклюзивные");
+      alert(err.message || "Failed to add agent to exclusive");
     } finally {
       setAddingUserId(null);
     }
   }
 
   async function handleRemoveExclusive(userId: number) {
-    if (!window.confirm("Вернуть этого агента в Стандартные?")) return;
+    if (!window.confirm("Return this agent to Standard?")) return;
     const token = localStorage.getItem("token") || "";
     try {
       setRemovingUserId(userId);
       await fetchJson(`/pricing-engine/agents/exclusive/${userId}`, token, { method: "DELETE" });
       await loadAll();
     } catch (err: any) {
-      alert(err.message || "Не удалось вернуть агента в стандартные");
+      alert(err.message || "Failed to return agent to standard");
     } finally {
       setRemovingUserId(null);
     }
@@ -166,11 +166,11 @@ const Counteragents = () => {
 
   return (
     <div className="pb-10">
-      {/* ===== Глобальная настройка наценки ===== */}
+      {/* ===== Global markup setting ===== */}
       <div className="mt-6 rounded-2xl border border-ink/10 bg-white p-5">
-        <h3 className="font-display text-lg font-semibold text-ink">Глобальная наценка</h3>
+        <h3 className="font-display text-lg font-semibold text-ink">Global markup</h3>
         <p className="mt-1 text-sm text-slate/60">
-          Фиксированная сумма за ночь, добавляемая к цене номера (Net от Contract Engine) для всех агентов.
+          A flat per-night amount added to the room price (Net from Contract Engine) for all agents.
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2.5">
           <input
@@ -181,23 +181,23 @@ const Counteragents = () => {
             onChange={(e) => setMarkupInput(e.target.value)}
             className="w-40 appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
           />
-          <span className="text-sm text-slate/60">{settings?.currency ?? "USD"} / ночь</span>
+          <span className="text-sm text-slate/60">{settings?.currency ?? "USD"} / night</span>
           <button
             type="button"
             onClick={handleSaveSettings}
             disabled={savingSettings}
             className="appearance-none rounded-lg border-0 bg-coral px-5 py-2.5 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
           >
-            {savingSettings ? "Сохранение..." : "Сохранить"}
+            {savingSettings ? "Saving..." : "Save"}
           </button>
         </div>
         {settingsError && <p className="mt-2 text-sm text-red-600">{settingsError}</p>}
         {settings?.updated_at && (
-          <p className="mt-2 text-xs text-slate/50">Обновлено: {new Date(settings.updated_at).toLocaleString()}</p>
+          <p className="mt-2 text-xs text-slate/50">Updated: {new Date(settings.updated_at).toLocaleString()}</p>
         )}
       </div>
 
-      {/* ===== Подвкладки ===== */}
+      {/* ===== Sub-tabs ===== */}
       <div className="mt-6 flex gap-2 border-b border-ink/10">
         <button
           type="button"
@@ -206,7 +206,7 @@ const Counteragents = () => {
             subTab === "standard" ? "border-coral text-ink" : "border-transparent text-slate/60 hover:text-ink"
           }`}
         >
-          Стандартные агенты ({standardAgents.length})
+          Standard agents ({standardAgents.length})
         </button>
         <button
           type="button"
@@ -215,19 +215,19 @@ const Counteragents = () => {
             subTab === "exclusive" ? "border-coral text-ink" : "border-transparent text-slate/60 hover:text-ink"
           }`}
         >
-          Эксклюзивные агенты ({exclusiveAgents.length})
+          Exclusive agents ({exclusiveAgents.length})
         </button>
       </div>
 
-      {loading && <p className="mt-10 text-center text-sm text-slate/60">Загрузка...</p>}
-      {listError && <p className="mt-10 text-center text-sm text-red-600">Ошибка: {listError}</p>}
+      {loading && <p className="mt-10 text-center text-sm text-slate/60">Loading...</p>}
+      {listError && <p className="mt-10 text-center text-sm text-red-600">Error: {listError}</p>}
 
       {!loading && !listError && subTab === "standard" && (
         <div className="mt-4 overflow-x-auto rounded-2xl border border-ink/10 bg-white">
           <table className="w-full min-w-[600px] border-collapse text-left text-sm">
             <thead>
               <tr className="border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50">
-                <th className="px-5 py-3 font-medium">Имя</th>
+                <th className="px-5 py-3 font-medium">Name</th>
                 <th className="px-5 py-3 font-medium">Email</th>
               </tr>
             </thead>
@@ -235,7 +235,7 @@ const Counteragents = () => {
               {standardAgents.length === 0 ? (
                 <tr>
                   <td colSpan={2} className="px-5 py-10 text-center text-sm text-slate/50">
-                    Стандартных агентов не найдено
+                    No standard agents found
                   </td>
                 </tr>
               ) : (
@@ -259,16 +259,16 @@ const Counteragents = () => {
               onClick={() => setShowAddModal(true)}
               className="appearance-none rounded-lg border-0 bg-teal px-5 py-2.5 text-sm font-medium text-white transition-transform hover:-translate-y-0.5"
             >
-              Добавить
+              Add
             </button>
           </div>
           <div className="mt-3 overflow-x-auto rounded-2xl border border-ink/10 bg-white">
             <table className="w-full min-w-[700px] border-collapse text-left text-sm">
               <thead>
                 <tr className="border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50">
-                  <th className="px-5 py-3 font-medium">Имя</th>
+                  <th className="px-5 py-3 font-medium">Name</th>
                   <th className="px-5 py-3 font-medium">Email</th>
-                  <th className="px-5 py-3 font-medium">Добавлен</th>
+                  <th className="px-5 py-3 font-medium">Added</th>
                   <th className="px-5 py-3 font-medium"></th>
                 </tr>
               </thead>
@@ -276,7 +276,7 @@ const Counteragents = () => {
                 {exclusiveAgents.length === 0 ? (
                   <tr>
                     <td colSpan={4} className="px-5 py-10 text-center text-sm text-slate/50">
-                      Эксклюзивных агентов пока нет
+                      No exclusive agents yet
                     </td>
                   </tr>
                 ) : (
@@ -292,7 +292,7 @@ const Counteragents = () => {
                           disabled={removingUserId === a.user_id}
                           className="appearance-none rounded-lg border border-coral/40 bg-transparent px-3.5 py-1.5 text-xs font-medium text-coral transition-colors hover:bg-coral/10 disabled:opacity-50"
                         >
-                          {removingUserId === a.user_id ? "..." : "Вернуть в стандартные"}
+                          {removingUserId === a.user_id ? "..." : "Return to standard"}
                         </button>
                       </td>
                     </tr>
@@ -304,7 +304,7 @@ const Counteragents = () => {
         </>
       )}
 
-      {/* ===== Модалка добавления в эксклюзивные ===== */}
+      {/* ===== Add to exclusive modal ===== */}
       {showAddModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4"
@@ -314,18 +314,18 @@ const Counteragents = () => {
             className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="font-display text-lg font-semibold text-ink">Добавить в эксклюзивные</h3>
+            <h3 className="font-display text-lg font-semibold text-ink">Add to exclusive</h3>
             <input
               type="text"
               autoFocus
-              placeholder="Поиск по имени или email..."
+              placeholder="Search by name or email..."
               value={addSearch}
               onChange={(e) => setAddSearch(e.target.value)}
               className="mt-3 w-full appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
             />
             <div className="mt-3 max-h-72 overflow-y-auto rounded-lg border border-ink/10">
               {filteredAddCandidates.length === 0 ? (
-                <p className="px-4 py-6 text-center text-sm text-slate/50">Агенты не найдены</p>
+                <p className="px-4 py-6 text-center text-sm text-slate/50">No agents found</p>
               ) : (
                 filteredAddCandidates.map((a) => (
                   <button
@@ -349,7 +349,7 @@ const Counteragents = () => {
               onClick={() => setShowAddModal(false)}
               className="mt-3 w-full appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm font-medium text-slate/70 transition-colors hover:bg-sand/60"
             >
-              Отмена
+              Cancel
             </button>
           </div>
         </div>

@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { API_URL } from "../config";
 
 // ---------------------------------------------------------------------------
-// Shared across the Финансы feature cluster (Счета / Баланс / Кэшбэк,
+// Shared across the Finance feature cluster (Invoices / Balance / Cashback,
 // each its own top-level AdminPanel tab as of the Decision 088 restructure
-// -- previously one "Финансы" tab crammed everything together, which
+// -- previously one "Finance" tab crammed everything together, which
 // doesn't scale to a realistic 100 agents x 100 bookings volume). This
 // module holds the genuinely-shared, must-stay-identical logic
 // (InvoiceDetailModal, isUrgentFlag, AgentSearchSelect) rather than
@@ -103,8 +103,8 @@ export function computeBookingFinancials(b: BookingFinancialsInput): BookingFina
 // Invoice's own commission/discount instead of a live Booking's markup/
 // discount -- the two are numerically identical at the moment an
 // invoice is created (Invoice.commission IS booking.agent_markup_amount,
-// frozen), but this is the correct source for the "Зафиксировано в
-// счёте" (frozen) side of InvoiceDetailModal, where computeBookingFinancials
+// frozen), but this is the correct source for the "Frozen in invoice"
+// side of InvoiceDetailModal, where computeBookingFinancials
 // would need the live booking instead.
 export function invoiceProfit(inv: { commission: number | null; discount: number | null }): number | null {
   if (inv.commission === null || inv.discount === null) return null;
@@ -121,7 +121,7 @@ export async function fetchJson<T>(path: string, token: string, options: Request
     },
   });
   if (!response.ok) {
-    let detail = `Ошибка запроса (${response.status})`;
+    let detail = `Request error (${response.status})`;
     try {
       const body = await response.json();
       if (body?.detail) detail = body.detail;
@@ -135,11 +135,11 @@ export async function fetchJson<T>(path: string, token: string, options: Request
 }
 
 export function formatMoney(amount: number, currency: string) {
-  return new Intl.NumberFormat("ru-RU", { style: "currency", currency, maximumFractionDigits: 2 }).format(amount);
+  return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(amount);
 }
 
 export function formatDate(dateStr: string) {
-  return new Date(dateStr).toLocaleDateString("ru-RU");
+  return new Date(dateStr).toLocaleDateString("en-US");
 }
 
 const statusBadgeClasses: Record<string, string> = {
@@ -161,7 +161,7 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
 
 // Decision 099: takes the narrowest shape it actually uses, not the
 // full Invoice type -- lets Reservations.tsx's much smaller InvoiceInfo
-// (booking detail view's own invoice summary, not the full Финансы
+// (booking detail view's own invoice summary, not the full Finance
 // Invoice shape) pass structurally without needing every Invoice field
 // it doesn't have and doesn't need. Invoice itself still satisfies this
 // shape automatically, so no existing call site changes.
@@ -197,17 +197,17 @@ export function hasPriceSnapshot(note: InvoiceReviewNote): boolean {
 export function formatSingleNote(note: InvoiceReviewNote, currency: string): string {
   if (hasPriceSnapshot(note)) {
     const diff = note.new_total! - note.old_total!;
-    const diffStr = Math.abs(diff) <= 0.01 ? "без изменений" : `${diff > 0 ? "+" : ""}${formatMoney(diff, currency)}`;
+    const diffStr = Math.abs(diff) <= 0.01 ? "no change" : `${diff > 0 ? "+" : ""}${formatMoney(diff, currency)}`;
     return (
-      `Изменено ${note.sequence_number} (${formatDate(note.created_at)}): ` +
-      `Было [${formatDate(note.old_arrival_date!)} – ${formatDate(note.old_departure_date!)}], ` +
-      `${note.old_offer_name ?? "только контракт"}, итого ${formatMoney(note.old_total!, currency)} → ` +
-      `Стало [${formatDate(note.new_arrival_date!)} – ${formatDate(note.new_departure_date!)}], ` +
-      `${note.new_offer_name ?? "только контракт"}, итого ${formatMoney(note.new_total!, currency)} ` +
-      `(разница: ${diffStr})`
+      `Change ${note.sequence_number} (${formatDate(note.created_at)}): ` +
+      `Was [${formatDate(note.old_arrival_date!)} – ${formatDate(note.old_departure_date!)}], ` +
+      `${note.old_offer_name ?? "contract only"}, total ${formatMoney(note.old_total!, currency)} → ` +
+      `Now [${formatDate(note.new_arrival_date!)} – ${formatDate(note.new_departure_date!)}], ` +
+      `${note.new_offer_name ?? "contract only"}, total ${formatMoney(note.new_total!, currency)} ` +
+      `(difference: ${diffStr})`
     );
   }
-  return `Изменено ${note.sequence_number}: ${note.change_description ?? ""} (${formatDate(note.created_at)})`;
+  return `Change ${note.sequence_number}: ${note.change_description ?? ""} (${formatDate(note.created_at)})`;
 }
 
 // Joined, single-string rendering of the full numbered history -- used
@@ -219,7 +219,7 @@ export function formatReviewNotes(notes: InvoiceReviewNote[], currency: string):
 }
 
 // Decision 096: a highlighted "this specific thing changed" line for
-// InvoiceDetailModal's "Текущее состояние брони" block, generic across
+// InvoiceDetailModal's "Current booking state" block, generic across
 // whatever kind of change a note captures -- not hardcoded to dates.
 // Each field-change type this project ever adds gets its own small
 // "build" function producing this exact shape; deriveChangeHighlights
@@ -233,13 +233,7 @@ export interface ChangeHighlight {
 }
 
 function pluralizeNights(n: number): string {
-  const abs = Math.abs(n);
-  const mod10 = abs % 10;
-  const mod100 = abs % 100;
-  if (mod100 >= 11 && mod100 <= 14) return "ночей";
-  if (mod10 === 1) return "ночь";
-  if (mod10 >= 2 && mod10 <= 4) return "ночи";
-  return "ночей";
+  return Math.abs(n) === 1 ? "night" : "nights";
 }
 
 function daysBetween(a: string, b: string): number {
@@ -255,10 +249,10 @@ function buildDateChangeHighlight(
     delta = `${nightsDiff > 0 ? "+" : ""}${nightsDiff} ${pluralizeNights(nightsDiff)}`;
   } else {
     const shiftDays = daysBetween(oldArrival, newArrival);
-    delta = shiftDays !== 0 ? `смещено на ${shiftDays > 0 ? "+" : ""}${shiftDays} дн.` : "без изменений";
+    delta = shiftDays !== 0 ? `shifted by ${shiftDays > 0 ? "+" : ""}${shiftDays} d.` : "no change";
   }
   return {
-    label: "Новые даты",
+    label: "New dates",
     newValue: `${formatDate(newArrival)} – ${formatDate(newDeparture)}`,
     oldValue: `${formatDate(oldArrival)} – ${formatDate(oldDeparture)}`,
     delta,
@@ -297,13 +291,13 @@ export function deriveChangeHighlights(
 // "Void" (Invoice) and "Cancelled" (Booking) are deliberately NOT
 // unified into one word -- an invoice can be voided for reasons
 // unrelated to the booking (e.g. a data-entry correction on an
-// otherwise-valid booking). The label stays "Аннулирован" always, with
+// otherwise-valid booking). The label stays "Void" always, with
 // a qualifier appended only when the linked booking is actually
 // terminal too.
 export function voidLabel(bookingStatus: string | null): string {
-  if (bookingStatus === "Cancelled") return "Аннулирован (бронь отменена)";
-  if (bookingStatus === "Rejected") return "Аннулирован (бронь отклонена отелем)";
-  return "Аннулирован";
+  if (bookingStatus === "Cancelled") return "Void (booking cancelled)";
+  if (bookingStatus === "Rejected") return "Void (booking rejected by hotel)";
+  return "Void";
 }
 
 // ---------------------------------------------------------------------------
@@ -361,7 +355,7 @@ export function AgentSearchSelect({
           }}
           className="appearance-none rounded-lg border border-ink/15 bg-white px-3 py-2 text-xs font-medium text-slate/70 hover:bg-sand/60"
         >
-          Изменить
+          Change
         </button>
       </div>
     );
@@ -371,7 +365,7 @@ export function AgentSearchSelect({
     <div className="relative min-w-[280px]">
       <input
         type="text"
-        placeholder="Введите имя агента (мин. 2 символа)..."
+        placeholder="Enter agent name (min. 2 characters)..."
         value={query}
         onChange={(e) => {
           setQuery(e.target.value);
@@ -383,9 +377,9 @@ export function AgentSearchSelect({
       {open && query.trim().length >= 2 && (
         <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-lg border border-ink/10 bg-white shadow-lg">
           {searching ? (
-            <p className="px-4 py-3 text-sm text-slate/50">Поиск...</p>
+            <p className="px-4 py-3 text-sm text-slate/50">Searching...</p>
           ) : results.length === 0 ? (
-            <p className="px-4 py-3 text-sm text-slate/50">Агенты не найдены</p>
+            <p className="px-4 py-3 text-sm text-slate/50">No agents found</p>
           ) : (
             results.map((a) => (
               <button
@@ -481,7 +475,7 @@ export function InvoiceDetailModal({
       await fetchJson<Invoice>(`/finance-engine/invoices/${invoice.id}/acknowledge-flag`, token, { method: "POST" });
       onAcknowledged?.();
     } catch (err: any) {
-      alert(err.message || "Не удалось отметить как проверено");
+      alert(err.message || "Failed to mark as reviewed");
     } finally {
       setAcknowledging(false);
     }
@@ -581,7 +575,7 @@ export function InvoiceDetailModal({
         }
         await Promise.all(promises);
       })
-      .catch((err: any) => setError(err.message || "Не удалось загрузить детали бронирования"))
+      .catch((err: any) => setError(err.message || "Failed to load booking details"))
       .finally(() => setLoading(false));
   }, [invoice.booking_id]);
 
@@ -603,7 +597,7 @@ export function InvoiceDetailModal({
       >
         <div className="flex items-center justify-between">
           <h3 className="flex items-center gap-2 font-display text-lg font-semibold text-ink">
-            Счёт {invoice.invoice_number}
+            Invoice {invoice.invoice_number}
             <StatusBadge
               status={invoice.status}
               label={invoice.status === "Void" ? voidLabel(booking?.status ?? null) : undefined}
@@ -614,17 +608,17 @@ export function InvoiceDetailModal({
             onClick={onClose}
             className="appearance-none rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-sm text-slate/70 hover:bg-sand/60"
           >
-            Закрыть
+            Close
           </button>
         </div>
 
         <div className="mt-3 space-y-0.5 text-xs text-slate/50">
-          <p>Создано: {actorNames[invoice.created_by] ?? `#${invoice.created_by}`}, {formatDate(invoice.issue_date)}</p>
+          <p>Created: {actorNames[invoice.created_by] ?? `#${invoice.created_by}`}, {formatDate(invoice.issue_date)}</p>
           {invoice.approved_by !== null && invoice.approved_at && (
-            <p>Одобрено: {actorNames[invoice.approved_by] ?? `#${invoice.approved_by}`}, {formatDate(invoice.approved_at)}</p>
+            <p>Approved: {actorNames[invoice.approved_by] ?? `#${invoice.approved_by}`}, {formatDate(invoice.approved_at)}</p>
           )}
           {invoice.voided_by !== null && invoice.voided_at && (
-            <p>Аннулировано: {actorNames[invoice.voided_by] ?? `#${invoice.voided_by}`}, {formatDate(invoice.voided_at)}</p>
+            <p>Voided: {actorNames[invoice.voided_by] ?? `#${invoice.voided_by}`}, {formatDate(invoice.voided_at)}</p>
           )}
         </div>
 
@@ -643,7 +637,7 @@ export function InvoiceDetailModal({
                   disabled={acknowledging}
                   className="mt-2 appearance-none rounded-lg border-0 bg-coral px-3.5 py-1.5 text-xs font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
                 >
-                  {acknowledging ? "..." : "Отметить как проверено"}
+                  {acknowledging ? "..." : "Mark as reviewed"}
                 </button>
               )}
             </div>
@@ -651,7 +645,7 @@ export function InvoiceDetailModal({
             <div className="mt-3 rounded-lg bg-ink/5 px-3 py-2 text-xs text-slate/60">
               {invoice.flag_acknowledged_at && (
                 <p className="mb-1">
-                  Проверено (
+                  Reviewed (
                   {invoice.flag_acknowledged_by !== null
                     ? actorNames[invoice.flag_acknowledged_by] ?? `#${invoice.flag_acknowledged_by}`
                     : "—"}
@@ -671,21 +665,21 @@ export function InvoiceDetailModal({
           <div className="mt-3 rounded-lg border border-ink/10 bg-sand/40 p-3 text-sm">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-slate/70">
-                Было: <strong className="text-ink">{formatMoney(invoice.total, invoice.currency)}</strong>{" "}
-                <span className="text-slate/50">(зафиксировано {formatDate(invoice.issue_date)})</span>
+                Was: <strong className="text-ink">{formatMoney(invoice.total, invoice.currency)}</strong>{" "}
+                <span className="text-slate/50">(frozen {formatDate(invoice.issue_date)})</span>
               </span>
               <span className="text-slate/40">→</span>
               <span className="text-slate/70">
-                Стало: <strong className="text-ink">{formatMoney(liveTotal, invoice.currency)}</strong>{" "}
-                <span className="text-slate/50">(сейчас)</span>
+                Now: <strong className="text-ink">{formatMoney(liveTotal, invoice.currency)}</strong>{" "}
+                <span className="text-slate/50">(current)</span>
               </span>
             </div>
             <div className="mt-1">
               {Math.abs(liveTotal - invoice.total) <= 0.01 ? (
-                <span className="text-slate/50">Без изменений в сумме</span>
+                <span className="text-slate/50">No change in amount</span>
               ) : (
                 <span className={liveTotal > invoice.total ? "font-medium text-coral" : "font-medium text-teal"}>
-                  Разница: {liveTotal > invoice.total ? "+" : ""}
+                  Difference: {liveTotal > invoice.total ? "+" : ""}
                   {formatMoney(liveTotal - invoice.total, invoice.currency)}
                 </span>
               )}
@@ -693,56 +687,56 @@ export function InvoiceDetailModal({
           </div>
         )}
 
-        {loading && <p className="mt-6 text-center text-sm text-slate/60">Загрузка...</p>}
-        {error && <p className="mt-6 text-center text-sm text-red-600">Ошибка: {error}</p>}
+        {loading && <p className="mt-6 text-center text-sm text-slate/60">Loading...</p>}
+        {error && <p className="mt-6 text-center text-sm text-red-600">Error: {error}</p>}
 
         {!loading && !error && booking && (
           <>
             <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-slate/70">
-              <span>Бронирование: <strong className="text-ink">{booking.booking_number}</strong></span>
-              <span>Тип номера: <strong className="text-ink">{roomTypeName}</strong></span>
+              <span>Booking: <strong className="text-ink">{booking.booking_number}</strong></span>
+              <span>Room type: <strong className="text-ink">{roomTypeName}</strong></span>
               <span>
-                Даты: <strong className="text-ink">{formatDate(booking.arrival_date)} — {formatDate(booking.departure_date)} ({booking.nights} ноч.)</strong>
+                Dates: <strong className="text-ink">{formatDate(booking.arrival_date)} — {formatDate(booking.departure_date)} ({booking.nights} night{booking.nights === 1 ? "" : "s"})</strong>
               </span>
-              <span>План питания: <strong className="text-ink">{mealPlanLabel}</strong></span>
-              <span>Гости: <strong className="text-ink">{booking.adults} взр. / {booking.children} дет. / {booking.infants} млад.</strong></span>
+              <span>Meal plan: <strong className="text-ink">{mealPlanLabel}</strong></span>
+              <span>Guests: <strong className="text-ink">{booking.adults} adult{booking.adults === 1 ? "" : "s"} / {booking.children} child{booking.children === 1 ? "" : "ren"} / {booking.infants} infant{booking.infants === 1 ? "" : "s"}</strong></span>
             </div>
 
             <div className="mt-4 grid grid-cols-2 gap-3">
               <div className="rounded-xl border border-ink/10 p-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Зафиксировано в счёте</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Frozen in invoice</p>
                 <div className="mt-2 space-y-1 text-sm">
-                  <div className="flex justify-between"><span className="text-slate/60">Сумма номера (нетто+трансфер)</span><span className="text-ink">{formatMoney(invoice.subtotal, invoice.currency)}</span></div>
-                  <div className="flex justify-between"><span className="text-slate/60">Скидка</span><span className="text-ink">{invoice.discount !== null ? formatMoney(invoice.discount, invoice.currency) : "—"}</span></div>
-                  <div className="flex justify-between"><span className="text-slate/60">Комиссия</span><span className="text-ink">{invoice.commission !== null ? formatMoney(invoice.commission, invoice.currency) : "—"}</span></div>
-                  <div className="flex justify-between"><span className="text-slate/60">Прибыль</span><span className="text-ink">{frozenProfit !== null ? formatMoney(frozenProfit, invoice.currency) : "—"}</span></div>
-                  <div className="flex justify-between"><span className="text-slate/60">Налог</span><span className="text-ink">{invoice.tax !== null ? formatMoney(invoice.tax, invoice.currency) : "—"}</span></div>
-                  <div className="flex justify-between border-t border-ink/10 pt-1 font-medium"><span className="text-ink">Итого</span><span className="text-ink">{formatMoney(invoice.total, invoice.currency)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate/60">Room amount (net+transfer)</span><span className="text-ink">{formatMoney(invoice.subtotal, invoice.currency)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate/60">Discount</span><span className="text-ink">{invoice.discount !== null ? formatMoney(invoice.discount, invoice.currency) : "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate/60">Commission</span><span className="text-ink">{invoice.commission !== null ? formatMoney(invoice.commission, invoice.currency) : "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate/60">Profit</span><span className="text-ink">{frozenProfit !== null ? formatMoney(frozenProfit, invoice.currency) : "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate/60">Tax</span><span className="text-ink">{invoice.tax !== null ? formatMoney(invoice.tax, invoice.currency) : "—"}</span></div>
+                  <div className="flex justify-between border-t border-ink/10 pt-1 font-medium"><span className="text-ink">Total</span><span className="text-ink">{formatMoney(invoice.total, invoice.currency)}</span></div>
                 </div>
               </div>
 
               <div className={`rounded-xl border p-3 ${mismatch ? "border-coral/40 bg-coral/5" : "border-ink/10"}`}>
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Текущее состояние брони</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Current booking state</p>
                 {changeHighlights.map((h, i) => (
                   <div key={i} className="mt-2 rounded-lg bg-coral/10 px-2 py-1.5 text-sm font-medium text-coral">
                     {h.label}: {h.newValue}{" "}
-                    <span className="font-normal text-coral/70">(было: {h.oldValue}, {h.delta})</span>
+                    <span className="font-normal text-coral/70">(was: {h.oldValue}, {h.delta})</span>
                   </div>
                 ))}
                 {roomBreakdown && booking && (
                   <div className="mt-2 space-y-1 text-sm">
-                    <div className="flex justify-between"><span className="text-slate/60">Базовая ставка (нетто)</span><span className="text-ink">{formatMoney(roomBreakdown.base_total, roomBreakdown.currency)}</span></div>
-                    <div className="flex justify-between"><span className="text-slate/60">Надбавки</span><span className="text-ink">{formatMoney(roomBreakdown.supplements_total, roomBreakdown.currency)}</span></div>
-                    <div className="flex justify-between"><span className="text-slate/60">Скидка</span><span className="text-ink">{booking.agent_exclusive_discount_amount !== null ? formatMoney(booking.agent_exclusive_discount_amount, booking.currency) : "—"}</span></div>
-                    <div className="flex justify-between"><span className="text-slate/60">Комиссия</span><span className="text-ink">{booking.agent_markup_amount !== null ? formatMoney(booking.agent_markup_amount, booking.currency) : "—"}</span></div>
-                    <div className="flex justify-between"><span className="text-slate/60">Прибыль</span><span className="text-ink">{liveFinancials && liveFinancials.profit !== null ? formatMoney(liveFinancials.profit, booking.currency) : "—"}</span></div>
+                    <div className="flex justify-between"><span className="text-slate/60">Base rate (net)</span><span className="text-ink">{formatMoney(roomBreakdown.base_total, roomBreakdown.currency)}</span></div>
+                    <div className="flex justify-between"><span className="text-slate/60">Supplements</span><span className="text-ink">{formatMoney(roomBreakdown.supplements_total, roomBreakdown.currency)}</span></div>
+                    <div className="flex justify-between"><span className="text-slate/60">Discount</span><span className="text-ink">{booking.agent_exclusive_discount_amount !== null ? formatMoney(booking.agent_exclusive_discount_amount, booking.currency) : "—"}</span></div>
+                    <div className="flex justify-between"><span className="text-slate/60">Commission</span><span className="text-ink">{booking.agent_markup_amount !== null ? formatMoney(booking.agent_markup_amount, booking.currency) : "—"}</span></div>
+                    <div className="flex justify-between"><span className="text-slate/60">Profit</span><span className="text-ink">{liveFinancials && liveFinancials.profit !== null ? formatMoney(liveFinancials.profit, booking.currency) : "—"}</span></div>
                     {transferBreakdown && (
-                      <div className="flex justify-between"><span className="text-slate/60">Трансфер ({transferBreakdown.transfer_name})</span><span className="text-ink">{formatMoney(transferBreakdown.total, transferBreakdown.currency)}</span></div>
+                      <div className="flex justify-between"><span className="text-slate/60">Transfer ({transferBreakdown.transfer_name})</span><span className="text-ink">{formatMoney(transferBreakdown.total, transferBreakdown.currency)}</span></div>
                     )}
                     {taxBreakdown && (
-                      <div className="flex justify-between"><span className="text-slate/60">{taxBreakdown.label || "Налог"}</span><span className="text-ink">{formatMoney(taxBreakdown.total, taxBreakdown.currency)}</span></div>
+                      <div className="flex justify-between"><span className="text-slate/60">{taxBreakdown.label || "Tax"}</span><span className="text-ink">{formatMoney(taxBreakdown.total, taxBreakdown.currency)}</span></div>
                     )}
-                    <div className="flex justify-between border-t border-ink/10 pt-1 font-medium"><span className="text-ink">Итого сейчас</span><span className="text-ink">{liveTotal !== null ? formatMoney(liveTotal, booking.currency) : "—"}</span></div>
+                    <div className="flex justify-between border-t border-ink/10 pt-1 font-medium"><span className="text-ink">Total now</span><span className="text-ink">{liveTotal !== null ? formatMoney(liveTotal, booking.currency) : "—"}</span></div>
                   </div>
                 )}
               </div>
@@ -750,7 +744,7 @@ export function InvoiceDetailModal({
 
             {mismatch && (
               <div className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-sm font-medium text-coral">
-                ⚠ Текущая цена бронирования отличается от зафиксированной в счёте — проверьте перед одобрением.
+                ⚠ The booking's current price differs from what's frozen in the invoice — review before approving.
               </div>
             )}
           </>

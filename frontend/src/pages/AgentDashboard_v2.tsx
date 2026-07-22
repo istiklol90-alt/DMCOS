@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import BookingsList from "./Reservations";
 
 // ---------------------------------------------------------------------------
@@ -100,18 +101,19 @@ function getFirstName(name: string): string {
   return name.trim().split(/\s+/)[0] || name;
 }
 
-function getRoleLabel(role: string): string {
+function getRoleLabel(role: string, t: (key: string) => string): string {
   const normalized = role.trim().toLowerCase();
-  if (normalized === "agent") return "Турагент";
-  if (normalized === "admin") return "Администратор";
-  if (normalized === "manager") return "Менеджер";
+  if (normalized === "agent") return t("roleLabel.agent");
+  if (normalized === "admin") return t("roleLabel.admin");
+  if (normalized === "manager") return t("roleLabel.manager");
   return role;
 }
 
 function DemoTag() {
+  const { t } = useTranslation("agentDashboard");
   return (
     <span className="rounded-full bg-slate/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate/60">
-      демо-данные
+      {t("demoTag")}
     </span>
   );
 }
@@ -120,64 +122,66 @@ function DemoTag() {
 // Mock data
 // ---------------------------------------------------------------------------
 
-const kpis = [
-  { label: "Активные брони", value: "128", delta: "+12% за месяц", positive: true },
-  { label: "Выручка (USD)", value: "$184,320", delta: "+8.4% за месяц", positive: true },
-  { label: "Ожидают оплаты", value: "14", delta: "+3 за неделю", positive: false },
-  { label: "Средний чек", value: "$1,440", delta: "−2.1% за месяц", positive: false },
-];
+function getKpis(t: (key: string) => string) {
+  return [
+    { label: t("kpi.activeBookings"), value: "128", delta: t("kpi.activeBookingsDelta"), positive: true },
+    { label: t("kpi.revenue"), value: "$184,320", delta: t("kpi.revenueDelta"), positive: true },
+    { label: t("kpi.pendingPayment"), value: "14", delta: t("kpi.pendingPaymentDelta"), positive: false },
+    { label: t("kpi.avgCheck"), value: "$1,440", delta: t("kpi.avgCheckDelta"), positive: false },
+  ];
+}
 
-const navGroups: {
+function getNavGroups(t: (key: string) => string): {
   label: string;
   items: { name: string; active: boolean; action?: "hotel-search" }[];
-}[] = [
-  {
-    label: "РАБОТА",
-    items: [
-      { name: "Дашборд", active: true },
-      { name: "Поиск и бронирование", active: false, action: "hotel-search" },
-      { name: "Бронирования", active: false },
-      { name: "Отели", active: false },
-      { name: "Клиенты", active: false },
-    ],
-  },
-  {
-    label: "ФИНАНСЫ",
-    items: [
-      { name: "Баланс", active: false },
-      { name: "Счета", active: false },
-      { name: "Комиссии", active: false },
-    ],
-  },
-  {
-    label: "ПОМОЩЬ",
-    items: [
-      { name: "AI Ассистент", active: false },
-      { name: "Поддержка", active: false },
-      { name: "Настройки", active: false },
-    ],
-  },
-];
+}[] {
+  return [
+    {
+      label: t("nav.groupWork"),
+      items: [
+        { name: t("nav.dashboard"), active: true },
+        { name: t("nav.hotelSearch"), active: false, action: "hotel-search" },
+        { name: t("nav.bookings"), active: false },
+        { name: t("nav.hotels"), active: false },
+        { name: t("nav.clients"), active: false },
+      ],
+    },
+    {
+      label: t("nav.groupFinance"),
+      items: [
+        { name: t("nav.balance"), active: false },
+        { name: t("nav.invoices"), active: false },
+        { name: t("nav.commissions"), active: false },
+      ],
+    },
+    {
+      label: t("nav.groupHelp"),
+      items: [
+        { name: t("nav.aiAssistant"), active: false },
+        { name: t("nav.support"), active: false },
+        { name: t("nav.settings"), active: false },
+      ],
+    },
+  ];
+}
 
-const checklist: { label: string; state: "done" | "waiting" | "todo" }[] = [
-  { label: "Заявка получена", state: "done" },
-  { label: "Проверка оплаты", state: "done" },
-  { label: "Подтверждение отеля", state: "waiting" },
-  { label: "Формирование ваучера", state: "todo" },
-  { label: "Отправка клиенту", state: "todo" },
-];
+function getChecklist(t: (key: string) => string): { label: string; state: "done" | "waiting" | "todo" }[] {
+  return [
+    { label: t("checklist.requestReceived"), state: "done" },
+    { label: t("checklist.paymentCheck"), state: "done" },
+    { label: t("checklist.hotelConfirmation"), state: "waiting" },
+    { label: t("checklist.voucherGeneration"), state: "todo" },
+    { label: t("checklist.sendToClient"), state: "todo" },
+  ];
+}
 
-const chatMessages = [
-  {
-    from: "ai" as const,
-    text: "Здравствуйте! Оплата по брони BR-10432 (Velaa Private Island) должна поступить завтра. Отправить клиенту напоминание?",
-  },
-  { from: "user" as const, text: "Да, отправь, пожалуйста" },
-  {
-    from: "ai" as const,
-    text: "Готово ✅ Напоминание отправлено Rustam Aliyev в WhatsApp и на email.",
-  },
-];
+function getChatMessages(t: (key: string) => string) {
+  return [
+    { from: "ai" as const, text: t("chat.message1") },
+    { from: "user" as const, text: t("chat.message2") },
+    { from: "ai" as const, text: t("chat.message3") },
+  ];
+}
 
 // ---------------------------------------------------------------------------
 // Page
@@ -188,6 +192,7 @@ type AgentDashboard_v2Props = {
 };
 
 function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) {
+  const { t } = useTranslation("agentDashboard");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [user, setUser] = useState<SessionUser | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -206,7 +211,7 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
     }
 
     if (role !== "Agent" && role !== "agent") {
-      alert("⛔ Доступ запрещен! Только для агентов.");
+      alert(t("accessDenied"));
       window.location.href = "/";
       return;
     }
@@ -222,6 +227,11 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
     return <div className="min-h-screen bg-sand" />;
   }
 
+  const kpis = getKpis(t);
+  const navGroups = getNavGroups(t);
+  const checklist = getChecklist(t);
+  const chatMessages = getChatMessages(t);
+
   return (
     <div className="min-h-screen bg-sand font-sans text-slate flex">
       {/* Mobile top bar */}
@@ -234,7 +244,7 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
           type="button"
           onClick={() => setMobileNavOpen(true)}
           className="text-white/90 p-2 -mr-2"
-          aria-label="Открыть меню"
+          aria-label={t("mobileNav.openMenu")}
         >
           <IconMenu />
         </button>
@@ -255,7 +265,7 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
             type="button"
             onClick={() => setMobileNavOpen(false)}
             className="text-white/70 p-1 md:hidden"
-            aria-label="Закрыть меню"
+            aria-label={t("mobileNav.closeMenu")}
           >
             <IconX />
           </button>
@@ -296,7 +306,7 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
           <div className="min-w-0">
             <p className="truncate text-sm font-medium text-white">{user.name}</p>
             <p className="truncate text-xs text-white/50">
-              {getRoleLabel(user.role)} · {user.email}
+              {getRoleLabel(user.role, t)} · {user.email}
             </p>
           </div>
         </div>
@@ -305,7 +315,7 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
       {mobileNavOpen && (
         <button
           type="button"
-          aria-label="Закрыть меню"
+          aria-label={t("mobileNav.closeMenu")}
           onClick={() => setMobileNavOpen(false)}
           className="fixed inset-0 z-30 bg-ink/50 md:hidden"
         />
@@ -316,12 +326,12 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
         {/* Header */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-xs font-semibold tracking-widest text-coral">ПАНЕЛЬ АГЕНТА</p>
+            <p className="text-xs font-semibold tracking-widest text-coral">{t("header.panelLabel")}</p>
             <h1 className="mt-1 font-display text-3xl font-semibold text-ink sm:text-4xl">
-              Добрый день, {getFirstName(user.name)}!
+              {t("header.greeting", { name: getFirstName(user.name) })}
             </h1>
             <p className="mt-1 text-sm text-slate/70">
-              Сегодня 4 июля — у вас 5 активных броней и 2 требуют внимания.
+              {t("header.summary")}
             </p>
           </div>
           <button
@@ -329,7 +339,7 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
             className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-xl bg-coral px-4 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 sm:self-auto"
           >
             <IconPlus />
-            Новое бронирование
+            {t("header.newBooking")}
           </button>
         </div>
 
@@ -340,22 +350,22 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
               <IconSparkle className="w-4 h-4" />
             </span>
             <p className="text-sm leading-relaxed text-white/90">
-              <span className="font-medium text-white">AI заметил:</span> бронирование в{" "}
-              <span className="font-medium">Rixos Premium Belek</span> подтверждено отелем, а оплата по{" "}
-              <span className="font-medium">Velaa Private Island</span> должна поступить завтра.
+              <span className="font-medium text-white">{t("aiInsight.noticedLabel")}</span> {t("aiInsight.part1")}{" "}
+              <span className="font-medium">Rixos Premium Belek</span> {t("aiInsight.part2")}{" "}
+              <span className="font-medium">Velaa Private Island</span> {t("aiInsight.part3")}
             </p>
           </div>
           <button
             type="button"
             className="shrink-0 self-start rounded-lg border border-white/25 px-3.5 py-2 text-xs font-medium text-white/90 transition-colors hover:bg-white/10 sm:self-auto"
           >
-            Посмотреть детали
+            {t("aiInsight.viewDetails")}
           </button>
         </div>
 
         {/* KPI cards */}
         <div className="mt-6 flex items-center gap-2">
-          <h2 className="font-display text-lg font-semibold text-ink">Обзор</h2>
+          <h2 className="font-display text-lg font-semibold text-ink">{t("overview.title")}</h2>
           <DemoTag />
         </div>
         <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -377,7 +387,7 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
 
         {/* Real bookings — scoped to this agent only, via GET /agents/{id}/bookings */}
         <div className="mt-6">
-          <h2 className="mb-3 font-display text-lg font-semibold text-ink">Мои бронирования</h2>
+          <h2 className="mb-3 font-display text-lg font-semibold text-ink">{t("bookingsSection.title")}</h2>
           <BookingsList
             scope={{ type: "agent", agentId: user.id }}
             permissions={{ canChangeDates: true, canEditGuestDetails: true, canEditFlights: true, canCancel: true, canClaim: false, canConfirmWithHotel: false }}
@@ -392,7 +402,7 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
               <span className="flex h-8 w-8 items-center justify-center rounded-full bg-coral text-white">
                 <IconSparkle className="w-4 h-4" />
               </span>
-              <h2 className="font-display text-lg font-semibold text-ink">AI Ассистент</h2>
+              <h2 className="font-display text-lg font-semibold text-ink">{t("chat.title")}</h2>
             </div>
 
             <div className="flex-1 space-y-3 px-5 py-4">
@@ -419,13 +429,13 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
             <div className="flex items-center gap-2 border-t border-ink/10 px-4 py-3">
               <input
                 type="text"
-                placeholder="Спросите что-нибудь у AI…"
+                placeholder={t("chat.inputPlaceholder")}
                 className="flex-1 rounded-lg border border-ink/10 bg-sand/60 px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:outline-none focus:ring-2 focus:ring-coral/40"
               />
               <button
                 type="button"
                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-coral text-white transition-transform hover:-translate-y-0.5"
-                aria-label="Отправить"
+                aria-label={t("chat.sendAriaLabel")}
               >
                 <IconSend />
               </button>
@@ -434,7 +444,7 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
 
           {/* Checklist */}
           <div className="rounded-2xl border border-ink/10 bg-white px-5 py-5">
-            <h2 className="font-display text-lg font-semibold text-ink">Этапы согласования</h2>
+            <h2 className="font-display text-lg font-semibold text-ink">{t("checklistPanel.title")}</h2>
             <p className="mt-1 text-xs text-slate/50">Velaa Private Island · BR-10432</p>
 
             <ul className="mt-4 space-y-3">

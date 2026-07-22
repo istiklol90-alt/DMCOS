@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { fetchJson, formatMoney, formatDate, StatusBadge } from "./financeShared";
 
 // ---------------------------------------------------------------------------
-// "Кэшбэк" -- Decision 088 restructure: promoted to its own top-level tab
+// "Cashback" -- Decision 088 restructure: promoted to its own top-level tab
 // for consistency ("each its own distinct section"), but deliberately keeps
 // its existing simple full-list UI -- hotel count doesn't have the same
 // scale problem agent count does, so no search-first treatment is needed
@@ -62,7 +62,7 @@ const Cashback = () => {
         await fetchJson<CashbackArrangement[]>(`/finance-engine/hotels/${hotelId}/cashback-arrangements`, token)
       );
     } catch (err: any) {
-      setArrangementsError(err.message || "Ошибка загрузки договорённостей");
+      setArrangementsError(err.message || "Failed to load arrangements");
     } finally {
       setArrangementsLoading(false);
     }
@@ -74,11 +74,11 @@ const Cashback = () => {
 
   async function handleAddArrangement() {
     if (!termsInput.trim()) {
-      setAddError("Укажите условия договорённости");
+      setAddError("Specify the arrangement terms");
       return;
     }
     if (!startDateInput) {
-      setAddError("Укажите дату начала");
+      setAddError("Specify a start date");
       return;
     }
     if (selectedHotelId === null) return;
@@ -105,7 +105,7 @@ const Cashback = () => {
       setThresholdInput("");
       await loadArrangements(selectedHotelId);
     } catch (err: any) {
-      setAddError(err.message || "Не удалось сохранить договорённость");
+      setAddError(err.message || "Failed to save arrangement");
     } finally {
       setSavingArrangement(false);
     }
@@ -135,18 +135,18 @@ const Cashback = () => {
             disabled={selectedHotelId === null}
             className="appearance-none rounded-lg border-0 bg-teal px-5 py-2.5 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
           >
-            Добавить договорённость
+            Add arrangement
           </button>
         </div>
 
-        {arrangementsLoading && <p className="mt-6 text-center text-sm text-slate/60">Загрузка...</p>}
-        {arrangementsError && <p className="mt-6 text-center text-sm text-red-600">Ошибка: {arrangementsError}</p>}
+        {arrangementsLoading && <p className="mt-6 text-center text-sm text-slate/60">Loading...</p>}
+        {arrangementsError && <p className="mt-6 text-center text-sm text-red-600">Error: {arrangementsError}</p>}
 
         {!arrangementsLoading && !arrangementsError && (
           <div className="mt-4 space-y-3">
             {arrangements.length === 0 ? (
               <p className="rounded-2xl border border-ink/10 bg-white px-5 py-10 text-center text-sm text-slate/50">
-                Договорённостей по кэшбэку для этого отеля пока нет
+                No cashback arrangements for this hotel yet
               </p>
             ) : (
               arrangements.map((a) => (
@@ -156,13 +156,13 @@ const Cashback = () => {
                     <StatusBadge status={a.status} />
                   </div>
                   <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate/70">
-                    {a.rebate_percentage !== null && <span>Ставка: {a.rebate_percentage}%</span>}
+                    {a.rebate_percentage !== null && <span>Rate: {a.rebate_percentage}%</span>}
                     {a.volume_threshold !== null && (
-                      <span>Порог: {formatMoney(a.volume_threshold, a.currency)}</span>
+                      <span>Threshold: {formatMoney(a.volume_threshold, a.currency)}</span>
                     )}
                     <span>
-                      С {formatDate(a.start_date)}
-                      {a.end_date ? ` по ${formatDate(a.end_date)}` : ""}
+                      From {formatDate(a.start_date)}
+                      {a.end_date ? ` to ${formatDate(a.end_date)}` : ""}
                     </span>
                   </div>
                 </div>
@@ -178,10 +178,10 @@ const Cashback = () => {
           onClick={() => setShowAddArrangement(false)}
         >
           <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-display text-lg font-semibold text-ink">Новая договорённость по кэшбэку</h3>
+            <h3 className="font-display text-lg font-semibold text-ink">New cashback arrangement</h3>
             <div className="mt-3 space-y-3">
               <textarea
-                placeholder="Условия (например: 5% возврат при обороте $1M)"
+                placeholder="Terms (e.g.: 5% rebate at $1M turnover)"
                 value={termsInput}
                 onChange={(e) => setTermsInput(e.target.value)}
                 rows={3}
@@ -190,14 +190,14 @@ const Cashback = () => {
               <div className="flex gap-2.5">
                 <input
                   type="number"
-                  placeholder="Ставка %"
+                  placeholder="Rate %"
                   value={rebateInput}
                   onChange={(e) => setRebateInput(e.target.value)}
                   className="w-1/2 appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
                 />
                 <input
                   type="number"
-                  placeholder="Порог оборота"
+                  placeholder="Turnover threshold"
                   value={thresholdInput}
                   onChange={(e) => setThresholdInput(e.target.value)}
                   className="w-1/2 appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
@@ -206,7 +206,7 @@ const Cashback = () => {
               <div className="flex gap-2.5">
                 <input
                   type="text"
-                  placeholder="Валюта"
+                  placeholder="Currency"
                   value={currencyInput}
                   onChange={(e) => setCurrencyInput(e.target.value)}
                   className="w-1/3 appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
@@ -233,14 +233,14 @@ const Cashback = () => {
                 disabled={savingArrangement}
                 className="flex-1 appearance-none rounded-lg border-0 bg-coral px-5 py-2.5 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
               >
-                {savingArrangement ? "Сохранение..." : "Сохранить"}
+                {savingArrangement ? "Saving..." : "Save"}
               </button>
               <button
                 type="button"
                 onClick={() => setShowAddArrangement(false)}
                 className="appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm font-medium text-slate/70 transition-colors hover:bg-sand/60"
               >
-                Отмена
+                Cancel
               </button>
             </div>
           </div>

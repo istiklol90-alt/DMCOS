@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
+import i18n from "../i18n/i18n";
 import { API_URL } from "../config";
+
+function localeOf(lang: string): string {
+  return lang === "en" ? "en-US" : "ru-RU";
+}
 
 // ---------------------------------------------------------------------------
 // Tiny inline icons (same approach as AgentDashboard_v2.tsx — no icon
@@ -281,51 +288,37 @@ function getInitials(name: string): string {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-// Russian plural forms for the transfer price breakdown — count-driven,
-// since the actual searched party composition (not a generic per-person
-// rate) is what needs to read naturally in any of 1 / 2-4 / 5+ shapes.
-function pluralAdults(n: number): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return "взрослый";
-  return "взрослых";
-}
-
-function pluralChildren(n: number): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return "ребёнок";
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return "ребёнка";
-  return "детей";
-}
-
-function pluralInfants(n: number): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return "младенец";
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return "младенца";
-  return "младенцев";
-}
-
 // A transfer-price bucket line (adults/children/infants) must always reflect
 // the ACTUAL discounted amount, never the raw undiscounted catalog price —
 // showing undiscounted math next to a "included free"/discounted total is a
 // contradictory, misleading breakdown. When a bucket's true discounted total
 // is exactly 0, it gets the same explicit "included free" wording as the
 // overall total badge, instead of a "2 × $0 = $0" line that reads as a glitch.
-function renderTransferBucketLine(count: number, label: string, discountedTotal: number, currency: string | null) {
+// Russian noun forms (взрослый/взрослых, ребёнок/ребёнка/детей,
+// младенец/младенца/младенцев) are handled by i18next's own Intl.PluralRules
+// -based one/few/many/other categories via the labelKey's own _one/_few/_many
+// suffixes in reservations.json -- no manual mod10/mod100 logic needed.
+function renderTransferBucketLine(
+  t: TFunction,
+  lang: string,
+  count: number,
+  labelKey: string,
+  discountedTotal: number,
+  currency: string | null
+) {
+  const label = t(labelKey, { count });
   if (discountedTotal === 0) {
     return (
       <>
-        {count} {label}: Включено бесплатно
+        {label}: {t("roomTypeCard.includedFree")}
       </>
     );
   }
   const perUnit = discountedTotal / count;
+  const locale = localeOf(lang);
   return (
     <>
-      {count} {label} × {currency} {perUnit.toLocaleString("ru-RU")} = {currency}{" "}
-      {discountedTotal.toLocaleString("ru-RU")}
+      {label} × {currency} {perUnit.toLocaleString(locale)} = {currency} {discountedTotal.toLocaleString(locale)}
     </>
   );
 }
@@ -362,7 +355,9 @@ async function fetchJson<T>(path: string, token: string, init?: RequestInit): Pr
     },
   });
   if (!response.ok) {
-    let detail = `Ошибка запроса (${response.status})`;
+    // Module-scope helper -- uses the shared i18n singleton's t() directly,
+    // same pattern as Reservations.tsx's fetchJson.
+    let detail = i18n.t("hotelSearch:errors.requestError", { status: response.status });
     try {
       const body = await response.json();
       if (body?.detail) detail = body.detail;
@@ -389,6 +384,7 @@ function Counter({
   min: number;
   onChange: (value: number) => void;
 }) {
+  const { t } = useTranslation("hotelSearch");
   return (
     <div className="flex items-center justify-between gap-3">
       <span className="text-xs text-slate/70">{label}</span>
@@ -397,7 +393,7 @@ function Counter({
           type="button"
           onClick={() => onChange(Math.max(min, value - 1))}
           disabled={value <= min}
-          aria-label={`Уменьшить: ${label}`}
+          aria-label={t("counter.decreaseAriaLabel", { label })}
           className="flex h-6 w-6 items-center justify-center rounded-md border border-ink/15 text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
         >
           <IconMinus />
@@ -406,7 +402,7 @@ function Counter({
         <button
           type="button"
           onClick={() => onChange(value + 1)}
-          aria-label={`Увеличить: ${label}`}
+          aria-label={t("counter.increaseAriaLabel", { label })}
           className="flex h-6 w-6 items-center justify-center rounded-md border border-ink/15 text-ink transition-colors hover:bg-sand"
         >
           <IconPlus />
@@ -422,8 +418,6 @@ function Counter({
 // a heavy new install. checkIn/checkOut stay plain "YYYY-MM-DD" strings,
 // the same shape every other fetch in this file already expects.
 // ---------------------------------------------------------------------------
-
-const WEEKDAY_LABELS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
 function toISODate(d: Date): string {
   const y = d.getFullYear();
@@ -452,9 +446,10 @@ function buildMonthGrid(year: number, month: number): (Date | null)[] {
   return cells;
 }
 
-function formatDateRangeLabel(checkIn: string, checkOut: string): string {
-  if (!checkIn && !checkOut) return "Выберите даты";
-  const fmt = (iso: string) => parseISODate(iso).toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+function formatDateRangeLabel(t: TFunction, lang: string, checkIn: string, checkOut: string): string {
+  if (!checkIn && !checkOut) return t("dateRangePicker.selectDates");
+  const locale = localeOf(lang);
+  const fmt = (iso: string) => parseISODate(iso).toLocaleDateString(locale, { day: "numeric", month: "short" });
   if (checkIn && checkOut) return `${fmt(checkIn)} – ${fmt(checkOut)}`;
   return `${fmt(checkIn || checkOut)} – ?`;
 }
@@ -465,12 +460,16 @@ function formatDateRangeLabel(checkIn: string, checkOut: string): string {
 // the parent, passed in already-resolved, so both panels behave
 // identically with zero duplicated logic.
 function MonthGrid({
+  t,
+  lang,
   year,
   month,
   checkInDate,
   checkOutDate,
   onDayClick,
 }: {
+  t: TFunction;
+  lang: string;
   year: number;
   month: number;
   checkInDate: Date | null;
@@ -478,13 +477,15 @@ function MonthGrid({
   onDayClick: (day: Date) => void;
 }) {
   const cells = buildMonthGrid(year, month);
-  const monthLabel = new Date(year, month, 1).toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
+  const locale = localeOf(lang);
+  const monthLabel = new Date(year, month, 1).toLocaleDateString(locale, { month: "long", year: "numeric" });
+  const weekdayLabels = t("dateRangePicker.weekdays", { returnObjects: true }) as string[];
 
   return (
     <div className="w-64">
       <p className="text-center text-sm font-medium capitalize text-ink">{monthLabel}</p>
       <div className="mt-3 grid grid-cols-7 gap-y-1 text-center text-[11px] font-medium text-slate/40">
-        {WEEKDAY_LABELS.map((w) => (
+        {weekdayLabels.map((w) => (
           <span key={w}>{w}</span>
         ))}
       </div>
@@ -525,11 +526,21 @@ export function DateRangePicker({
   checkIn,
   checkOut,
   onChange,
+  forceLang,
 }: {
   checkIn: string;
   checkOut: string;
   onChange: (checkIn: string, checkOut: string) => void;
+  // Decision (agent i18n): admin-only callers (e.g. PriceCalculator.tsx)
+  // pass forceLang="en" for deterministic English regardless of whatever
+  // language an agent elsewhere has the global i18n toggle set to.
+  // Agent-facing callers (HotelSearch.tsx, Reservations.tsx) omit this and
+  // follow the ambient i18n.language normally.
+  forceLang?: "en" | "ru";
 }) {
+  const { t: ambientT, i18n: i18nInstance } = useTranslation("hotelSearch");
+  const lang = forceLang ?? i18nInstance.language;
+  const t = forceLang ? i18n.getFixedT(forceLang, "hotelSearch") : ambientT;
   const [open, setOpen] = useState(false);
   const [viewDate, setViewDate] = useState(() => (checkIn ? parseISODate(checkIn) : new Date()));
   const containerRef = useRef<HTMLDivElement>(null);
@@ -582,7 +593,7 @@ export function DateRangePicker({
       >
         <IconCalendar className="w-4 h-4 shrink-0 text-slate/50" />
         <span className={checkIn || checkOut ? "text-slate" : "text-slate/40"}>
-          {formatDateRangeLabel(checkIn, checkOut)}
+          {formatDateRangeLabel(t, lang, checkIn, checkOut)}
         </span>
       </button>
 
@@ -591,13 +602,15 @@ export function DateRangePicker({
           <button
             type="button"
             onClick={() => setViewDate(new Date(year, month - 1, 1))}
-            aria-label="Предыдущий месяц"
+            aria-label={t("dateRangePicker.prevMonth")}
             className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink hover:bg-sand"
           >
             <IconChevronLeft />
           </button>
 
           <MonthGrid
+            t={t}
+            lang={lang}
             year={year}
             month={month}
             checkInDate={checkInDate}
@@ -605,6 +618,8 @@ export function DateRangePicker({
             onDayClick={handleDayClick}
           />
           <MonthGrid
+            t={t}
+            lang={lang}
             year={nextMonthDate.getFullYear()}
             month={nextMonthDate.getMonth()}
             checkInDate={checkInDate}
@@ -615,7 +630,7 @@ export function DateRangePicker({
           <button
             type="button"
             onClick={() => setViewDate(new Date(year, month + 1, 1))}
-            aria-label="Следующий месяц"
+            aria-label={t("dateRangePicker.nextMonth")}
             className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink hover:bg-sand"
           >
             <IconChevronRight />
@@ -642,6 +657,7 @@ function GuestDetailsForm({
   onCancel: () => void;
   onSubmit: (values: GuestFormValues) => void;
 }) {
+  const { t } = useTranslation("hotelSearch");
   const [values, setValues] = useState<GuestFormValues>({
     firstName: "",
     lastName: "",
@@ -668,13 +684,13 @@ function GuestDetailsForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-3 border-t border-ink/10 bg-sand/30 p-4">
       <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
-        Данные ведущего гостя
+        {t("guestDetailsForm.title")}
       </p>
 
       <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
         <input
           type="text"
-          placeholder="Имя *"
+          placeholder={t("guestDetailsForm.firstNamePlaceholder")}
           value={values.firstName}
           onChange={(e) => set("firstName", e.target.value)}
           required
@@ -682,7 +698,7 @@ function GuestDetailsForm({
         />
         <input
           type="text"
-          placeholder="Фамилия *"
+          placeholder={t("guestDetailsForm.lastNamePlaceholder")}
           value={values.lastName}
           onChange={(e) => set("lastName", e.target.value)}
           required
@@ -690,42 +706,42 @@ function GuestDetailsForm({
         />
         <input
           type="text"
-          placeholder="Гражданство"
+          placeholder={t("guestDetailsForm.nationalityPlaceholder")}
           value={values.nationality}
           onChange={(e) => set("nationality", e.target.value)}
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
         />
         <input
           type="date"
-          placeholder="Дата рождения"
+          placeholder={t("guestDetailsForm.dateOfBirthPlaceholder")}
           value={values.dateOfBirth}
           onChange={(e) => set("dateOfBirth", e.target.value)}
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
         />
         <input
           type="text"
-          placeholder="Номер паспорта"
+          placeholder={t("guestDetailsForm.passportNumberPlaceholder")}
           value={values.passportNumber}
           onChange={(e) => set("passportNumber", e.target.value)}
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
         />
         <input
           type="date"
-          placeholder="Срок действия паспорта"
+          placeholder={t("guestDetailsForm.passportExpiryPlaceholder")}
           value={values.passportExpiry}
           onChange={(e) => set("passportExpiry", e.target.value)}
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
         />
         <input
           type="text"
-          placeholder="Номер рейса прилёта"
+          placeholder={t("guestDetailsForm.arrivalFlightNumberPlaceholder")}
           value={values.arrivalFlightNumber}
           onChange={(e) => set("arrivalFlightNumber", e.target.value)}
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
         />
         <input
           type="text"
-          placeholder="Номер рейса вылета"
+          placeholder={t("guestDetailsForm.departureFlightNumberPlaceholder")}
           value={values.departureFlightNumber}
           onChange={(e) => set("departureFlightNumber", e.target.value)}
           className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
@@ -745,7 +761,7 @@ function GuestDetailsForm({
           disabled={!canSubmit}
           className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
         >
-          {submitting ? "Отправка..." : "Подтвердить бронирование"}
+          {submitting ? t("guestDetailsForm.sending") : t("guestDetailsForm.confirmBooking")}
         </button>
         <button
           type="button"
@@ -753,7 +769,7 @@ function GuestDetailsForm({
           disabled={submitting}
           className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Отмена
+          {t("guestDetailsForm.cancel")}
         </button>
       </div>
     </form>
@@ -793,6 +809,8 @@ function RoomTypeCard({
   checkIn: string;
   checkOut: string;
 }) {
+  const { t, i18n: i18nInstance } = useTranslation("hotelSearch");
+  const lang = i18nInstance.language;
   const [selectedMealCode, setSelectedMealCode] = useState<string | null>(null);
   const [selectedTransferType, setSelectedTransferType] = useState<string | null>(null);
   const [bookingFormOpen, setBookingFormOpen] = useState(false);
@@ -847,7 +865,7 @@ function RoomTypeCard({
     } catch (err) {
       setNightlyError((prev) => ({
         ...prev,
-        [opt.mealCode]: err instanceof Error ? err.message : "Не удалось загрузить цены по ночам",
+        [opt.mealCode]: err instanceof Error ? err.message : t("roomTypeCard.nightlyLoadFailed"),
       }));
     } finally {
       setNightlyLoading((prev) => ({ ...prev, [opt.mealCode]: false }));
@@ -870,9 +888,7 @@ function RoomTypeCard({
     const token = localStorage.getItem("token");
     if (!token || !selectedMealCode) return;
     if (transferRequired && transferOptions.length === 0) {
-      setSubmitError(
-        "Контракт требует трансфер, но ни один вариант трансфера не настроен — обратитесь к администратору контракта."
-      );
+      setSubmitError(t("roomTypeCard.transferRequiredError"));
       return;
     }
     if (transferRequired && !selectedTransferType) return;
@@ -922,13 +938,13 @@ function RoomTypeCard({
         guestWarning =
           guestErr instanceof Error
             ? guestErr.message
-            : "Не удалось сохранить данные гостя";
+            : t("roomTypeCard.guestSaveFailed");
       }
 
       setBookingResult({ bookingNumber: booking.booking_number, guestWarning });
       setBookingFormOpen(false);
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : "Не удалось создать бронирование");
+      setSubmitError(err instanceof Error ? err.message : t("roomTypeCard.bookingFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -939,7 +955,7 @@ function RoomTypeCard({
       <div className="flex items-center gap-4 p-4">
         <div className="min-w-0 flex-1">
           <h4 className="font-display text-base font-semibold text-ink">{rt.room_name}</h4>
-          <p className="mt-0.5 text-xs text-slate/50">До {rt.max_occupancy} гостей</p>
+          <p className="mt-0.5 text-xs text-slate/50">{t("roomTypeCard.maxGuests", { count: rt.max_occupancy })}</p>
         </div>
 
         <div className="flex shrink-0 items-center gap-3">
@@ -947,15 +963,15 @@ function RoomTypeCard({
             <span className="text-xs font-medium text-slate/50">{rt.priceError}</span>
           ) : cheapest?.price && cheapestPerNight != null ? (
             <p className="text-right">
-              <span className="text-xs text-slate/50">от</span>{" "}
+              <span className="text-xs text-slate/50">{t("roomTypeCard.from")}</span>{" "}
               <span className="font-mono text-base font-semibold text-ink">
                 {cheapest.price.currency}{" "}
-                {cheapestPerNight.toLocaleString("ru-RU", { maximumFractionDigits: 0 })}
+                {cheapestPerNight.toLocaleString(localeOf(lang), { maximumFractionDigits: 0 })}
               </span>{" "}
-              <span className="text-xs text-slate/50">/ночь</span>
+              <span className="text-xs text-slate/50">{t("roomTypeCard.perNight")}</span>
             </p>
           ) : (
-            <span className="text-xs font-medium text-slate/50">Цены недоступны</span>
+            <span className="text-xs font-medium text-slate/50">{t("roomTypeCard.pricesUnavailable")}</span>
           )}
 
           {!rt.priceError && rt.options.length > 0 && (
@@ -964,7 +980,7 @@ function RoomTypeCard({
               onClick={onToggle}
               className="rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand"
             >
-              {expanded ? "Скрыть тариф" : "Показать тариф"}
+              {expanded ? t("roomTypeCard.hideRate") : t("roomTypeCard.showRate")}
             </button>
           )}
         </div>
@@ -992,17 +1008,17 @@ function RoomTypeCard({
                         <div className="text-right">
                           <p className="font-mono text-sm font-semibold text-ink">
                             {opt.price.currency}{" "}
-                            {perNight!.toLocaleString("ru-RU", { maximumFractionDigits: 0 })}
-                            <span className="ml-1 text-xs font-normal text-slate/50">/ ночь</span>
+                            {perNight!.toLocaleString(localeOf(lang), { maximumFractionDigits: 0 })}
+                            <span className="ml-1 text-xs font-normal text-slate/50">{t("roomTypeCard.perNight")}</span>
                           </p>
                           <p className="text-[11px] text-slate/50">
-                            Итого за {opt.price.nights} ноч.: {opt.price.currency}{" "}
-                            {opt.agentPrice.agent_room_total.toLocaleString("ru-RU")}
+                            {t("roomTypeCard.totalForNights", { count: opt.price.nights })} {opt.price.currency}{" "}
+                            {opt.agentPrice.agent_room_total.toLocaleString(localeOf(lang))}
                           </p>
                         </div>
                       ) : (
                         <span className="text-xs font-medium text-slate/50">
-                          {opt.priceError ?? "Цена недоступна"}
+                          {opt.priceError ?? t("roomTypeCard.priceUnavailable")}
                         </span>
                       )}
                       <button
@@ -1013,7 +1029,7 @@ function RoomTypeCard({
                           isSelected ? "bg-coral text-white" : "bg-ink text-white"
                         }`}
                       >
-                        {isSelected ? "Выбрано" : "Выбрать"}
+                        {isSelected ? t("roomTypeCard.selected") : t("roomTypeCard.select")}
                       </button>
                     </div>
                   </div>
@@ -1025,13 +1041,13 @@ function RoomTypeCard({
                         onClick={() => toggleNightly(opt)}
                         className="appearance-none border-0 bg-transparent p-0 text-xs font-medium text-teal underline decoration-dotted hover:text-teal/70"
                       >
-                        {isNightlyOpen ? "Скрыть цены по ночам" : "Показать цены по ночам"}
+                        {isNightlyOpen ? t("roomTypeCard.hideNightlyPrices") : t("roomTypeCard.showNightlyPrices")}
                       </button>
 
                       {isNightlyOpen && (
                         <div className="mt-1.5 rounded-lg border border-ink/10 bg-sand/30 p-2.5">
                           {nightlyLoading[opt.mealCode] && (
-                            <p className="text-xs text-slate/50">Загрузка...</p>
+                            <p className="text-xs text-slate/50">{t("roomTypeCard.loading")}</p>
                           )}
                           {nightlyError[opt.mealCode] && (
                             <p className="text-xs text-red-600">{nightlyError[opt.mealCode]}</p>
@@ -1044,7 +1060,7 @@ function RoomTypeCard({
                                   className="flex items-center justify-between gap-3 text-xs text-slate/70"
                                 >
                                   <span>
-                                    {new Date(n.date).toLocaleDateString("ru-RU")}
+                                    {new Date(n.date).toLocaleDateString(localeOf(lang))}
                                     {n.discount_applied && (
                                       <span className="ml-1.5 inline-flex items-center rounded-full bg-teal/15 px-1.5 py-0.5 text-[10px] font-medium text-teal">
                                         -{n.discount_percent}%
@@ -1052,7 +1068,8 @@ function RoomTypeCard({
                                     )}
                                   </span>
                                   <span className="font-mono font-medium text-ink">
-                                    {opt.price!.currency} {n.final_price.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}
+                                    {opt.price!.currency}{" "}
+                                    {n.final_price.toLocaleString(localeOf(lang), { maximumFractionDigits: 2 })}
                                   </span>
                                 </div>
                               ))}
@@ -1070,10 +1087,10 @@ function RoomTypeCard({
           {transferOptions.length > 0 && (
             <div className="border-t border-ink/5 px-4 py-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-medium text-slate/50">Трансфер</span>
+                <span className="text-xs font-medium text-slate/50">{t("roomTypeCard.transfer")}</span>
                 {transferRequired && (
                   <span className="rounded-full bg-coral/10 px-2 py-0.5 text-[11px] font-medium text-coral">
-                    Обязательный выбор
+                    {t("roomTypeCard.mandatoryChoice")}
                   </span>
                 )}
               </div>
@@ -1114,31 +1131,31 @@ function RoomTypeCard({
                             // its own explicit "included free" badge instead of a
                             // bare "USD 0" that's easy to misread as a glitch.
                             <span className="rounded-full bg-coral/10 px-2 py-0.5 text-[11px] font-medium text-coral">
-                              Включено бесплатно
+                              {t("roomTypeCard.includedFree")}
                             </span>
                           ) : (
                             <span className="font-mono text-xs font-semibold text-ink">
-                              {transferCurrency} {opt.price.total.toLocaleString("ru-RU")}
+                              {transferCurrency} {opt.price.total.toLocaleString(localeOf(lang))}
                             </span>
                           )
                         ) : (
                           <span className="text-[11px] font-medium text-slate/50">
-                            {opt.priceError ?? "Цена недоступна"}
+                            {opt.priceError ?? t("roomTypeCard.priceUnavailable")}
                           </span>
                         )}
                       </label>
                       <p className="pl-6 text-[11px] leading-relaxed text-slate/50">
-                        {renderTransferBucketLine(adults, pluralAdults(adults), adultTotal, transferCurrency)}
+                        {renderTransferBucketLine(t, lang, adults, "roomTypeCard.adultsLabel", adultTotal, transferCurrency)}
                         {childrenCount > 0 && (
                           <>
                             <br />
-                            {renderTransferBucketLine(childrenCount, pluralChildren(childrenCount), childTotal, transferCurrency)}
+                            {renderTransferBucketLine(t, lang, childrenCount, "roomTypeCard.childrenLabel", childTotal, transferCurrency)}
                           </>
                         )}
                         {infants > 0 && opt.option.price_infant != null && (
                           <>
                             <br />
-                            {renderTransferBucketLine(infants, pluralInfants(infants), infantTotal, transferCurrency)}
+                            {renderTransferBucketLine(t, lang, infants, "roomTypeCard.infantsLabel", infantTotal, transferCurrency)}
                           </>
                         )}
                       </p>
@@ -1152,14 +1169,18 @@ function RoomTypeCard({
           {mandatoryTax && (
             <div className="border-t border-ink/5 px-4 py-3">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-medium text-slate/50">{mandatoryTax.label ?? "Обязательный налог"}</span>
+                <span className="text-xs font-medium text-slate/50">
+                  {mandatoryTax.label ?? t("roomTypeCard.mandatoryTaxDefaultLabel")}
+                </span>
                 <span className="font-mono text-xs font-semibold text-ink">
-                  {mandatoryTax.currency} {mandatoryTax.total.toLocaleString("ru-RU")}
+                  {mandatoryTax.currency} {mandatoryTax.total.toLocaleString(localeOf(lang))}
                 </span>
               </div>
               <p className="pl-0 text-[11px] leading-relaxed text-slate/50">
-                {mandatoryTax.chargeable_guests} чел. × {mandatoryTax.currency}{" "}
-                {mandatoryTax.rate_per_person_per_night.toLocaleString("ru-RU")}/ночь × {mandatoryTax.nights} ноч.
+                {t("roomTypeCard.chargeableGuestsLabel", { count: mandatoryTax.chargeable_guests })} × {mandatoryTax.currency}{" "}
+                {mandatoryTax.rate_per_person_per_night.toLocaleString(localeOf(lang))}
+                {t("roomTypeCard.perNight")}{" "}
+                {t("roomTypeCard.nightsMultiplier", { count: mandatoryTax.nights })}
               </p>
             </div>
           )}
@@ -1168,20 +1189,21 @@ function RoomTypeCard({
             <div className="border-t border-ink/10 bg-sand/40 px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <span className="text-sm font-medium text-ink">
-                  Итого (проживание + трансфер{mandatoryTax ? " + налог" : ""})
+                  {t("roomTypeCard.grandTotalLabel", {
+                    taxSuffix: mandatoryTax ? t("roomTypeCard.taxSuffix") : "",
+                  })}
                 </span>
                 <span className="font-mono text-base font-semibold text-ink">
-                  {selectedMeal!.price!.currency} {grandTotal.toLocaleString("ru-RU")}
+                  {selectedMeal!.price!.currency} {grandTotal.toLocaleString(localeOf(lang))}
                 </span>
               </div>
 
               {bookingResult ? (
                 <div className="mt-3 rounded-lg bg-teal/10 px-3 py-2.5 text-sm text-teal">
-                  <p className="font-medium">Бронирование создано: № {bookingResult.bookingNumber}</p>
+                  <p className="font-medium">{t("roomTypeCard.bookingCreated", { number: bookingResult.bookingNumber })}</p>
                   {bookingResult.guestWarning && (
                     <p className="mt-1 text-xs font-medium text-coral">
-                      Данные гостя не сохранены: {bookingResult.guestWarning}. Пожалуйста, добавьте
-                      гостя вручную.
+                      {t("roomTypeCard.guestDataNotSaved", { error: bookingResult.guestWarning })}
                     </p>
                   )}
                 </div>
@@ -1203,7 +1225,7 @@ function RoomTypeCard({
                   onClick={() => setBookingFormOpen(true)}
                   className="mt-3 w-full rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
                 >
-                  Забронировать
+                  {t("roomTypeCard.bookNow")}
                 </button>
               )}
             </div>
@@ -1233,6 +1255,7 @@ function HotelCard({
   checkIn: string;
   checkOut: string;
 }) {
+  const { t } = useTranslation("hotelSearch");
   const [expandedRoomTypes, setExpandedRoomTypes] = useState<Set<number>>(new Set());
   const location = [hotel.island, hotel.city, hotel.country].filter(Boolean).join(", ");
 
@@ -1264,13 +1287,13 @@ function HotelCard({
             </div>
             {!hotel.contractId && (
               <span className="shrink-0 rounded-full bg-slate/10 px-2.5 py-1 text-xs font-medium text-slate/60">
-                Нет активного контракта
+                {t("hotelCard.noActiveContract")}
               </span>
             )}
           </div>
 
           {hotel.roomTypes.length === 0 ? (
-            <p className="mt-4 text-sm text-slate/50">Нет доступных типов номеров.</p>
+            <p className="mt-4 text-sm text-slate/50">{t("hotelCard.noRoomTypes")}</p>
           ) : (
             <div className="mt-4 space-y-3">
               {sortRoomTypesByPrice(hotel.roomTypes).map((rt) => (
@@ -1308,6 +1331,7 @@ type HotelSearchProps = {
 };
 
 function HotelSearch({ onBack }: HotelSearchProps) {
+  const { t } = useTranslation("hotelSearch");
   const [user, setUser] = useState<SessionUser | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
 
@@ -1325,7 +1349,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
     }
 
     if (role !== "Agent" && role !== "agent") {
-      alert("⛔ Доступ запрещен! Только для агентов.");
+      alert(t("page.accessDenied"));
       window.location.href = "/";
       return;
     }
@@ -1368,11 +1392,11 @@ function HotelSearch({ onBack }: HotelSearchProps) {
     setFormError(null);
 
     if (!checkIn || !checkOut) {
-      setFormError("Укажите даты заезда и выезда.");
+      setFormError(t("page.datesRequired"));
       return;
     }
     if (checkOut <= checkIn) {
-      setFormError("Дата выезда должна быть позже даты заезда.");
+      setFormError(t("page.checkoutAfterCheckin"));
       return;
     }
 
@@ -1444,7 +1468,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
                     );
                     return { option, price };
                   } catch (err) {
-                    return { option, priceError: err instanceof Error ? err.message : "Цена недоступна" };
+                    return { option, priceError: err instanceof Error ? err.message : t("page.priceUnavailable") };
                   }
                 })
               );
@@ -1477,7 +1501,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
           const roomTypeResults = await Promise.all(
             roomTypes.map(async (rt): Promise<RoomTypeResult> => {
               if (!contractId) {
-                return { ...rt, options: [], priceError: "Нет активного контракта" };
+                return { ...rt, options: [], priceError: t("page.noActiveContract") };
               }
               try {
                 const mealPlans = await fetchJson<ContractMealPlan[]>(
@@ -1485,7 +1509,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
                   token
                 );
                 if (mealPlans.length === 0) {
-                  return { ...rt, options: [], priceError: "Нет доступных тарифов для этого номера" };
+                  return { ...rt, options: [], priceError: t("page.noMealPlansAvailable") };
                 }
 
                 const options = await Promise.all(
@@ -1530,7 +1554,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
                       return {
                         mealCode: mp.meal_code,
                         mealName: mp.meal_name,
-                        priceError: err instanceof Error ? err.message : "Цена недоступна",
+                        priceError: err instanceof Error ? err.message : t("page.priceUnavailable"),
                       };
                     }
                   })
@@ -1541,7 +1565,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
                 return {
                   ...rt,
                   options: [],
-                  priceError: err instanceof Error ? err.message : "Не удалось загрузить тарифы",
+                  priceError: err instanceof Error ? err.message : t("page.ratesLoadFailed"),
                 };
               }
             })
@@ -1561,7 +1585,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
 
       setResults(withRooms);
     } catch (err) {
-      setSearchError(err instanceof Error ? err.message : "Не удалось загрузить список отелей.");
+      setSearchError(err instanceof Error ? err.message : t("page.hotelsLoadFailed"));
     } finally {
       setSearching(false);
       setHasSearched(true);
@@ -1587,13 +1611,13 @@ function HotelSearch({ onBack }: HotelSearchProps) {
           </div>
 
           <nav className="hidden items-center gap-1 sm:flex">
-            <span className="rounded-lg px-3.5 py-2 text-sm font-medium text-ink">Поиск</span>
+            <span className="rounded-lg px-3.5 py-2 text-sm font-medium text-ink">{t("page.navSearch")}</span>
             <button
               type="button"
               onClick={() => (onBack ? onBack() : (window.location.href = "/agent-dashboard"))}
               className="rounded-lg px-3.5 py-2 text-sm font-medium text-slate/60 transition-colors hover:bg-sand hover:text-ink"
             >
-              Мои бронирования
+              {t("page.navMyBookings")}
             </button>
           </nav>
 
@@ -1607,7 +1631,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
               onClick={() => (onBack ? onBack() : (window.location.href = "/agent-dashboard"))}
               className="text-sm font-medium text-teal hover:underline sm:hidden"
             >
-              ← Назад
+              {t("page.back")}
             </button>
           </div>
         </div>
@@ -1620,11 +1644,9 @@ function HotelSearch({ onBack }: HotelSearchProps) {
           its bottom edge via negative margin, matching the reference
           layout's prominence. */}
       <div className="bg-gradient-to-br from-ink via-ink to-coral/40 px-4 py-14 text-center sm:px-8 sm:py-20">
-        <p className="text-xs font-semibold tracking-widest text-coral">ПОИСК И БРОНИРОВАНИЕ</p>
-        <h1 className="mt-2 font-display text-3xl font-semibold text-white sm:text-5xl">Найти отель</h1>
-        <p className="mx-auto mt-3 max-w-xl text-sm text-white/70 sm:text-base">
-          Реальные тарифы напрямую из Contract Engine — сезоны, спецпредложения и трансферы уже учтены.
-        </p>
+        <p className="text-xs font-semibold tracking-widest text-coral">{t("page.heroTag")}</p>
+        <h1 className="mt-2 font-display text-3xl font-semibold text-white sm:text-5xl">{t("page.heroTitle")}</h1>
+        <p className="mx-auto mt-3 max-w-xl text-sm text-white/70 sm:text-base">{t("page.heroSubtitle")}</p>
       </div>
 
       <main className="mx-auto max-w-6xl px-4 pb-8 sm:px-8">
@@ -1634,21 +1656,19 @@ function HotelSearch({ onBack }: HotelSearchProps) {
         >
           <div className="flex flex-col divide-y divide-ink/10 sm:flex-row sm:items-stretch sm:divide-x sm:divide-y-0">
             <div className="flex flex-1 flex-col gap-1.5 px-5 py-4 sm:py-6">
-              <label className="text-xs font-medium text-slate/50">Направление / отель</label>
+              <label className="text-xs font-medium text-slate/50">{t("page.destinationLabel")}</label>
               <input
                 type="text"
                 value={destination}
                 onChange={(e) => setDestination(e.target.value)}
-                placeholder="Мальдивы, Rixos..."
+                placeholder={t("page.destinationPlaceholder")}
                 className="w-full bg-transparent text-base text-slate placeholder:text-slate/40 focus:outline-none"
               />
-              <p className="text-[11px] text-slate/40">
-                Поиск по названию пока не поддерживается Hotel Engine — показаны все отели.
-              </p>
+              <p className="text-[11px] text-slate/40">{t("page.destinationHint")}</p>
             </div>
 
             <div className="flex flex-col gap-1.5 pt-4 sm:w-64 sm:shrink-0 sm:py-6">
-              <label className="px-5 text-xs font-medium text-slate/50">Даты</label>
+              <label className="px-5 text-xs font-medium text-slate/50">{t("page.datesLabel")}</label>
               <DateRangePicker
                 checkIn={checkIn}
                 checkOut={checkOut}
@@ -1660,15 +1680,15 @@ function HotelSearch({ onBack }: HotelSearchProps) {
             </div>
 
             <div className="flex flex-col gap-1.5 px-5 py-4 sm:w-64 sm:shrink-0 sm:py-6">
-              <label className="text-xs font-medium text-slate/50">Гости</label>
+              <label className="text-xs font-medium text-slate/50">{t("page.guestsLabel")}</label>
               <div className="flex flex-col gap-2">
-                <Counter label="Взрослые" value={adults} min={1} onChange={setAdults} />
-                <Counter label="Дети" value={childAges.length} min={0} onChange={handleChildCountChange} />
+                <Counter label={t("page.adultsLabel")} value={adults} min={1} onChange={setAdults} />
+                <Counter label={t("page.childrenLabel")} value={childAges.length} min={0} onChange={handleChildCountChange} />
                 {childAges.length > 0 && (
                   <div className="flex flex-col gap-1.5 border-t border-ink/10 pt-2">
                     {childAges.map((age, i) => (
                       <div key={i} className="flex items-center justify-between gap-2">
-                        <span className="text-xs text-slate/70">Возраст ребёнка {i + 1}</span>
+                        <span className="text-xs text-slate/70">{t("page.childAgeLabel", { index: i + 1 })}</span>
                         <input
                           type="number"
                           min={0}
@@ -1690,7 +1710,7 @@ function HotelSearch({ onBack }: HotelSearchProps) {
                 disabled={searching}
                 className="w-full rounded-xl bg-coral px-8 py-3.5 text-base font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 sm:w-auto"
               >
-                {searching ? "Ищем..." : "Найти отели"}
+                {searching ? t("page.searching") : t("page.searchButton")}
               </button>
             </div>
           </div>
@@ -1706,12 +1726,12 @@ function HotelSearch({ onBack }: HotelSearchProps) {
         {searchError && (
           <div className="mt-6 flex items-center gap-2 rounded-xl bg-coral/10 px-5 py-4 text-sm font-medium text-coral">
             <IconAlert />
-            Не удалось загрузить данные: {searchError}
+            {t("page.searchErrorPrefix")} {searchError}
           </div>
         )}
 
         {!searching && hasSearched && !searchError && results.length === 0 && (
-          <p className="mt-6 text-sm text-slate/60">Отели не найдены.</p>
+          <p className="mt-6 text-sm text-slate/60">{t("page.noHotelsFound")}</p>
         )}
 
         <div className="mt-6 space-y-5">

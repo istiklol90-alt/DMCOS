@@ -1,0 +1,76 @@
+{
+  "demoTag": "демо-данные",
+  "accessDenied": "⛔ Доступ запрещен! Только для агентов.",
+  "roleLabel": {
+    "agent": "Турагент",
+    "admin": "Администратор",
+    "manager": "Менеджер"
+  },
+  "nav": {
+    "groupWork": "РАБОТА",
+    "groupFinance": "ФИНАНСЫ",
+    "groupHelp": "ПОМОЩЬ",
+    "dashboard": "Дашборд",
+    "hotelSearch": "Поиск и бронирование",
+    "bookings": "Бронирования",
+    "hotels": "Отели",
+    "clients": "Клиенты",
+    "balance": "Баланс",
+    "invoices": "Счета",
+    "commissions": "Комиссии",
+    "aiAssistant": "AI Ассистент",
+    "support": "Поддержка",
+    "settings": "Настройки"
+  },
+  "checklist": {
+    "requestReceived": "Заявка получена",
+    "paymentCheck": "Проверка оплаты",
+    "hotelConfirmation": "Подтверждение отеля",
+    "voucherGeneration": "Формирование ваучера",
+    "sendToClient": "Отправка клиенту"
+  },
+  "chat": {
+    "title": "AI Ассистент",
+    "message1": "Здравствуйте! Оплата по брони BR-10432 (Velaa Private Island) должна поступить завтра. Отправить клиенту напоминание?",
+    "message2": "Да, отправь, пожалуйста",
+    "message3": "Готово ✅ Напоминание отправлено Rustam Aliyev в WhatsApp и на email.",
+    "inputPlaceholder": "Спросите что-нибудь у AI…",
+    "sendAriaLabel": "Отправить"
+  },
+  "kpi": {
+    "activeBookings": "Активные брони",
+    "activeBookingsDelta": "+12% за месяц",
+    "revenue": "Выручка (USD)",
+    "revenueDelta": "+8.4% за месяц",
+    "pendingPayment": "Ожидают оплаты",
+    "pendingPaymentDelta": "+3 за неделю",
+    "avgCheck": "Средний чек",
+    "avgCheckDelta": "−2.1% за месяц"
+  },
+  "mobileNav": {
+    "openMenu": "Открыть меню",
+    "closeMenu": "Закрыть меню"
+  },
+  "header": {
+    "panelLabel": "ПАНЕЛЬ АГЕНТА",
+    "greeting": "Добрый день, {{name}}!",
+    "summary": "Сегодня 4 июля — у вас 5 активных броней и 2 требуют внимания.",
+    "newBooking": "Новое бронирование"
+  },
+  "aiInsight": {
+    "noticedLabel": "AI заметил:",
+    "part1": "бронирование в",
+    "part2": "подтверждено отелем, а оплата по",
+    "part3": "должна поступить завтра.",
+    "viewDetails": "Посмотреть детали"
+  },
+  "overview": {
+    "title": "Обзор"
+  },
+  "bookingsSection": {
+    "title": "Мои бронирования"
+  },
+  "checklistPanel": {
+    "title": "Этапы согласования"
+  }
+}

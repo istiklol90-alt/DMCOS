@@ -30,9 +30,9 @@ const statusBadgeClasses: Record<RegStatus, string> = {
 };
 
 const statusBadgeLabels: Record<RegStatus, string> = {
-  pending: "В ожидании",
-  approved: "Одобрено",
-  rejected: "Отклонено",
+  pending: "Pending",
+  approved: "Approved",
+  rejected: "Rejected",
 };
 
 const AdminPanel = () => {
@@ -61,7 +61,7 @@ const AdminPanel = () => {
       setRegistrations(regData);
 
     } catch (err) {
-      console.error("Ошибка загрузки:", err);
+      console.error("Load error:", err);
     } finally {
       setLoading(false);
     }
@@ -106,35 +106,35 @@ const AdminPanel = () => {
   };
 
   const handleApprove = async (id: number) => {
-    if (!window.confirm("Одобрить заявку?")) return;
+    if (!window.confirm("Approve this application?")) return;
     try {
       const token = localStorage.getItem("token");
       await fetch(`${API_URL}/agent-registrations/${id}/approve`, {
         method: "PUT",
         headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ comments: "Одобрено" })
+        body: JSON.stringify({ comments: "Approved" })
       });
-      alert("Заявка одобрена!");
+      alert("Application approved!");
       loadData();
     } catch (err) {
-      alert("Ошибка при одобрении");
+      alert("Error while approving");
     }
   };
 
   const handleReject = async (id: number) => {
-    const reason = prompt("Укажите причину отклонения:");
+    const reason = prompt("Enter the rejection reason:");
     if (!reason) return;
-    if (!window.confirm("Отклонить заявку?")) return;
+    if (!window.confirm("Reject this application?")) return;
     try {
       const token = localStorage.getItem("token");
       await fetch(`${API_URL}/agent-registrations/${id}/reject?comments=${encodeURIComponent(reason)}`, {
         method: "PUT",
         headers: { "Authorization": `Bearer ${token}` }
       });
-      alert("Заявка отклонена");
+      alert("Application rejected");
       loadData();
     } catch (err) {
-      alert("Ошибка при отклонении");
+      alert("Error while rejecting");
     }
   };
 
@@ -148,19 +148,19 @@ const AdminPanel = () => {
   };
 
   const statCards: { key: StatKey; label: string; value: number }[] = [
-    { key: "all", label: "Всего", value: stats.total },
-    { key: "agent", label: "Агенты", value: stats.agents },
-    { key: "admin", label: "Админы", value: stats.admins },
-    { key: "active", label: "Активные", value: stats.active },
-    { key: "never_logged", label: "Не входили", value: stats.neverLogged },
-    { key: "inactive", label: "Неактивные", value: stats.inactive },
+    { key: "all", label: "Total", value: stats.total },
+    { key: "agent", label: "Agents", value: stats.agents },
+    { key: "admin", label: "Admins", value: stats.admins },
+    { key: "active", label: "Active", value: stats.active },
+    { key: "never_logged", label: "Never logged in", value: stats.neverLogged },
+    { key: "inactive", label: "Inactive", value: stats.inactive },
   ];
 
   if (loading) {
     return (
       <div className="min-h-screen bg-sand px-5 py-4 font-sans text-slate">
         <div className="mx-auto max-w-[1400px]">
-          <p className="text-center text-sm text-slate/60">Загрузка...</p>
+          <p className="text-center text-sm text-slate/60">Loading...</p>
         </div>
       </div>
     );
@@ -176,7 +176,7 @@ const AdminPanel = () => {
             onClick={handleLogout}
             className="shrink-0 appearance-none rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-slate/70 transition-colors hover:bg-sand/60 hover:text-ink"
           >
-            Выход
+            Log out
           </button>
         </div>
 
@@ -198,7 +198,7 @@ const AdminPanel = () => {
 
         {activeTab === "users" && (
         <>
-        {/* ===== СТАТИСТИКА ===== */}
+        {/* ===== STATS ===== */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
           {statCards.map((card) => (
             <div
@@ -218,15 +218,15 @@ const AdminPanel = () => {
             </div>
           ))}
           <div className="rounded-2xl border border-ink/10 bg-white px-4 py-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Заявки</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Applications</p>
             <p className="mt-1 font-display text-2xl font-semibold text-ink">{stats.pending}</p>
           </div>
         </div>
 
-        {/* ===== ЗАЯВКИ ===== */}
+        {/* ===== APPLICATIONS ===== */}
         {pendingRegs.length > 0 && (
           <div className="mt-6">
-            <h3 className="mb-3 font-display text-lg font-semibold text-ink">Заявки на регистрацию</h3>
+            <h3 className="mb-3 font-display text-lg font-semibold text-ink">Registration applications</h3>
             <div className="space-y-3">
               {pendingRegs.map((reg: any) => (
                 <div key={reg.id} className="rounded-2xl border border-ink/10 bg-white p-5">
@@ -238,23 +238,23 @@ const AdminPanel = () => {
                     {getStatusBadge(reg.status)}
                   </div>
                   <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate/70">
-                    <span>Тел: {reg.phone}</span>
-                    <span>Страна: {reg.country}</span>
-                    <span>Город: {reg.city}</span>
-                    <span>Компания: {reg.company_name}</span>
+                    <span>Phone: {reg.phone}</span>
+                    <span>Country: {reg.country}</span>
+                    <span>City: {reg.city}</span>
+                    <span>Company: {reg.company_name}</span>
                   </div>
                   <div className="mt-4 flex gap-2.5">
                     <button
                       onClick={() => handleApprove(reg.id)}
                       className="appearance-none rounded-lg border-0 bg-teal px-5 py-2 text-sm font-medium text-white transition-transform hover:-translate-y-0.5"
                     >
-                      Одобрить
+                      Approve
                     </button>
                     <button
                       onClick={() => handleReject(reg.id)}
                       className="appearance-none rounded-lg border border-coral/40 bg-transparent px-5 py-2 text-sm font-medium text-coral transition-colors hover:bg-coral/10"
                     >
-                      Отклонить
+                      Reject
                     </button>
                   </div>
                 </div>
@@ -263,11 +263,11 @@ const AdminPanel = () => {
           </div>
         )}
 
-        {/* ===== ПОЛЬЗОВАТЕЛИ ===== */}
+        {/* ===== USERS ===== */}
         <div className="mt-6 flex flex-wrap items-center gap-2.5">
           <input
             type="text"
-            placeholder="Поиск по имени или email..."
+            placeholder="Search by name or email..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="min-w-[220px] flex-1 appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
@@ -277,7 +277,7 @@ const AdminPanel = () => {
               onClick={() => handleFilter("all")}
               className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-xs font-medium text-slate/70 transition-colors hover:bg-sand/60"
             >
-              Сбросить фильтр
+              Reset filter
             </button>
           )}
           {searchQuery && (
@@ -285,7 +285,7 @@ const AdminPanel = () => {
               onClick={() => setSearchQuery("")}
               className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-xs font-medium text-slate/70 transition-colors hover:bg-sand/60"
             >
-              Очистить поиск
+              Clear search
             </button>
           )}
         </div>
@@ -295,29 +295,29 @@ const AdminPanel = () => {
             <thead>
               <tr className="border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50">
                 <th className="px-5 py-3 font-medium">#</th>
-                <th className="px-5 py-3 font-medium">Имя</th>
-                <th className="px-5 py-3 font-medium">Email / Логин</th>
-                <th className="px-5 py-3 font-medium">Пароль</th>
-                <th className="px-5 py-3 font-medium">Роль</th>
-                <th className="px-5 py-3 font-medium">Статус</th>
-                <th className="px-5 py-3 font-medium">Последний вход</th>
+                <th className="px-5 py-3 font-medium">Name</th>
+                <th className="px-5 py-3 font-medium">Email / Login</th>
+                <th className="px-5 py-3 font-medium">Password</th>
+                <th className="px-5 py-3 font-medium">Role</th>
+                <th className="px-5 py-3 font-medium">Status</th>
+                <th className="px-5 py-3 font-medium">Last login</th>
               </tr>
             </thead>
             <tbody>
               {filteredUsers.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="px-5 py-10 text-center text-sm text-slate/50">
-                    Пользователи не найдены
+                    No users found
                   </td>
                 </tr>
               ) : (
                 filteredUsers.map((user: any, index: number) => {
                   const isAdmin = user.role?.toLowerCase() === "admin";
                   const statusLabel = !user.is_active
-                    ? "Неактивен"
+                    ? "Inactive"
                     : !user.last_login
-                      ? "Не входил"
-                      : "Активен";
+                      ? "Never logged in"
+                      : "Active";
                   const statusClasses = !user.is_active
                     ? "bg-slate/10 text-slate"
                     : !user.last_login
@@ -355,21 +355,21 @@ const AdminPanel = () => {
         </div>
 
         <div className="mt-4 flex flex-wrap gap-5 text-sm text-slate/60">
-          <span>Всего: <strong className="text-ink">{filteredUsers.length}</strong> пользователей</span>
+          <span>Total: <strong className="text-ink">{filteredUsers.length}</strong> users</span>
           {filterType !== "all" && (
             <span>
-              Фильтр: <strong className="text-ink">{
-                filterType === "agent" ? "Агенты" :
-                filterType === "admin" ? "Админы" :
-                filterType === "active" ? "Активные" :
-                filterType === "never_logged" ? "Не входили" :
-                filterType === "inactive" ? "Неактивные" : ""
+              Filter: <strong className="text-ink">{
+                filterType === "agent" ? "Agents" :
+                filterType === "admin" ? "Admins" :
+                filterType === "active" ? "Active" :
+                filterType === "never_logged" ? "Never logged in" :
+                filterType === "inactive" ? "Inactive" : ""
               }</strong>
             </span>
           )}
           {searchQuery && (
             <span>
-              Поиск: <strong className="text-ink">"{searchQuery}"</strong>
+              Search: <strong className="text-ink">"{searchQuery}"</strong>
             </span>
           )}
         </div>

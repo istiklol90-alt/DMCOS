@@ -4,7 +4,7 @@ import type { Invoice, AgentOption } from "./financeShared";
 import { fetchJson, formatMoney, AgentSearchSelect, invoiceProfit } from "./financeShared";
 
 // ---------------------------------------------------------------------------
-// "Баланс" -- Decision 088 restructure. Search-first agent + date-range
+// "Balance" -- Decision 088 restructure. Search-first agent + date-range
 // summary, plus the .xlsx export (Decision 086) now using AgentSearchSelect
 // instead of a full agent dropdown. Deliberately NOT AgentStatement
 // (Decision 077/078's locked net/sale/profit rollup, still no frontend) --
@@ -37,13 +37,13 @@ const Balance = () => {
       token
     )
       .then(setInvoices)
-      .catch((err: any) => setError(err.message || "Ошибка загрузки"))
+      .catch((err: any) => setError(err.message || "Failed to load"))
       .finally(() => setLoading(false));
   }, [selectedAgent, startDate, endDate]);
 
   async function handleExportXlsx() {
     if (!selectedAgent || !startDate || !endDate) {
-      setExportError("Выберите агента и период");
+      setExportError("Select an agent and a period");
       return;
     }
     const token = localStorage.getItem("token") || "";
@@ -55,7 +55,7 @@ const Balance = () => {
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (!response.ok) {
-        let detail = `Ошибка запроса (${response.status})`;
+        let detail = `Request error (${response.status})`;
         try {
           const body = await response.json();
           if (body?.detail) detail = body.detail;
@@ -74,7 +74,7 @@ const Balance = () => {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } catch (err: any) {
-      setExportError(err.message || "Не удалось скачать отчёт");
+      setExportError(err.message || "Failed to download report");
     } finally {
       setExporting(false);
     }
@@ -95,7 +95,7 @@ const Balance = () => {
   return (
     <div className="pb-10">
       <div className="mt-6 rounded-2xl border border-ink/10 bg-white p-4">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Баланс агента за период</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Agent balance for period</p>
         <div className="mt-2.5 flex flex-wrap items-end gap-2.5">
           <AgentSearchSelect selected={selectedAgent} onSelect={setSelectedAgent} />
           <input
@@ -117,7 +117,7 @@ const Balance = () => {
             disabled={exporting || !selectedAgent || !startDate || !endDate}
             className="appearance-none rounded-lg border-0 bg-coral px-5 py-2.5 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
           >
-            {exporting ? "Скачивание..." : "Скачать Excel"}
+            {exporting ? "Downloading..." : "Download Excel"}
           </button>
         </div>
         {exportError && <p className="mt-2 text-sm text-red-600">{exportError}</p>}
@@ -125,34 +125,34 @@ const Balance = () => {
 
       {!selectedAgent && (
         <p className="mt-6 rounded-2xl border border-ink/10 bg-white px-5 py-10 text-center text-sm text-slate/50">
-          Найдите агента и укажите период, чтобы увидеть баланс
+          Search for an agent and specify a period to see the balance
         </p>
       )}
       {selectedAgent && (!startDate || !endDate) && (
         <p className="mt-6 rounded-2xl border border-ink/10 bg-white px-5 py-10 text-center text-sm text-slate/50">
-          Укажите период (даты выставления счетов)
+          Specify a period (invoice issue dates)
         </p>
       )}
       {selectedAgent && startDate && endDate && loading && (
-        <p className="mt-6 text-center text-sm text-slate/60">Загрузка...</p>
+        <p className="mt-6 text-center text-sm text-slate/60">Loading...</p>
       )}
       {selectedAgent && startDate && endDate && error && (
-        <p className="mt-6 text-center text-sm text-red-600">Ошибка: {error}</p>
+        <p className="mt-6 text-center text-sm text-red-600">Error: {error}</p>
       )}
       {selectedAgent && startDate && endDate && !loading && !error && (
         <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div className="rounded-2xl border border-ink/10 bg-white px-4 py-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Счетов</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Invoices</p>
             <p className="mt-1 font-display text-2xl font-semibold text-ink">{invoices.length}</p>
           </div>
           <div className="rounded-2xl border border-ink/10 bg-white px-4 py-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Сумма</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Amount</p>
             <p className="mt-1 font-display text-2xl font-semibold text-ink">
               {invoices.length > 0 ? formatMoney(totalAmount, currency) : "—"}
             </p>
           </div>
           <div className="rounded-2xl border border-ink/10 bg-white px-4 py-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Прибыль</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Profit</p>
             <p className="mt-1 font-display text-2xl font-semibold text-ink">
               {invoices.length > 0 ? formatMoney(totalProfit, currency) : "—"}
             </p>

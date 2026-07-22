@@ -58,7 +58,7 @@ async function fetchJson<T>(path: string, token: string, init?: RequestInit): Pr
     },
   });
   if (!response.ok) {
-    let detail = `Ошибка запроса (${response.status})`;
+    let detail = `Request error (${response.status})`;
     try {
       const body = await response.json();
       if (body?.detail) detail = body.detail;
@@ -71,7 +71,7 @@ async function fetchJson<T>(path: string, token: string, init?: RequestInit): Pr
 }
 
 function formatDate(dateStr: string) {
-  return new Date(dateStr).toLocaleString("ru-RU");
+  return new Date(dateStr).toLocaleString("en-US");
 }
 
 function parseFieldValue(fieldData: string): string {
@@ -84,13 +84,13 @@ function parseFieldValue(fieldData: string): string {
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  uploaded: "Загружено",
-  processing: "Обработка",
-  extracted: "Извлечено",
-  under_review: "На проверке",
-  approved: "Одобрено",
-  rejected: "Отклонено",
-  failed: "Ошибка",
+  uploaded: "Uploaded",
+  processing: "Processing",
+  extracted: "Extracted",
+  under_review: "Under Review",
+  approved: "Approved",
+  rejected: "Rejected",
+  failed: "Failed",
 };
 
 const STATUS_CLASSES: Record<string, string> = {
@@ -104,9 +104,9 @@ const STATUS_CLASSES: Record<string, string> = {
 };
 
 const ENTITY_TYPE_LABELS: Record<string, string> = {
-  hotel_name: "Название отеля",
-  country: "Страна",
-  city: "Город",
+  hotel_name: "Hotel name",
+  country: "Country",
+  city: "City",
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -129,7 +129,7 @@ function ConfidenceBadge({ score }: { score: number }) {
         low ? "bg-coral/15 text-coral" : "bg-teal/15 text-teal"
       }`}
     >
-      {low ? "Низкая уверенность" : "Высокая уверенность"} ({score}%)
+      {low ? "Low confidence" : "High confidence"} ({score}%)
     </span>
   );
 }
@@ -137,9 +137,9 @@ function ConfidenceBadge({ score }: { score: number }) {
 function MockModeBanner() {
   return (
     <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-sm text-amber-800">
-      <span className="font-semibold">⚠ Тестовый режим (Mock):</span> данные не считаны из вашего файла,
-      используются фиксированные тестовые значения. Реальное распознавание PDF станет доступно после
-      подключения Claude API.
+      <span className="font-semibold">⚠ Test mode (Mock):</span> data was not read from your file — fixed
+      test values are used instead. Real PDF recognition will become available once the Claude API is
+      connected.
     </div>
   );
 }
@@ -220,7 +220,7 @@ const ContractsAI = () => {
       hotelsData.forEach((h) => (hotelMap[h.id] = h.hotel_name));
       setHotels(hotelMap);
     } catch (err: any) {
-      setListError(err.message || "Ошибка загрузки списка контрактов");
+      setListError(err.message || "Failed to load contract list");
     } finally {
       setListLoading(false);
     }
@@ -274,7 +274,7 @@ const ContractsAI = () => {
 
         await openReview(underReview.id);
       } catch (err: any) {
-        if (!cancelled) setProcessingError(err.message || "Не удалось обработать документ");
+        if (!cancelled) setProcessingError(err.message || "Failed to process document");
       }
     })();
 
@@ -301,13 +301,13 @@ const ContractsAI = () => {
       setReviewJob(job);
       setReviewFields(fields);
     } catch (err: any) {
-      setReviewError(err.message || "Не удалось загрузить данные для проверки");
+      setReviewError(err.message || "Failed to load review data");
     }
   }
 
   async function handleStartUpload() {
     if (!selectedFile) {
-      setUploadError("Выберите PDF-файл");
+      setUploadError("Select a PDF file");
       return;
     }
     setUploadSubmitting(true);
@@ -327,7 +327,7 @@ const ContractsAI = () => {
       setProcessingError(null);
       setMode("processing");
     } catch (err: any) {
-      setUploadError(err.message || "Не удалось создать задачу");
+      setUploadError(err.message || "Failed to create job");
     } finally {
       setUploadSubmitting(false);
     }
@@ -349,7 +349,7 @@ const ContractsAI = () => {
         setHotels((prev) => ({ ...prev, [hotel.id]: hotel.hotel_name }));
       }
     } catch (err: any) {
-      setReviewError(err.message || "Не удалось одобрить");
+      setReviewError(err.message || "Failed to approve");
     } finally {
       setGateSubmitting(false);
     }
@@ -358,7 +358,7 @@ const ContractsAI = () => {
   async function handleReject() {
     if (!reviewJob) return;
     if (rejectReason.trim().length < 2) {
-      setReviewError("Укажите причину отклонения (минимум 2 символа)");
+      setReviewError("Enter a rejection reason (minimum 2 characters)");
       return;
     }
     setGateSubmitting(true);
@@ -372,7 +372,7 @@ const ContractsAI = () => {
       setReviewJob(updated);
       setRejectOpen(false);
     } catch (err: any) {
-      setReviewError(err.message || "Не удалось отклонить");
+      setReviewError(err.message || "Failed to reject");
     } finally {
       setGateSubmitting(false);
     }
@@ -385,7 +385,7 @@ const ContractsAI = () => {
       <div>
         <div className="mt-6 flex items-center justify-between gap-3">
           <p className="text-sm text-slate/60">
-            Загрузка контрактов через ИИ — извлечение данных с проверкой человеком перед сохранением
+            AI-assisted contract upload — data extraction with human review before saving
             (Decision 035).
           </p>
           <button
@@ -398,30 +398,30 @@ const ContractsAI = () => {
             }}
             className="shrink-0 rounded-lg bg-coral px-4 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
           >
-            Загрузить контракт
+            Upload contract
           </button>
         </div>
 
-        {listLoading && <p className="mt-10 text-center text-sm text-slate/60">Загрузка...</p>}
-        {listError && <p className="mt-10 text-center text-sm text-red-600">Ошибка: {listError}</p>}
+        {listLoading && <p className="mt-10 text-center text-sm text-slate/60">Loading...</p>}
+        {listError && <p className="mt-10 text-center text-sm text-red-600">Error: {listError}</p>}
 
         {!listLoading && !listError && (
           <div className="mt-4 overflow-x-auto rounded-2xl border border-ink/10 bg-white">
             <table className="w-full min-w-[820px] border-collapse text-left text-sm">
               <thead>
                 <tr className="border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50">
-                  <th className="px-4 py-3 font-medium">Дата</th>
-                  <th className="px-4 py-3 font-medium">Файл</th>
-                  <th className="px-4 py-3 font-medium">Отель</th>
-                  <th className="px-4 py-3 font-medium">Провайдер</th>
-                  <th className="px-4 py-3 font-medium">Статус</th>
+                  <th className="px-4 py-3 font-medium">Date</th>
+                  <th className="px-4 py-3 font-medium">File</th>
+                  <th className="px-4 py-3 font-medium">Hotel</th>
+                  <th className="px-4 py-3 font-medium">Provider</th>
+                  <th className="px-4 py-3 font-medium">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {jobs.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-4 py-10 text-center text-sm text-slate/50">
-                      Контракты не загружены
+                      No contracts uploaded
                     </td>
                   </tr>
                 ) : (
@@ -465,17 +465,17 @@ const ContractsAI = () => {
   if (mode === "upload") {
     return (
       <div className="mx-auto mt-10 max-w-lg rounded-2xl border border-ink/10 bg-white p-8">
-        <h3 className="font-display text-lg font-semibold text-ink">Загрузить контракт</h3>
+        <h3 className="font-display text-lg font-semibold text-ink">Upload contract</h3>
         <p className="mt-2 text-xs text-slate/50">
-          PDF отправляется на сервер, текст извлекается сразу при загрузке — сам файл нигде не
-          сохраняется (реального хранилища файлов в проекте пока нет, см. CLAUDE.md), сохраняется
-          только извлечённый текст.
+          The PDF is sent to the server and its text is extracted immediately on upload — the file
+          itself is never stored (no real file storage exists in this project yet, see CLAUDE.md),
+          only the extracted text is saved.
         </p>
 
         <div className="mt-5 space-y-4">
           <div>
             <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate/50">
-              PDF-файл контракта
+              Contract PDF file
             </label>
             <input
               type="file"
@@ -487,14 +487,14 @@ const ContractsAI = () => {
 
           <div>
             <label className="mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate/50">
-              Отель (опционально)
+              Hotel (optional)
             </label>
             <select
               value={selectedHotelId}
               onChange={(e) => setSelectedHotelId(e.target.value)}
               className="w-full appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
             >
-              <option value="">Без привязки к отелю</option>
+              <option value="">Not linked to a hotel</option>
               {Object.entries(hotels).map(([id, name]) => (
                 <option key={id} value={id}>
                   {name}
@@ -516,7 +516,7 @@ const ContractsAI = () => {
               disabled={uploadSubmitting}
               className="rounded-lg bg-coral px-4 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
             >
-              {uploadSubmitting ? "Отправка..." : "Начать обработку"}
+              {uploadSubmitting ? "Submitting..." : "Start processing"}
             </button>
             <button
               type="button"
@@ -524,7 +524,7 @@ const ContractsAI = () => {
               disabled={uploadSubmitting}
               className="rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Отмена
+              Cancel
             </button>
           </div>
         </div>
@@ -537,25 +537,25 @@ const ContractsAI = () => {
   if (mode === "processing") {
     return (
       <div className="mx-auto mt-10 max-w-md rounded-2xl border border-ink/10 bg-white p-8">
-        <h3 className="text-center font-display text-lg font-semibold text-ink">Обработка документа</h3>
+        <h3 className="text-center font-display text-lg font-semibold text-ink">Processing document</h3>
         {activeProvider === "mock" && (
           <div className="mt-4">
             <MockModeBanner />
           </div>
         )}
         <ol className="mt-6 space-y-4">
-          <StepRow label="Документ загружен" state="done" />
+          <StepRow label="Document uploaded" state="done" />
           <StepRow
-            label="Переход в статус «Обработка»"
+            label='Moving to "Processing" status'
             state={processingStep === "starting" ? "active" : "done"}
           />
           <StepRow
-            label="Извлечение данных (ИИ-провайдер)"
+            label="Extracting data (AI provider)"
             state={
               processingStep === "starting" ? "pending" : processingStep === "extracting" ? "active" : "done"
             }
           />
-          <StepRow label="Отправка на проверку" state={processingStep === "submitting" ? "active" : "pending"} />
+          <StepRow label="Submitting for review" state={processingStep === "submitting" ? "active" : "pending"} />
         </ol>
 
         {processingError && (
@@ -568,7 +568,7 @@ const ContractsAI = () => {
               onClick={() => setMode("list")}
               className="w-full rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-sand"
             >
-              Назад к списку
+              Back to list
             </button>
           </div>
         )}
@@ -587,11 +587,11 @@ const ContractsAI = () => {
         onClick={() => setMode("list")}
         className="mt-6 text-sm font-medium text-slate/60 hover:text-ink"
       >
-        ← Назад к списку
+        ← Back to list
       </button>
 
       {reviewError && !reviewJob && (
-        <p className="mt-10 text-center text-sm text-red-600">Ошибка: {reviewError}</p>
+        <p className="mt-10 text-center text-sm text-red-600">Error: {reviewError}</p>
       )}
 
       {reviewJob && (
@@ -600,7 +600,7 @@ const ContractsAI = () => {
             <div>
               <h3 className="font-display text-xl font-semibold text-ink">{reviewJob.file_reference}</h3>
               <p className="mt-1 text-sm text-slate/70">
-                {reviewJob.hotel_id ? hotels[reviewJob.hotel_id] ?? `#${reviewJob.hotel_id}` : "Без привязки к отелю"}
+                {reviewJob.hotel_id ? hotels[reviewJob.hotel_id] ?? `#${reviewJob.hotel_id}` : "Not linked to a hotel"}
                 {" · "}
                 {formatDate(reviewJob.created_at)}
               </p>
@@ -615,10 +615,10 @@ const ContractsAI = () => {
           )}
 
           <div className="mt-5 space-y-3">
-            {reviewFields === null && <p className="text-sm text-slate/50">Загрузка полей...</p>}
+            {reviewFields === null && <p className="text-sm text-slate/50">Loading fields...</p>}
             {reviewFields && reviewFields.length === 0 && (
               <p className="rounded-2xl border border-ink/10 bg-white p-5 text-sm text-slate/50">
-                Извлечённые поля отсутствуют.
+                No extracted fields.
               </p>
             )}
             {reviewFields?.map((field) => {
@@ -640,22 +640,22 @@ const ContractsAI = () => {
                     <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="rounded-lg bg-sand/50 p-3">
                         <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
-                          Исходный текст
+                          Original text
                         </p>
                         <p className="mt-1 text-sm text-ink">{field.original_text || "—"}</p>
                       </div>
                       <div className="rounded-lg border border-coral/20 bg-coral/5 p-3">
                         <p className="text-xs font-semibold uppercase tracking-wide text-coral">
-                          Интерпретация ИИ
+                          AI interpretation
                         </p>
                         <p className="mt-1 text-sm text-ink">{field.ai_interpretation || "—"}</p>
                         <p className="mt-1 text-sm text-ink">
-                          Извлечённое значение: {parseFieldValue(field.field_data)}
+                          Extracted value: {parseFieldValue(field.field_data)}
                         </p>
                       </div>
                       {field.low_confidence_reason && (
                         <p className="text-xs text-slate/60 sm:col-span-2">
-                          Причина низкой уверенности: {field.low_confidence_reason}
+                          Low confidence reason: {field.low_confidence_reason}
                         </p>
                       )}
                     </div>
@@ -668,29 +668,30 @@ const ContractsAI = () => {
           {reviewJob.status === "approved" && reviewJob.hotel_id !== null && (
             <div className="mt-4 space-y-2">
               <div className="rounded-lg bg-teal/10 px-4 py-3 text-sm text-teal">
-                Одобрено. Создан отель: {hotels[reviewJob.hotel_id] ?? "—"} (id={reviewJob.hotel_id}) — доступен
-                в поиске отелей.
+                Approved. Hotel created: {hotels[reviewJob.hotel_id] ?? "—"} (id={reviewJob.hotel_id}) —
+                available in hotel search.
               </div>
               {reviewJob.provider === "mock" && (
                 <div className="rounded-lg bg-amber-400/10 px-4 py-3 text-xs text-amber-800">
-                  ⚠ Название и данные отеля выше — фиксированные тестовые значения из Mock-провайдера, не
-                  результат чтения вашего файла.
+                  ⚠ The hotel name and data above are fixed test values from the Mock provider, not the
+                  result of reading your file.
                 </div>
               )}
             </div>
           )}
           {reviewJob.status === "approved" && reviewJob.hotel_id === null && (
             <div className="mt-4 rounded-lg bg-slate/10 px-4 py-3 text-sm text-slate">
-              Одобрено (запись в Contract Engine создана до появления автозаписи — привяжите отель вручную).
+              Approved (the Contract Engine record was created before auto-linking existed — link the
+              hotel manually).
             </div>
           )}
           {reviewJob.status === "failed" && (
             <div className="mt-4 rounded-lg bg-red-500/10 px-4 py-3 text-sm text-red-600">
-              Не удалось записать в Contract Engine: {reviewJob.failure_reason ?? "причина не указана"}
+              Failed to write to Contract Engine: {reviewJob.failure_reason ?? "reason not specified"}
             </div>
           )}
           {reviewJob.status === "rejected" && (
-            <div className="mt-4 rounded-lg bg-slate/10 px-4 py-3 text-sm text-slate">Отклонено.</div>
+            <div className="mt-4 rounded-lg bg-slate/10 px-4 py-3 text-sm text-slate">Rejected.</div>
           )}
         </>
       )}
@@ -706,7 +707,7 @@ const ContractsAI = () => {
             {rejectOpen ? (
               <div className="flex flex-wrap items-center gap-2.5">
                 <textarea
-                  placeholder="Причина отклонения *"
+                  placeholder="Rejection reason *"
                   value={rejectReason}
                   onChange={(e) => setRejectReason(e.target.value)}
                   rows={1}
@@ -718,7 +719,7 @@ const ContractsAI = () => {
                   disabled={gateSubmitting}
                   className="rounded-lg bg-red-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm shadow-red-600/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
                 >
-                  {gateSubmitting ? "Отправка..." : "Подтвердить отклонение"}
+                  {gateSubmitting ? "Submitting..." : "Confirm rejection"}
                 </button>
                 <button
                   type="button"
@@ -729,14 +730,14 @@ const ContractsAI = () => {
                   disabled={gateSubmitting}
                   className="rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Отмена
+                  Cancel
                 </button>
               </div>
             ) : (
               <div className="flex flex-wrap items-center gap-2.5">
                 <input
                   type="text"
-                  placeholder="Комментарий к одобрению (опционально)"
+                  placeholder="Approval comment (optional)"
                   value={approveNotes}
                   onChange={(e) => setApproveNotes(e.target.value)}
                   className="min-w-[240px] flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
@@ -747,7 +748,7 @@ const ContractsAI = () => {
                   disabled={gateSubmitting}
                   className="rounded-lg bg-teal px-4 py-2.5 text-sm font-medium text-white shadow-sm shadow-teal/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
                 >
-                  {gateSubmitting ? "Отправка..." : "Одобрить"}
+                  {gateSubmitting ? "Submitting..." : "Approve"}
                 </button>
                 <button
                   type="button"
@@ -755,7 +756,7 @@ const ContractsAI = () => {
                   disabled={gateSubmitting}
                   className="rounded-lg border border-red-500/30 bg-white px-4 py-2.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Отклонить
+                  Reject
                 </button>
               </div>
             )}

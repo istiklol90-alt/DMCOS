@@ -13,8 +13,8 @@ import {
 } from "./financeShared";
 
 // ---------------------------------------------------------------------------
-// "Счета" -- Decision 088 restructure. Two sections: (1) a small, always-
-// loaded "Требует внимания" panel (GET /finance-engine/invoices/urgent,
+// "Invoices" -- Decision 088 restructure. Two sections: (1) a small, always-
+// loaded "Needs attention" panel (GET /finance-engine/invoices/urgent,
 // server-filtered, safe at real scale by construction -- an unacknowledged
 // flagged Draft should be rare, not proportional to total invoice count),
 // and (2) a search-first agent picker -- the full invoice list for ANY
@@ -36,7 +36,7 @@ function normalizeBookingNumber(raw: string): string {
 }
 
 function exportInvoicesCsv(invoices: Invoice[], agentLabel: string) {
-  const headers = ["№ счёта", "Booking", "Отель", "Дата", "Сумма", "Валюта", "Статус", "Email отправлен", "Флаг"];
+  const headers = ["Invoice #", "Booking", "Hotel", "Date", "Amount", "Currency", "Status", "Email sent", "Flag"];
   const rows = invoices.map((inv) => [
     inv.invoice_number,
     `#${inv.booking_id}`,
@@ -45,7 +45,7 @@ function exportInvoicesCsv(invoices: Invoice[], agentLabel: string) {
     String(inv.total),
     inv.currency,
     inv.status,
-    inv.email_sent_at ? new Date(inv.email_sent_at).toLocaleString("ru-RU") : "не отправлено",
+    inv.email_sent_at ? new Date(inv.email_sent_at).toLocaleString("en-US") : "not sent",
     formatReviewNotes(inv.review_notes, inv.currency),
   ]);
   const bom = String.fromCharCode(0xfeff);
@@ -87,12 +87,12 @@ function InvoiceTable({
       <table className="w-full min-w-[820px] border-collapse text-left text-sm">
         <thead>
           <tr className="border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50">
-            <th className="px-5 py-3 font-medium">№ счёта</th>
+            <th className="px-5 py-3 font-medium">Invoice #</th>
             <th className="px-5 py-3 font-medium">Booking</th>
-            <th className="px-5 py-3 font-medium">Отель</th>
-            <th className="px-5 py-3 font-medium">Дата</th>
-            <th className="px-5 py-3 font-medium">Сумма</th>
-            <th className="px-5 py-3 font-medium">Статус</th>
+            <th className="px-5 py-3 font-medium">Hotel</th>
+            <th className="px-5 py-3 font-medium">Date</th>
+            <th className="px-5 py-3 font-medium">Amount</th>
+            <th className="px-5 py-3 font-medium">Status</th>
             <th className="px-5 py-3 font-medium">Email</th>
             <th className="px-5 py-3 font-medium"></th>
           </tr>
@@ -101,7 +101,7 @@ function InvoiceTable({
           {sorted.length === 0 ? (
             <tr>
               <td colSpan={8} className="px-5 py-10 text-center text-sm text-slate/50">
-                Счетов пока нет
+                No invoices yet
               </td>
             </tr>
           ) : (
@@ -122,7 +122,7 @@ function InvoiceTable({
                         className="cursor-help rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white"
                         title={formatReviewNotes(inv.review_notes, inv.currency) || undefined}
                       >
-                        Требует внимания
+                        Needs attention
                       </span>
                     )}
                   </span>
@@ -136,9 +136,9 @@ function InvoiceTable({
                 </td>
                 <td className="whitespace-nowrap px-5 py-3.5 text-slate/70">
                   {inv.email_sent_at ? (
-                    new Date(inv.email_sent_at).toLocaleString("ru-RU")
+                    new Date(inv.email_sent_at).toLocaleString("en-US")
                   ) : (
-                    <span className="text-slate/40">не отправлено</span>
+                    <span className="text-slate/40">not sent</span>
                   )}
                 </td>
                 <td className="px-5 py-3.5 text-right">
@@ -148,7 +148,7 @@ function InvoiceTable({
                       onClick={() => onDetail(inv)}
                       className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sand"
                     >
-                      Подробнее
+                      Details
                     </button>
                     {inv.status === "Draft" && (
                       <button
@@ -157,7 +157,7 @@ function InvoiceTable({
                         disabled={approvingId === inv.id}
                         className="appearance-none rounded-lg border-0 bg-teal px-3.5 py-1.5 text-xs font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
                       >
-                        {approvingId === inv.id ? "..." : "Одобрить и отправить"}
+                        {approvingId === inv.id ? "..." : "Approve & send"}
                       </button>
                     )}
                     {inv.status === "Issued" && isUrgentFlag(inv) && (
@@ -167,7 +167,7 @@ function InvoiceTable({
                         disabled={acknowledgingId === inv.id}
                         className="appearance-none rounded-lg border-0 bg-coral px-3.5 py-1.5 text-xs font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
                       >
-                        {acknowledgingId === inv.id ? "..." : "Отметить как проверено"}
+                        {acknowledgingId === inv.id ? "..." : "Mark as reviewed"}
                       </button>
                     )}
                     {inv.status !== "Void" && (
@@ -177,7 +177,7 @@ function InvoiceTable({
                         disabled={voidingId === inv.id}
                         className="appearance-none rounded-lg border border-coral/40 bg-transparent px-3.5 py-1.5 text-xs font-medium text-coral transition-colors hover:bg-coral/10 disabled:opacity-50"
                       >
-                        {voidingId === inv.id ? "..." : "Аннулировать"}
+                        {voidingId === inv.id ? "..." : "Void"}
                       </button>
                     )}
                   </div>
@@ -235,7 +235,7 @@ const Invoices = () => {
       setAgentInvoicesError(null);
       setAgentInvoices(await fetchJson<Invoice[]>(`/finance-engine/agents/${agentId}/invoices`, token));
     } catch (err: any) {
-      setAgentInvoicesError(err.message || "Ошибка загрузки счетов");
+      setAgentInvoicesError(err.message || "Failed to load invoices");
     } finally {
       setAgentInvoicesLoading(false);
     }
@@ -266,14 +266,14 @@ const Invoices = () => {
   }
 
   async function handleVoid(id: number) {
-    if (!window.confirm("Аннулировать счёт?")) return;
+    if (!window.confirm("Void this invoice?")) return;
     const token = localStorage.getItem("token") || "";
     try {
       setVoidingId(id);
       await fetchJson<Invoice>(`/finance-engine/invoices/${id}/void`, token, { method: "POST" });
       await refreshBoth();
     } catch (err: any) {
-      alert(err.message || "Не удалось аннулировать счёт");
+      alert(err.message || "Failed to void invoice");
     } finally {
       setVoidingId(null);
     }
@@ -281,8 +281,8 @@ const Invoices = () => {
 
   async function handleApproveAndSend(invoice: Invoice) {
     const confirmMessage = isUrgentFlag(invoice)
-      ? `⚠ ВНИМАНИЕ:\n${formatReviewNotes(invoice.review_notes, invoice.currency)}\n\nОдобрить и отправить счёт агенту всё равно?`
-      : "Одобрить и отправить счёт агенту?";
+      ? `⚠ WARNING:\n${formatReviewNotes(invoice.review_notes, invoice.currency)}\n\nApprove and send the invoice to the agent anyway?`
+      : "Approve and send the invoice to the agent?";
     if (!window.confirm(confirmMessage)) return;
     const token = localStorage.getItem("token") || "";
     try {
@@ -290,7 +290,7 @@ const Invoices = () => {
       await fetchJson<Invoice>(`/finance-engine/invoices/${invoice.id}/approve-and-send`, token, { method: "POST" });
       await refreshBoth();
     } catch (err: any) {
-      alert(err.message || "Не удалось одобрить и отправить счёт");
+      alert(err.message || "Failed to approve and send invoice");
     } finally {
       setApprovingId(null);
     }
@@ -302,7 +302,7 @@ const Invoices = () => {
       .map((t) => t.trim())
       .filter(Boolean);
     if (tokens.length === 0) {
-      setBookingSearchError("Введите номер брони");
+      setBookingSearchError("Enter a booking number");
       return;
     }
     const token = localStorage.getItem("token") || "";
@@ -324,10 +324,10 @@ const Invoices = () => {
           const invoice = await fetchJson<Invoice>(`/finance-engine/bookings/${booking.id}/invoice`, token);
           found.push(invoice);
         } catch {
-          problems.push(`${booking.booking_number}: счёта пока нет`);
+          problems.push(`${booking.booking_number}: no invoice yet`);
         }
       } catch {
-        problems.push(`${number}: не найдено`);
+        problems.push(`${number}: not found`);
       }
     }
 
@@ -337,7 +337,7 @@ const Invoices = () => {
   }
 
   async function handleAcknowledge(invoice: Invoice) {
-    const confirmMessage = `⚠\n${formatReviewNotes(invoice.review_notes, invoice.currency)}\n\nОтметить как проверено? Счёт останется Issued без повторной отправки агенту.`;
+    const confirmMessage = `⚠\n${formatReviewNotes(invoice.review_notes, invoice.currency)}\n\nMark as reviewed? The invoice will remain Issued without being re-sent to the agent.`;
     if (!window.confirm(confirmMessage)) return;
     const token = localStorage.getItem("token") || "";
     try {
@@ -345,7 +345,7 @@ const Invoices = () => {
       await fetchJson<Invoice>(`/finance-engine/invoices/${invoice.id}/acknowledge-flag`, token, { method: "POST" });
       await refreshBoth();
     } catch (err: any) {
-      alert(err.message || "Не удалось отметить счёт как проверенный");
+      alert(err.message || "Failed to mark invoice as reviewed");
     } finally {
       setAcknowledgingId(null);
     }
@@ -356,12 +356,12 @@ const Invoices = () => {
       {/* Always-loaded, always-small: the one place triage doesn't require
           already knowing which agent to search for. */}
       <div className="mt-6">
-        <h3 className="font-display text-lg font-semibold text-ink">Требует внимания</h3>
+        <h3 className="font-display text-lg font-semibold text-ink">Needs attention</h3>
         {urgentLoading ? (
-          <p className="mt-3 text-sm text-slate/60">Загрузка...</p>
+          <p className="mt-3 text-sm text-slate/60">Loading...</p>
         ) : urgent.length === 0 ? (
           <p className="mt-3 rounded-2xl border border-ink/10 bg-white px-5 py-6 text-center text-sm text-slate/50">
-            Нет счетов, требующих внимания
+            No invoices need attention
           </p>
         ) : (
           <div className="mt-3">
@@ -381,13 +381,13 @@ const Invoices = () => {
 
       {/* Search-first -- the full invoice list for a given agent is never
           fetched until that one agent is explicitly selected. Two search
-          modes (Decision 091): "По агенту" (browse an agent's whole
-          list) vs "По номеру брони" (jump directly to one known
+          modes (Decision 091): "By agent" (browse an agent's whole
+          list) vs "By booking number" (jump directly to one known
           booking's invoice) -- a toggle, not one smart auto-detecting
           field, since the two are different interaction shapes
           (select-from-autocomplete vs type-and-submit-to-jump). */}
       <div className="mt-8">
-        <h3 className="font-display text-lg font-semibold text-ink">Поиск счетов</h3>
+        <h3 className="font-display text-lg font-semibold text-ink">Search invoices</h3>
 
         <div className="mt-3 flex gap-1 border-b border-ink/10">
           <button
@@ -397,7 +397,7 @@ const Invoices = () => {
               searchMode === "agent" ? "border-coral text-ink" : "border-transparent text-slate/60 hover:text-ink"
             }`}
           >
-            По агенту
+            By agent
           </button>
           <button
             type="button"
@@ -406,7 +406,7 @@ const Invoices = () => {
               searchMode === "booking" ? "border-coral text-ink" : "border-transparent text-slate/60 hover:text-ink"
             }`}
           >
-            По номеру брони
+            By booking number
           </button>
         </div>
 
@@ -420,7 +420,7 @@ const Invoices = () => {
                 onKeyDown={(e) => {
                   if (e.key === "Enter") handleBookingNumberSearch();
                 }}
-                placeholder="Например: 21 или 21, 22"
+                placeholder="E.g.: 21 or 21, 22"
                 className="min-w-[260px] appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
               />
               <button
@@ -429,7 +429,7 @@ const Invoices = () => {
                 disabled={bookingSearchLoading}
                 className="appearance-none rounded-lg border-0 bg-coral px-5 py-2.5 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
               >
-                {bookingSearchLoading ? "..." : "Найти"}
+                {bookingSearchLoading ? "..." : "Search"}
               </button>
             </div>
             {bookingSearchError && <p className="mt-3 text-sm text-red-600">{bookingSearchError}</p>}
@@ -461,21 +461,21 @@ const Invoices = () => {
               disabled={agentInvoices.length === 0}
               className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Экспорт CSV
+              Export CSV
             </button>
           )}
         </div>
 
         {!selectedAgent && (
           <p className="mt-4 rounded-2xl border border-ink/10 bg-white px-5 py-10 text-center text-sm text-slate/50">
-            Найдите и выберите агента, чтобы увидеть его счета
+            Search for and select an agent to see their invoices
           </p>
         )}
         {selectedAgent && agentInvoicesLoading && (
-          <p className="mt-4 text-center text-sm text-slate/60">Загрузка...</p>
+          <p className="mt-4 text-center text-sm text-slate/60">Loading...</p>
         )}
         {selectedAgent && agentInvoicesError && (
-          <p className="mt-4 text-center text-sm text-red-600">Ошибка: {agentInvoicesError}</p>
+          <p className="mt-4 text-center text-sm text-red-600">Error: {agentInvoicesError}</p>
         )}
         {selectedAgent && !agentInvoicesLoading && !agentInvoicesError && (
           <div className="mt-4">

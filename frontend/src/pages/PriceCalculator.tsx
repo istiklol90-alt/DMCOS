@@ -114,7 +114,7 @@ async function fetchJson<T>(path: string, token: string): Promise<T> {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!response.ok) {
-    let detail = `Ошибка запроса (${response.status})`;
+    let detail = `Request error (${response.status})`;
     try {
       const body = await response.json();
       if (body?.detail) detail = body.detail;
@@ -127,14 +127,14 @@ async function fetchJson<T>(path: string, token: string): Promise<T> {
 }
 
 function formatMoney(amount: number, currency: string) {
-  return `${amount.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+  return `${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
 }
 
 // Same plain Markdown-pipe-table convention Reservations.tsx's LPO uses --
 // unambiguous as raw plain text even where nothing renders it as an actual
 // table, since this is pasted into a plain-text clipboard target, not HTML.
 function renderTextTable(rows: [string, string][]): string {
-  const lines = ["| Поле | Значение |", "|---|---|"];
+  const lines = ["| Field | Value |", "|---|---|"];
   for (const [label, value] of rows) {
     lines.push(`| ${label} | ${value.replace(/\|/g, "\\|")} |`);
   }
@@ -158,41 +158,41 @@ interface CalculationResult {
 
 function buildSummaryText(r: CalculationResult): string {
   const rows: [string, string][] = [
-    ["Отель", r.hotelName],
-    ["Тип номера", r.roomTypeName],
-    ["Заезд — Выезд", `${r.checkIn} — ${r.checkOut} (${r.roomBreakdown.nights} ноч.)`],
-    ["Заполняемость", `${r.occupancy.adults} взр., ${r.occupancy.children} дет., ${r.occupancy.infants} млд.`],
-    ["План питания", r.mealPlanLabel],
-    ["Сезон", r.seasonName ?? `#${r.roomBreakdown.season_id}`],
-    ["Базовая ставка", formatMoney(r.roomBreakdown.base_total, r.roomBreakdown.currency)],
-    ["Надбавки (возраст/питание/доп.гость)", formatMoney(r.roomBreakdown.supplements_total, r.roomBreakdown.currency)],
+    ["Hotel", r.hotelName],
+    ["Room Type", r.roomTypeName],
+    ["Check-in — Check-out", `${r.checkIn} — ${r.checkOut} (${r.roomBreakdown.nights} nights)`],
+    ["Occupancy", `${r.occupancy.adults} adults, ${r.occupancy.children} children, ${r.occupancy.infants} infants`],
+    ["Meal Plan", r.mealPlanLabel],
+    ["Season", r.seasonName ?? `#${r.roomBreakdown.season_id}`],
+    ["Base Rate", formatMoney(r.roomBreakdown.base_total, r.roomBreakdown.currency)],
+    ["Supplements (age/meal plan/extra guest)", formatMoney(r.roomBreakdown.supplements_total, r.roomBreakdown.currency)],
     [
-      "Спецпредложение",
-      r.specialOfferNames.length > 0 ? r.specialOfferNames.join(", ") : "нет",
+      "Special Offer",
+      r.specialOfferNames.length > 0 ? r.specialOfferNames.join(", ") : "none",
     ],
     [
-      "Промо-скидка (Early Bird и т.п.)",
-      r.promotionNames.length > 0 ? r.promotionNames.join(", ") : "нет",
+      "Promo Discount (Early Bird, etc.)",
+      r.promotionNames.length > 0 ? r.promotionNames.join(", ") : "none",
     ],
-    ["Стоимость номера (итого)", formatMoney(r.roomBreakdown.final_total, r.roomBreakdown.currency)],
+    ["Room Cost (total)", formatMoney(r.roomBreakdown.final_total, r.roomBreakdown.currency)],
     [
-      r.mandatoryTax.label || "Обязательный сбор",
+      r.mandatoryTax.label || "Mandatory Fee",
       formatMoney(r.mandatoryTax.total, r.mandatoryTax.currency),
     ],
   ];
 
   if (r.transferBreakdown) {
     rows.push([
-      `Трансфер (${r.transferBreakdown.transfer_name ?? r.transferBreakdown.transfer_type})`,
-      `${formatMoney(r.transferBreakdown.total, r.transferBreakdown.currency)} (взрослые: ${formatMoney(r.transferBreakdown.adult_total, r.transferBreakdown.currency)}, дети: ${formatMoney(r.transferBreakdown.child_total, r.transferBreakdown.currency)})`,
+      `Transfer (${r.transferBreakdown.transfer_name ?? r.transferBreakdown.transfer_type})`,
+      `${formatMoney(r.transferBreakdown.total, r.transferBreakdown.currency)} (adults: ${formatMoney(r.transferBreakdown.adult_total, r.transferBreakdown.currency)}, children: ${formatMoney(r.transferBreakdown.child_total, r.transferBreakdown.currency)})`,
     ]);
   }
 
   const grandTotal =
     r.roomBreakdown.final_total + r.mandatoryTax.total + (r.transferBreakdown?.total ?? 0);
-  rows.push(["ИТОГО", formatMoney(grandTotal, r.roomBreakdown.currency)]);
+  rows.push(["TOTAL", formatMoney(grandTotal, r.roomBreakdown.currency)]);
 
-  return ["Расчёт для проверки", "", renderTextTable(rows)].join("\n");
+  return ["Price Calculation for Verification", "", renderTextTable(rows)].join("\n");
 }
 
 const PriceCalculator = () => {
@@ -267,12 +267,12 @@ const PriceCalculator = () => {
     fetchJson<Contract | null>(`/contract-engine/hotels/${hotelId}/active-contract?check_in=${checkIn}`, token)
       .then((c) => {
         if (!c) {
-          setContractError("Нет активного контракта на выбранную дату заезда");
+          setContractError("No active contract for the selected check-in date");
           return;
         }
         setContract(c);
       })
-      .catch((err) => setContractError(err.message || "Не удалось определить контракт"));
+      .catch((err) => setContractError(err.message || "Could not determine contract"));
   }, [hotelId, checkIn]);
 
   // Meal plans actually priced for this room type (not every meal plan
@@ -292,7 +292,7 @@ const PriceCalculator = () => {
   }, [contract, roomTypeId]);
 
   // Transfer options actually available on this contract -- optional,
-  // "Без трансфера" stays selectable regardless of transfer_required
+  // "No transfer" stays selectable regardless of transfer_required
   // (this is a verification tool, not a real booking flow).
   useEffect(() => {
     setTransferOptions([]);
@@ -320,7 +320,7 @@ const PriceCalculator = () => {
 
   async function handleCalculate() {
     if (!contract || !roomTypeId || !checkIn || !checkOut || !mealPlanCode) {
-      setCalcError("Заполните отель, тип номера, даты и план питания");
+      setCalcError("Fill in hotel, room type, dates, and meal plan");
       return;
     }
     setCalculating(true);
@@ -415,7 +415,7 @@ const PriceCalculator = () => {
         checkOut,
       });
     } catch (err: any) {
-      setCalcError(err.message || "Не удалось рассчитать цену");
+      setCalcError(err.message || "Failed to calculate price");
     } finally {
       setCalculating(false);
     }
@@ -436,11 +436,11 @@ const PriceCalculator = () => {
   return (
     <div className="mt-6">
       <div className="rounded-2xl border border-ink/10 bg-white p-6">
-        <h2 className="font-display text-lg font-semibold text-ink">Расчёт цены</h2>
+        <h2 className="font-display text-lg font-semibold text-ink">Price Calculator</h2>
         <p className="mt-1 text-sm text-slate/60">
-          Внутренний инструмент проверки — только чтение, ничего не создаёт и не бронирует. Использует те же
-          реальные эндпоинты (get_room_price / get_transfer_price / get_mandatory_tax), что и поиск отелей и
-          карточка бронирования.
+          Internal verification tool — read-only, creates or books nothing. Uses the same real endpoints
+          (get_room_price / get_transfer_price / get_mandatory_tax) as hotel search and the booking detail
+          view.
         </p>
 
         <div className="mt-5 grid grid-cols-1 gap-3.5 sm:grid-cols-2">
@@ -449,7 +449,7 @@ const PriceCalculator = () => {
             onChange={(e) => setHotelId(e.target.value)}
             className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
           >
-            <option value="">Отель...</option>
+            <option value="">Hotel...</option>
             {hotels.map((h) => (
               <option key={h.id} value={h.id}>
                 {h.hotel_name}
@@ -463,7 +463,7 @@ const PriceCalculator = () => {
             disabled={!hotelId}
             className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <option value="">Тип номера...</option>
+            <option value="">Room Type...</option>
             {roomTypes.map((rt) => (
               <option key={rt.id} value={rt.id}>
                 {rt.room_name}
@@ -472,11 +472,11 @@ const PriceCalculator = () => {
           </select>
 
           <div className="sm:col-span-2">
-            <DateRangePicker checkIn={checkIn} checkOut={checkOut} onChange={(a, b) => { setCheckIn(a); setCheckOut(b); }} />
+            <DateRangePicker checkIn={checkIn} checkOut={checkOut} onChange={(a, b) => { setCheckIn(a); setCheckOut(b); }} forceLang="en" />
           </div>
 
           <div className="flex items-center gap-2">
-            <label className="text-sm text-slate/70">Взрослые</label>
+            <label className="text-sm text-slate/70">Adults</label>
             <input
               type="number"
               min={1}
@@ -487,7 +487,7 @@ const PriceCalculator = () => {
           </div>
 
           <div className="flex items-center gap-2">
-            <label className="text-sm text-slate/70">Дети</label>
+            <label className="text-sm text-slate/70">Children</label>
             <input
               type="number"
               min={0}
@@ -501,7 +501,7 @@ const PriceCalculator = () => {
             <div className="sm:col-span-2 flex flex-wrap gap-2">
               {childAges.map((age, i) => (
                 <label key={i} className="flex items-center gap-1.5 rounded-lg border border-ink/15 bg-sand/40 px-2.5 py-1.5 text-xs text-slate/70">
-                  Ребёнок {i + 1}, лет:
+                  Child {i + 1}, age:
                   <input
                     type="number"
                     min={0}
@@ -521,7 +521,7 @@ const PriceCalculator = () => {
             disabled={!contract || mealPlans.length === 0}
             className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <option value="">План питания...</option>
+            <option value="">Meal Plan...</option>
             {mealPlans.map((mp) => (
               <option key={mp.id} value={mp.meal_code}>
                 {mp.meal_name || mp.meal_code}
@@ -535,7 +535,7 @@ const PriceCalculator = () => {
             disabled={!contract}
             className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <option value="">Без трансфера</option>
+            <option value="">No Transfer</option>
             {transferOptions.map((t) => (
               <option key={t.id} value={t.transfer_type}>
                 {t.transfer_name || t.transfer_type}
@@ -557,77 +557,77 @@ const PriceCalculator = () => {
           disabled={calculating || !contract}
           className="mt-5 rounded-lg bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
         >
-          {calculating ? "Расчёт..." : "Рассчитать"}
+          {calculating ? "Calculating..." : "Calculate"}
         </button>
       </div>
 
       {result && grandTotal !== null && (
         <div className="mt-4 rounded-2xl border border-ink/10 bg-white p-6">
           <div className="flex items-start justify-between gap-4">
-            <h3 className="font-display text-lg font-semibold text-ink">Результат расчёта</h3>
+            <h3 className="font-display text-lg font-semibold text-ink">Calculation Result</h3>
             <button
               type="button"
               onClick={handleCopy}
               className="shrink-0 rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand/60"
             >
-              {copied ? "Скопировано ✓" : "Копировать"}
+              {copied ? "Copied ✓" : "Copy"}
             </button>
           </div>
 
           <dl className="mt-4 divide-y divide-ink/5 text-sm">
             <div className="flex justify-between py-2">
-              <dt className="text-slate/60">Сезон</dt>
+              <dt className="text-slate/60">Season</dt>
               <dd className="font-medium text-ink">{result.seasonName ?? `#${result.roomBreakdown.season_id}`}</dd>
             </div>
             <div className="flex justify-between py-2">
-              <dt className="text-slate/60">Базовая ставка</dt>
+              <dt className="text-slate/60">Base Rate</dt>
               <dd className="font-mono text-ink">{formatMoney(result.roomBreakdown.base_total, result.roomBreakdown.currency)}</dd>
             </div>
             <div className="flex justify-between py-2">
-              <dt className="text-slate/60">Надбавки (возраст/питание/доп.гость)</dt>
+              <dt className="text-slate/60">Supplements (age/meal plan/extra guest)</dt>
               <dd className="font-mono text-ink">{formatMoney(result.roomBreakdown.supplements_total, result.roomBreakdown.currency)}</dd>
             </div>
             <div className="flex justify-between py-2">
-              <dt className="text-slate/60">Спецпредложение</dt>
+              <dt className="text-slate/60">Special Offer</dt>
               <dd className="font-medium text-ink">
-                {result.specialOfferNames.length > 0 ? result.specialOfferNames.join(", ") : "нет"}
+                {result.specialOfferNames.length > 0 ? result.specialOfferNames.join(", ") : "none"}
               </dd>
             </div>
             <div className="flex justify-between py-2">
-              <dt className="text-slate/60">Промо-скидка</dt>
+              <dt className="text-slate/60">Promo Discount</dt>
               <dd className="font-medium text-ink">
-                {result.promotionNames.length > 0 ? result.promotionNames.join(", ") : "нет"}
+                {result.promotionNames.length > 0 ? result.promotionNames.join(", ") : "none"}
               </dd>
             </div>
             <div className="flex justify-between py-2 font-semibold">
-              <dt className="text-ink">Стоимость номера</dt>
+              <dt className="text-ink">Room Cost</dt>
               <dd className="font-mono text-ink">{formatMoney(result.roomBreakdown.final_total, result.roomBreakdown.currency)}</dd>
             </div>
             <div className="flex justify-between py-2">
-              <dt className="text-slate/60">{result.mandatoryTax.label || "Обязательный сбор"}</dt>
+              <dt className="text-slate/60">{result.mandatoryTax.label || "Mandatory Fee"}</dt>
               <dd className="font-mono text-ink">{formatMoney(result.mandatoryTax.total, result.mandatoryTax.currency)}</dd>
             </div>
             {result.transferBreakdown && (
               <div className="py-2">
                 <div className="flex justify-between">
                   <dt className="text-slate/60">
-                    Трансфер ({result.transferBreakdown.transfer_name ?? result.transferBreakdown.transfer_type})
+                    Transfer ({result.transferBreakdown.transfer_name ?? result.transferBreakdown.transfer_type})
                   </dt>
                   <dd className="font-mono text-ink">{formatMoney(result.transferBreakdown.total, result.transferBreakdown.currency)}</dd>
                 </div>
                 <p className="mt-1 pl-3 text-[11px] text-slate/50">
-                  Взрослые: {formatMoney(result.transferBreakdown.adult_total, result.transferBreakdown.currency)}
+                  Adults: {formatMoney(result.transferBreakdown.adult_total, result.transferBreakdown.currency)}
                   {result.occupancy.children > 0 && (
-                    <> · Дети: {formatMoney(result.transferBreakdown.child_total, result.transferBreakdown.currency)}</>
+                    <> · Children: {formatMoney(result.transferBreakdown.child_total, result.transferBreakdown.currency)}</>
                   )}
                   {result.occupancy.infants > 0 && (
-                    <> · Младенцы: {formatMoney(result.transferBreakdown.infant_total, result.transferBreakdown.currency)}</>
+                    <> · Infants: {formatMoney(result.transferBreakdown.infant_total, result.transferBreakdown.currency)}</>
                   )}
                 </p>
               </div>
             )}
             <div className="flex justify-between py-3 text-base font-semibold">
-              <dt className="text-ink">ИТОГО</dt>
+              <dt className="text-ink">TOTAL</dt>
               <dd className="font-mono text-coral">{formatMoney(grandTotal, result.roomBreakdown.currency)}</dd>
             </div>
           </dl>
