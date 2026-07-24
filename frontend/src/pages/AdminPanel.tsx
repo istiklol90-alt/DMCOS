@@ -3,6 +3,7 @@ import { I18nextProvider } from "react-i18next";
 import adminI18n from "../i18n/i18nAdmin";
 import { API_URL } from "../config";
 import AdminBookingsList from "./AdminBookingFinance";
+import { TransfersView, ArrivalView, DepartureView } from "./BookingsSubViews";
 import Contracts from "./Contracts";
 import ContractsAI from "./ContractsAI";
 import PriceCalculator from "./PriceCalculator";
@@ -17,6 +18,9 @@ type RegStatus = "pending" | "approved" | "rejected";
 type AdminTab =
   | "users"
   | "reservations"
+  | "bookings-transfers"
+  | "bookings-arrival"
+  | "bookings-departure"
   | "contracts"
   | "contracts-ai"
   | "price-calculator"
@@ -192,6 +196,12 @@ const AdminPanel = () => {
         {activeTab === "cashback" && <Cashback />}
 
         {activeTab === "reservations" && <AdminBookingsList scope={{ type: "all" }} />}
+
+        {activeTab === "bookings-transfers" && <TransfersView />}
+
+        {activeTab === "bookings-arrival" && <ArrivalView />}
+
+        {activeTab === "bookings-departure" && <DepartureView />}
 
         {activeTab === "contracts" && <Contracts />}
 

@@ -18,7 +18,16 @@ export interface NavItem {
 
 export const NAV_STRUCTURE: NavItem[] = [
   { key: "users", label: "Users" },
-  { key: "reservations", label: "Bookings" },
+  {
+    key: "bookings-group",
+    label: "Bookings",
+    children: [
+      { key: "reservations", label: "Bookings" },
+      { key: "bookings-transfers", label: "Transfers" },
+      { key: "bookings-arrival", label: "Arrival" },
+      { key: "bookings-departure", label: "Departure" },
+    ],
+  },
   {
     key: "contracts-group",
     label: "Contracts",
