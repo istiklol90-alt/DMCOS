@@ -10,7 +10,11 @@
     "selectDates": "Select dates",
     "prevMonth": "Previous month",
     "nextMonth": "Next month",
-    "weekdays": ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+    "weekdays": ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"],
+    "specificDates": "Specific Dates",
+    "flexibleDates": "Flexible Dates",
+    "reset": "Reset",
+    "done": "Done"
   },
   "guestDetailsForm": {
     "title": "Lead guest details",
@@ -79,15 +83,11 @@
     "noMealPlansAvailable": "No rates available for this room",
     "priceUnavailable": "Price unavailable",
     "ratesLoadFailed": "Failed to load rates",
-    "navSearch": "Search",
-    "navMyBookings": "My bookings",
-    "back": "← Back",
     "heroTag": "SEARCH & BOOKING",
     "heroTitle": "Find a hotel",
     "heroSubtitle": "Real rates straight from Contract Engine — seasons, special offers and transfers already factored in.",
     "destinationLabel": "Destination / hotel",
     "destinationPlaceholder": "Maldives, Rixos...",
-    "destinationHint": "Search by name isn't supported by Hotel Engine yet — all hotels are shown.",
     "datesLabel": "Dates",
     "guestsLabel": "Guests",
     "adultsLabel": "Adults",

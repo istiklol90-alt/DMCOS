@@ -1,5 +1,4 @@
 {
-  "demoTag": "demo data",
   "accessDenied": "⛔ Access denied! Agents only.",
   "roleLabel": {
     "agent": "Travel Agent",
@@ -7,70 +6,44 @@
     "manager": "Manager"
   },
   "nav": {
-    "groupWork": "WORK",
-    "groupFinance": "FINANCE",
-    "groupHelp": "HELP",
-    "dashboard": "Dashboard",
-    "hotelSearch": "Search & Booking",
+    "search": "Search",
     "bookings": "Bookings",
-    "hotels": "Hotels",
-    "clients": "Clients",
-    "balance": "Balance",
-    "invoices": "Invoices",
-    "commissions": "Commissions",
-    "aiAssistant": "AI Assistant",
-    "support": "Support",
-    "settings": "Settings"
-  },
-  "checklist": {
-    "requestReceived": "Request received",
-    "paymentCheck": "Payment verification",
-    "hotelConfirmation": "Hotel confirmation",
-    "voucherGeneration": "Voucher generation",
-    "sendToClient": "Sent to client"
-  },
-  "chat": {
-    "title": "AI Assistant",
-    "message1": "Hello! Payment for booking BR-10432 (Velaa Private Island) is due tomorrow. Should I send the client a reminder?",
-    "message2": "Yes, please send it",
-    "message3": "Done ✅ Reminder sent to Rustam Aliyev via WhatsApp and email.",
-    "inputPlaceholder": "Ask AI something…",
-    "sendAriaLabel": "Send"
-  },
-  "kpi": {
-    "activeBookings": "Active bookings",
-    "activeBookingsDelta": "+12% this month",
-    "revenue": "Revenue (USD)",
-    "revenueDelta": "+8.4% this month",
-    "pendingPayment": "Pending payment",
-    "pendingPaymentDelta": "+3 this week",
-    "avgCheck": "Average booking value",
-    "avgCheckDelta": "−2.1% this month"
+    "finance": "Finance",
+    "messages": "Messages",
+    "notifications": "Notifications",
+    "signOut": "Sign out"
   },
   "mobileNav": {
     "openMenu": "Open menu",
     "closeMenu": "Close menu"
   },
-  "header": {
-    "panelLabel": "AGENT PANEL",
-    "greeting": "Good afternoon, {{name}}!",
-    "summary": "Today is July 4 — you have 5 active bookings and 2 need attention.",
-    "newBooking": "New booking"
+  "hero": {
+    "greeting": "Hello again, {{name}}",
+    "title": "Where to next?",
+    "subtitle": "Real-time hotel rates, seasons and special offers already factored in — search, quote, and book in one place."
   },
-  "aiInsight": {
-    "noticedLabel": "AI noticed:",
-    "part1": "booking at",
-    "part2": "is confirmed by the hotel, and payment for",
-    "part3": "is due tomorrow.",
-    "viewDetails": "View details"
+  "search": {
+    "searchButton": "Search hotels"
   },
-  "overview": {
-    "title": "Overview"
+  "trust": {
+    "bestRate": "Best rate guarantee",
+    "freeTransfers": "Free transfers included",
+    "securePayments": "Secure payments",
+    "support": "24/7 support"
+  },
+  "quickActions": {
+    "title": "Quick actions",
+    "createBooking": "Create Booking",
+    "myBookings": "My Bookings",
+    "outstandingInvoices": "Outstanding Invoices",
+    "agentStatement": "Agent Statement",
+    "downloadReports": "Download Reports",
+    "comingSoon": "Coming soon"
+  },
+  "featured": {
+    "title": "Featured hotels"
   },
   "bookingsSection": {
     "title": "My bookings"
-  },
-  "checklistPanel": {
-    "title": "Approval stages"
   }
 }

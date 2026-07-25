@@ -13,6 +13,7 @@ import AdminPanel from "./pages/AdminPanel";
 import AgentDashboard_v2 from "./pages/AgentDashboard_v2";
 import ManagerDashboard from "./pages/ManagerDashboard";
 import HotelSearch from "./pages/HotelSearch";
+import type { InitialSearch } from "./pages/HotelSearch";
 
 export type Page =
   | "home"
@@ -29,6 +30,12 @@ function App() {
   const [page, setPage] = useState<Page>("home");
   const [userRole, setUserRole] = useState<string | null>(null);
   const [forceUpdate, setForceUpdate] = useState(0);
+  // Carries a destination hint (e.g. clicking a featured hotel on
+  // AgentDashboard_v2.tsx) over to HotelSearch.tsx's own form -- pre-fills
+  // only, see HotelSearch.tsx's InitialSearch docstring. The dashboard no
+  // longer has its own search form (search lives only on this page), but a
+  // hint can still be passed alongside the CTA navigation.
+  const [pendingSearch, setPendingSearch] = useState<InitialSearch | undefined>(undefined);
 
   console.log('🔄 Текущая страница:', page);
 
@@ -110,14 +117,20 @@ function App() {
     setPage("manager-dashboard");
   };
 
-  const goToHotelSearch = () => {
+  const goToHotelSearch = (initial?: InitialSearch) => {
     console.log('📌 Переход на Hotel Search');
+    setPendingSearch(initial);
     setPage("hotel-search");
   };
 
   return (
     <div className="page">
-      {page !== "admin-panel" && <Header onHome={goToHome} />}
+      {/* AgentTopNav (Phase 1 design system) is now this generic Header's
+          replacement on agent-dashboard/hotel-search -- rendering both would
+          stack two nav bars, confirmed as the actual pre-redesign behavior. */}
+      {page !== "admin-panel" && page !== "agent-dashboard" && page !== "hotel-search" && (
+        <Header onHome={goToHome} />
+      )}
 
       {page === "home" && (
         <Home
@@ -143,7 +156,9 @@ function App() {
 
       {page === "dashboard" && <Dashboard />}
 
-      {page === "hotel-search" && <HotelSearch onBack={goToAgentDashboard} />}
+      {page === "hotel-search" && (
+        <HotelSearch onBack={goToAgentDashboard} initialSearch={pendingSearch} />
+      )}
     </div>
   );
 }

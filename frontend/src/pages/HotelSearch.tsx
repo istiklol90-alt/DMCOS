@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import i18n from "../i18n/i18n";
 import { API_URL } from "../config";
+import AgentTopNav from "../components/layout/AgentTopNav";
 
 function localeOf(lang: string): string {
   return lang === "en" ? "en-US" : "ru-RU";
@@ -281,11 +282,26 @@ function sortRoomTypesByPrice(roomTypes: RoomTypeResult[]): RoomTypeResult[] {
   });
 }
 
-function getInitials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[1][0]).toUpperCase();
+// Case-insensitive partial match across every field the "Destination /
+// hotel" search field's own label promises to cover -- hotel_name (e.g.
+// "Kandima"), and country/city/island/region/brand (e.g. "Maldives") --
+// not hotel_name alone. Client-side, not a backend endpoint: every hotel
+// is already fetched in one bulk call per search (real volume today is 2
+// hotels total), so a server-side search endpoint would add real backend
+// surface for zero benefit at this scale. Revisit only if hotel count
+// grows enough that fetching the full catalog per search stops being
+// cheap -- not a speculative concern today.
+function matchesDestination(hotel: Hotel, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    hotel.hotel_name.toLowerCase().includes(q) ||
+    hotel.country.toLowerCase().includes(q) ||
+    hotel.city.toLowerCase().includes(q) ||
+    (hotel.island?.toLowerCase().includes(q) ?? false) ||
+    (hotel.region?.toLowerCase().includes(q) ?? false) ||
+    (hotel.brand?.toLowerCase().includes(q) ?? false)
+  );
 }
 
 // A transfer-price bucket line (adults/children/infants) must always reflect
@@ -487,14 +503,14 @@ function MonthGrid({
   const weekdayLabels = t("dateRangePicker.weekdays", { returnObjects: true }) as string[];
 
   return (
-    <div className="w-64">
+    <div className="w-56">
       <p className="text-center text-sm font-medium capitalize text-ink">{monthLabel}</p>
-      <div className="mt-3 grid grid-cols-7 gap-y-1 text-center text-[11px] font-medium text-slate/40">
+      <div className="mt-2.5 grid grid-cols-7 gap-y-0.5 text-center text-[10px] font-medium text-slate/40">
         {weekdayLabels.map((w) => (
           <span key={w}>{w}</span>
         ))}
       </div>
-      <div className="mt-1 grid grid-cols-7 gap-y-1 text-center text-sm">
+      <div className="mt-0.5 grid grid-cols-7 gap-y-0.5 text-center text-xs">
         {cells.map((day, i) => {
           if (!day) return <span key={i} />;
 
@@ -512,7 +528,7 @@ function MonthGrid({
               disabled={isPast}
               onClick={() => onDayClick(day)}
               className={[
-                "mx-auto flex h-9 w-9 items-center justify-center rounded-full transition-colors",
+                "mx-auto flex h-7 w-7 items-center justify-center rounded-full transition-colors",
                 isPast ? "cursor-not-allowed text-slate/20" : "text-ink hover:bg-sand",
                 isCheckIn || isCheckOut ? "bg-coral text-white hover:bg-coral" : "",
                 isInRange ? "bg-coral/10" : "",
@@ -548,6 +564,11 @@ export function DateRangePicker({
   const t = forceLang ? i18n.getFixedT(forceLang, "hotelSearch") : ambientT;
   const [open, setOpen] = useState(false);
   const [viewDate, setViewDate] = useState(() => (checkIn ? parseISODate(checkIn) : new Date()));
+  // Visual-only tab, per explicit scope -- no flexible-date search exists
+  // (backend only ever takes exact check_in/check_out dates). Selecting
+  // "Flexible Dates" just changes which pill is active; the calendar below
+  // keeps behaving identically either way.
+  const [dateMode, setDateMode] = useState<"specific" | "flexible">("specific");
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -603,43 +624,83 @@ export function DateRangePicker({
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-20 mt-2 flex w-[34rem] items-start gap-2 rounded-2xl border border-ink/10 bg-white p-4 shadow-lg">
-          <button
-            type="button"
-            onClick={() => setViewDate(new Date(year, month - 1, 1))}
-            aria-label={t("dateRangePicker.prevMonth")}
-            className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink hover:bg-sand"
-          >
-            <IconChevronLeft />
-          </button>
+        <div className="absolute left-0 top-full z-20 mt-2 w-fit rounded-2xl border border-ink/10 bg-white p-3 shadow-lg">
+          <div className="mb-3 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setDateMode("specific")}
+              className={`appearance-none rounded-full border-0 px-4 py-1.5 text-xs font-medium transition-colors ${
+                dateMode === "specific" ? "bg-ink text-white" : "bg-transparent text-slate/50 hover:text-ink"
+              }`}
+            >
+              {t("dateRangePicker.specificDates")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setDateMode("flexible")}
+              className={`appearance-none rounded-full border-0 px-4 py-1.5 text-xs font-medium transition-colors ${
+                dateMode === "flexible" ? "bg-ink text-white" : "bg-transparent text-slate/50 hover:text-ink"
+              }`}
+            >
+              {t("dateRangePicker.flexibleDates")}
+            </button>
+          </div>
 
-          <MonthGrid
-            t={t}
-            lang={lang}
-            year={year}
-            month={month}
-            checkInDate={checkInDate}
-            checkOutDate={checkOutDate}
-            onDayClick={handleDayClick}
-          />
-          <MonthGrid
-            t={t}
-            lang={lang}
-            year={nextMonthDate.getFullYear()}
-            month={nextMonthDate.getMonth()}
-            checkInDate={checkInDate}
-            checkOutDate={checkOutDate}
-            onDayClick={handleDayClick}
-          />
+          <div className="flex items-start gap-1.5">
+            <button
+              type="button"
+              onClick={() => setViewDate(new Date(year, month - 1, 1))}
+              aria-label={t("dateRangePicker.prevMonth")}
+              className="mt-1 flex shrink-0 appearance-none items-center justify-center border-0 bg-transparent p-1 text-slate/50 transition-colors hover:text-ink"
+            >
+              <IconChevronLeft />
+            </button>
 
-          <button
-            type="button"
-            onClick={() => setViewDate(new Date(year, month + 1, 1))}
-            aria-label={t("dateRangePicker.nextMonth")}
-            className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink hover:bg-sand"
-          >
-            <IconChevronRight />
-          </button>
+            <MonthGrid
+              t={t}
+              lang={lang}
+              year={year}
+              month={month}
+              checkInDate={checkInDate}
+              checkOutDate={checkOutDate}
+              onDayClick={handleDayClick}
+            />
+            <MonthGrid
+              t={t}
+              lang={lang}
+              year={nextMonthDate.getFullYear()}
+              month={nextMonthDate.getMonth()}
+              checkInDate={checkInDate}
+              checkOutDate={checkOutDate}
+              onDayClick={handleDayClick}
+            />
+
+            <button
+              type="button"
+              onClick={() => setViewDate(new Date(year, month + 1, 1))}
+              aria-label={t("dateRangePicker.nextMonth")}
+              className="mt-1 flex shrink-0 appearance-none items-center justify-center border-0 bg-transparent p-1 text-slate/50 transition-colors hover:text-ink"
+            >
+              <IconChevronRight />
+            </button>
+          </div>
+
+          <div className="mt-3 flex items-center justify-between border-t border-ink/10 pt-3">
+            <button
+              type="button"
+              onClick={() => onChange("", "")}
+              className="appearance-none border-0 bg-transparent p-0 text-sm font-medium text-slate/60 transition-colors hover:text-ink hover:underline"
+            >
+              {t("dateRangePicker.reset")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="appearance-none rounded-full border-0 bg-ink px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-ink/90"
+            >
+              {t("dateRangePicker.done")}
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -1331,11 +1392,24 @@ function HotelCard({
 // Page
 // ---------------------------------------------------------------------------
 
+// Carries an optional destination hint (e.g. clicking a featured hotel on
+// AgentDashboard_v2.tsx) over to this page's own, full search form --
+// pre-fills only, never auto-submits, so this page's own handleSearch
+// (already verified, untouched) remains the single place a real search
+// actually executes. Hotel search itself lives only on this page.
+export interface InitialSearch {
+  destination?: string;
+  checkIn?: string;
+  checkOut?: string;
+  adults?: number;
+}
+
 type HotelSearchProps = {
   onBack?: () => void;
+  initialSearch?: InitialSearch;
 };
 
-function HotelSearch({ onBack }: HotelSearchProps) {
+function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
   const { t } = useTranslation("hotelSearch");
   const [user, setUser] = useState<SessionUser | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -1366,10 +1440,10 @@ function HotelSearch({ onBack }: HotelSearchProps) {
     setCheckingAuth(false);
   }, []);
 
-  const [destination, setDestination] = useState("");
-  const [checkIn, setCheckIn] = useState("");
-  const [checkOut, setCheckOut] = useState("");
-  const [adults, setAdults] = useState(2);
+  const [destination, setDestination] = useState(initialSearch?.destination ?? "");
+  const [checkIn, setCheckIn] = useState(initialSearch?.checkIn ?? "");
+  const [checkOut, setCheckOut] = useState(initialSearch?.checkOut ?? "");
+  const [adults, setAdults] = useState(initialSearch?.adults ?? 2);
   const [childAges, setChildAges] = useState<number[]>([]);
   const occupancy = deriveOccupancy(adults, childAges);
 
@@ -1415,7 +1489,8 @@ function HotelSearch({ onBack }: HotelSearchProps) {
     setResults([]);
 
     try {
-      const hotels = await fetchJson<Hotel[]>("/hotel-engine/hotels?skip=0&limit=100", token);
+      const allHotels = await fetchJson<Hotel[]>("/hotel-engine/hotels?skip=0&limit=100", token);
+      const hotels = allHotels.filter((h) => matchesDestination(h, destination));
 
       const withRooms = await Promise.all(
         hotels.map(async (hotel): Promise<HotelResult> => {
@@ -1603,44 +1678,16 @@ function HotelSearch({ onBack }: HotelSearchProps) {
 
   return (
     <div className="min-h-screen bg-sand font-sans text-slate">
-      {/* Top nav -- logo left, primary nav links center/right, account far
-          right. Replaces the old plain logo+back-link header. "Мои
-          бронирования" reuses the exact same navigation the old back
-          button already did (agent-scoped BookingsList already lives on
-          AgentDashboard_v2 -- no new route needed). */}
-      <div className="border-b border-ink/10 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4 sm:px-8">
-          <div className="flex items-center gap-2.5">
-            <span className="h-8 w-8 rounded-lg bg-gradient-to-br from-coral to-teal" />
-            <span className="font-display text-lg font-semibold text-ink">DMC OS</span>
-          </div>
-
-          <nav className="hidden items-center gap-1 sm:flex">
-            <span className="rounded-lg px-3.5 py-2 text-sm font-medium text-ink">{t("page.navSearch")}</span>
-            <button
-              type="button"
-              onClick={() => (onBack ? onBack() : (window.location.href = "/agent-dashboard"))}
-              className="rounded-lg px-3.5 py-2 text-sm font-medium text-slate/60 transition-colors hover:bg-sand hover:text-ink"
-            >
-              {t("page.navMyBookings")}
-            </button>
-          </nav>
-
-          <div className="flex items-center gap-3">
-            <span className="hidden text-sm text-slate/60 sm:inline">{user.name}</span>
-            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-ink text-xs font-semibold text-white">
-              {getInitials(user.name)}
-            </span>
-            <button
-              type="button"
-              onClick={() => (onBack ? onBack() : (window.location.href = "/agent-dashboard"))}
-              className="text-sm font-medium text-teal hover:underline sm:hidden"
-            >
-              {t("page.back")}
-            </button>
-          </div>
-        </div>
-      </div>
+      {/* Shared top nav (Phase 1 design system) -- replaces this page's own
+          previously-separate top bar, and the generic Header.tsx App.tsx
+          used to render above it (removed there; see App.tsx's own
+          comment). Same component AgentDashboard_v2.tsx now uses. */}
+      <AgentTopNav
+        user={user}
+        active="search"
+        onNavigateSearch={() => {}}
+        onNavigateDashboard={() => (onBack ? onBack() : (window.location.href = "/agent-dashboard"))}
+      />
 
       {/* Hero band -- reuses the existing ink/coral/teal gradient already
           used elsewhere in this file (HotelCard's own image-placeholder
@@ -1659,7 +1706,14 @@ function HotelSearch({ onBack }: HotelSearchProps) {
           onSubmit={handleSearch}
           className="-mt-10 rounded-2xl border border-ink/10 bg-white shadow-xl sm:-mt-12"
         >
-          <div className="flex flex-col divide-y divide-ink/10 sm:flex-row sm:items-stretch sm:divide-x sm:divide-y-0">
+          {/* Decision (search-panel restyle): the old divide-x/divide-y
+              utilities drew a full-height border between every field.
+              Replaced with explicit inset divider elements (self-stretch +
+              vertical margin shrinks the visible line to shorter than the
+              field's own height, "not a full border") plus extra gap
+              spacing as the primary separator -- the outer panel's own
+              border/shadow (on the form element itself) is untouched. */}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch sm:gap-0">
             <div className="flex flex-1 flex-col gap-1.5 px-5 py-4 sm:py-6">
               <label className="text-xs font-medium text-slate/50">{t("page.destinationLabel")}</label>
               <input
@@ -1669,8 +1723,9 @@ function HotelSearch({ onBack }: HotelSearchProps) {
                 placeholder={t("page.destinationPlaceholder")}
                 className="w-full bg-transparent text-base text-slate placeholder:text-slate/40 focus:outline-none"
               />
-              <p className="text-[11px] text-slate/40">{t("page.destinationHint")}</p>
             </div>
+
+            <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />
 
             <div className="flex flex-col gap-1.5 pt-4 sm:w-64 sm:shrink-0 sm:py-6">
               <label className="px-5 text-xs font-medium text-slate/50">{t("page.datesLabel")}</label>
@@ -1683,6 +1738,8 @@ function HotelSearch({ onBack }: HotelSearchProps) {
                 }}
               />
             </div>
+
+            <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />
 
             <div className="flex flex-col gap-1.5 px-5 py-4 sm:w-64 sm:shrink-0 sm:py-6">
               <label className="text-xs font-medium text-slate/50">{t("page.guestsLabel")}</label>
@@ -1708,6 +1765,8 @@ function HotelSearch({ onBack }: HotelSearchProps) {
                 )}
               </div>
             </div>
+
+            <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />
 
             <div className="flex items-center px-5 py-4 sm:py-6 sm:pl-6 sm:pr-2 sm:shrink-0">
               <button

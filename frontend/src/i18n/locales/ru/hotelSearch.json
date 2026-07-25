@@ -10,7 +10,11 @@
     "selectDates": "Выберите даты",
     "prevMonth": "Предыдущий месяц",
     "nextMonth": "Следующий месяц",
-    "weekdays": ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    "weekdays": ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
+    "specificDates": "Точные даты",
+    "flexibleDates": "Гибкие даты",
+    "reset": "Сбросить",
+    "done": "Готово"
   },
   "guestDetailsForm": {
     "title": "Данные ведущего гостя",
@@ -81,15 +85,11 @@
     "noMealPlansAvailable": "Нет доступных тарифов для этого номера",
     "priceUnavailable": "Цена недоступна",
     "ratesLoadFailed": "Не удалось загрузить тарифы",
-    "navSearch": "Поиск",
-    "navMyBookings": "Мои бронирования",
-    "back": "← Назад",
     "heroTag": "ПОИСК И БРОНИРОВАНИЕ",
     "heroTitle": "Найти отель",
     "heroSubtitle": "Реальные тарифы напрямую из Contract Engine — сезоны, спецпредложения и трансферы уже учтены.",
     "destinationLabel": "Направление / отель",
     "destinationPlaceholder": "Мальдивы, Rixos...",
-    "destinationHint": "Поиск по названию пока не поддерживается Hotel Engine — показаны все отели.",
     "datesLabel": "Даты",
     "guestsLabel": "Гости",
     "adultsLabel": "Взрослые",

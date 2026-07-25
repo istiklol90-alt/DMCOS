@@ -1,5 +1,4 @@
 import i18next from "i18next";
-import { initReactI18next } from "react-i18next";
 
 import reservationsEn from "./locales/en/reservations.json";
 import hotelSearchEn from "./locales/en/hotelSearch.json";
@@ -26,9 +25,35 @@ import commonEn from "./locales/en/common.json";
 // English-only resources: admin never needs the "ru" bundle or the
 // agentDashboard namespace (AgentDashboard_v2.tsx is never rendered inside
 // AdminPanel).
+//
+// Decision (bug fix): deliberately does NOT call .use(initReactI18next).
+// That plugin's ONLY job is registering this instance as react-i18next's
+// shared, module-level "default" fallback (setI18n(instance) in
+// react-i18next's own context.js) that every useTranslation() call with no
+// explicit i18n prop and no wrapping I18nextProvider falls back to via
+// getI18n(). Confirmed directly against react-i18next's source
+// (node_modules/react-i18next/src/i18nInstance.js): that fallback is a
+// single shared variable, last-write-wins, GLOBAL ACROSS EVERY i18next
+// instance in the same JS runtime -- not scoped per-instance. Since
+// AdminPanel.tsx is unconditionally imported by App.tsx (no code-splitting),
+// this module's side effect ran on every page load regardless of role, and
+// because it happened to execute AFTER i18n.ts's own setI18n(i18n) call
+// (App.tsx imports AdminPanel before AgentDashboard_v2/HotelSearch, and
+// main.tsx imports i18n.ts before router.tsx/App.tsx), it silently
+// overwrote the real ambient default for the ENTIRE app -- every
+// unwrapped useTranslation() call anywhere (Header.tsx, AgentTopNav,
+// AgentDashboard_v2, HotelSearch, Reservations' BookingsList, all of it)
+// was actually resolving against THIS English-only, no-"agentDashboard"-
+// namespace instance instead of the real bilingual one, which is exactly
+// why raw keys like "nav.search"/"hero.subtitle" (a namespace this
+// instance never registers at all) rendered literally. I18nextProvider
+// (confirmed via its own source) has zero dependency on the wrapped
+// instance having used this plugin -- it just passes the instance through
+// context -- so removing it here fixes the leak with no loss of function
+// for AdminPanel.tsx's own subtree.
 const adminI18n = i18next.createInstance();
 
-adminI18n.use(initReactI18next).init({
+adminI18n.init({
   lng: "en",
   fallbackLng: "en",
   ns: ["common", "reservations", "hotelSearch"],

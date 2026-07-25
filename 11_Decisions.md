@@ -5632,6 +5632,28 @@ Status: Implemented and verified against the real running backend with a real ad
 
 ---
 
+# Decision 114
+
+Date: 2026-07-26
+
+Decision: Fixed a real, reproducible bug found by the project owner via live browser testing on the Phase 1 Agent Dashboard redesign (Decisions building toward the DMC OS design system): raw i18next keys (`nav.search`, `hero.subtitle`, etc.) rendering literally instead of resolving to real text, plus a design duplication where hotel search appeared both as a full embedded form on `AgentDashboard_v2.tsx`'s hero and as `HotelSearch.tsx`'s own dedicated page.
+
+**Root cause of the i18n bug (confirmed via direct evidence, not assumption).** My first hypothesis — a stale, 3.5-day-old Vite dev server/HMR cache, matching Decision 112's precedent — was proven wrong by the project owner testing in a brand-new browser with no cache at all, which still reproduced both bugs. Re-investigated at the actual `node_modules/react-i18next` source level (not just this project's own code) and found the real cause: `frontend/src/i18n/i18nAdmin.ts` (Decision 110's admin-only English-forcing instance) called `.use(initReactI18next).init(...)`. That plugin's only function (`node_modules/react-i18next/src/initReactI18next.js`) is `setI18n(instance)`, which writes a single module-level variable (`node_modules/react-i18next/src/i18nInstance.js`: `let i18nInstance; export const setI18n = (instance) => { i18nInstance = instance; }; export const getI18n = () => i18nInstance;`) — the fallback every unwrapped `useTranslation()` call resolves against (`i18nFromProps || i18nFromContext || getI18n()`), shared globally across the entire JS runtime, not scoped per file or per intended "logical" instance. Because `App.tsx` unconditionally imports `AdminPanel.tsx` (no code-splitting), which imports `i18nAdmin.ts`, and because ES module evaluation order made `i18nAdmin.ts`'s side effect run AFTER `main.tsx`'s own `import "./i18n/i18n"` (the real bilingual singleton) in the actual dependency graph, `adminI18n` silently became the accidental app-wide default — overwriting the real one for every unwrapped `useTranslation()` call anywhere (`AgentTopNav`, `AgentDashboard_v2`, `HotelSearch`, `Reservations`' shared `BookingsList`), not just inside `AdminPanel.tsx`'s own tree. Since `adminI18n` never registers the `agentDashboard` namespace or Russian resources, any lookup against it fell through to a raw key string. Confirmed via `node_modules/react-i18next/src/I18nextProvider.js`'s own source that `.use(initReactI18next)` was never actually needed for `adminI18n`'s real purpose: `I18nextProvider` just passes its given instance through React context with zero dependency on that instance ever having registered itself as the global default — `AdminPanel.tsx`'s existing `<I18nextProvider i18n={adminI18n}>` wrapper works identically without it.
+
+**Fix:** removed `import { initReactI18next } from "react-i18next"` and the `.use(initReactI18next)` call from `i18nAdmin.ts` entirely, leaving `adminI18n.init({...})` as a plain, un-registered instance consumed only via its existing explicit `I18nextProvider` wrapper.
+
+**Duplicate search bar — a real design duplication, not a literal render-collision.** `AgentDashboard_v2.tsx` and `HotelSearch.tsx` are mutually-exclusive pages under `App.tsx`'s single `page` state (confirmed, never simultaneously mounted), so there was no literal DOM duplication. But the project owner's clarified requirement — hotel search must live in exactly ONE place, the "Search" nav item/page — correctly identified that Phase 1's embedded destination/dates/guests form on the dashboard hero was a genuine functional duplicate of `HotelSearch.tsx`'s own form, just on a different page. Removed the embedded form (state, `submitQuickSearch`, and its JSX) entirely and replaced it with a single CTA button that navigates to the real Search page via the existing `onNavigateToHotelSearch` callback, with no criteria to pre-fill since there's no longer a local form to source them from.
+
+**Cleanup done alongside, once the embedded form was gone:** removed now-orphaned `search.destinationLabel`/`destinationPlaceholder`/`datesLabel`/`guestsLabel` keys from `agentDashboard.json` (en/ru) — `search.searchButton` is the only key from that block still referenced. Removed the now-unnecessary `export` on `HotelSearch.tsx`'s `Counter` component, added during Phase 1 for a reuse that was reverted by this same fix (confirmed via grep: nothing outside `HotelSearch.tsx` imports it). Updated two stale comments (`App.tsx`'s `pendingSearch` state, `HotelSearch.tsx`'s `InitialSearch` docstring) that still described the removed embedded form.
+
+Reason: this bug was invisible to every verification method used earlier in this session (`tsc -b`, `vite build`, API-level checks) because it's a runtime module-load-order effect with no type or build-time signature — it only surfaces via actual browser rendering, confirming live browser testing is necessary for i18n/rendering-layer changes going forward, not just for business-logic changes. The project owner's insistence on re-investigating after ruling out caching (rather than accepting the first, incorrect "stale cache" explanation) is what surfaced the real root cause.
+
+Approved By: Daler
+
+Status: Implemented and verified. `npx tsc -b` clean (same 9-error pre-existing baseline, zero new). `npx vite build` clean. Old dev server process (and its child) fully killed and a fresh one started, confirmed serving HTTP 200. Confirmed live by the project owner in-browser: translation keys resolve correctly, and hotel search now appears in exactly one place (the Search page/nav item).
+
+---
+
 # Decision Template
 
 Decision Number:
