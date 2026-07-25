@@ -1447,6 +1447,41 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
   const [childAges, setChildAges] = useState<number[]>([]);
   const occupancy = deriveOccupancy(adults, childAges);
 
+  // Full hotel catalog, loaded once on mount and reused by both the
+  // destination autocomplete dropdown below and handleSearch's own
+  // filtering -- avoids a second identical fetch at submit time. If this
+  // load hasn't finished (or failed) by the time the agent submits,
+  // handleSearch falls back to fetching it fresh itself, so a slow/failed
+  // background load never breaks a real search.
+  const [catalogHotels, setCatalogHotels] = useState<Hotel[]>([]);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
+
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    fetchJson<Hotel[]>("/hotel-engine/hotels?skip=0&limit=100", token)
+      .then(setCatalogHotels)
+      .catch(() => {})
+      .finally(() => setCatalogLoaded(true));
+  }, []);
+
+  // Debounced purely to avoid dropdown-content flicker on fast typing --
+  // there is no network round-trip per keystroke to justify a debounce for
+  // cost reasons, since matchesDestination filters an already-loaded,
+  // in-memory array (see its own docstring: this is a genuine, data-size-
+  // independent formula, not a fixed-for-today's-2-hotels special case).
+  const [debouncedDestination, setDebouncedDestination] = useState(destination);
+  useEffect(() => {
+    const handle = setTimeout(() => setDebouncedDestination(destination), 150);
+    return () => clearTimeout(handle);
+  }, [destination]);
+
+  const [destinationDropdownOpen, setDestinationDropdownOpen] = useState(false);
+  const destinationSuggestions =
+    debouncedDestination.trim().length >= 2
+      ? catalogHotels.filter((h) => matchesDestination(h, debouncedDestination)).slice(0, 8)
+      : [];
+
   function handleChildCountChange(newCount: number) {
     setChildAges((prev) =>
       newCount > prev.length
@@ -1469,6 +1504,7 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
   async function handleSearch(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setFormError(null);
+    setDestinationDropdownOpen(false);
 
     if (!checkIn || !checkOut) {
       setFormError(t("page.datesRequired"));
@@ -1489,7 +1525,9 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
     setResults([]);
 
     try {
-      const allHotels = await fetchJson<Hotel[]>("/hotel-engine/hotels?skip=0&limit=100", token);
+      const allHotels = catalogLoaded
+        ? catalogHotels
+        : await fetchJson<Hotel[]>("/hotel-engine/hotels?skip=0&limit=100", token);
       const hotels = allHotels.filter((h) => matchesDestination(h, destination));
 
       const withRooms = await Promise.all(
@@ -1714,15 +1752,53 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
               spacing as the primary separator -- the outer panel's own
               border/shadow (on the form element itself) is untouched. */}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch sm:gap-0">
-            <div className="flex flex-1 flex-col gap-1.5 px-5 py-4 sm:py-6">
+            <div className="relative flex flex-1 flex-col gap-1.5 px-5 py-4 sm:py-6">
               <label className="text-xs font-medium text-slate/50">{t("page.destinationLabel")}</label>
               <input
                 type="text"
                 value={destination}
-                onChange={(e) => setDestination(e.target.value)}
+                onChange={(e) => {
+                  setDestination(e.target.value);
+                  setDestinationDropdownOpen(true);
+                }}
+                onFocus={() => setDestinationDropdownOpen(true)}
                 placeholder={t("page.destinationPlaceholder")}
                 className="w-full bg-transparent text-base text-slate placeholder:text-slate/40 focus:outline-none"
               />
+              {/* Live suggestions -- same dropdown/debounce pattern as
+                  financeShared.tsx's AgentSearchSelect, adapted for an
+                  already-loaded in-memory catalog instead of a per-
+                  keystroke server search (unnecessary at real hotel-catalog
+                  scale, see catalogHotels above). matchesDestination is the
+                  same generic, data-size-independent formula the submitted
+                  search itself uses -- narrowing to 500 hotels across 10
+                  destinations needs no code change here, only real data. */}
+              {destinationDropdownOpen && destination.trim().length >= 2 && (
+                <div className="absolute left-5 right-5 top-full z-20 mt-1 max-h-64 overflow-y-auto rounded-lg border border-ink/10 bg-white shadow-lg">
+                  {!catalogLoaded ? (
+                    <p className="px-4 py-3 text-sm text-slate/50">{t("page.destinationSuggestionsLoading")}</p>
+                  ) : destinationSuggestions.length === 0 ? (
+                    <p className="px-4 py-3 text-sm text-slate/50">{t("page.destinationNoSuggestions")}</p>
+                  ) : (
+                    destinationSuggestions.map((hotel) => (
+                      <button
+                        key={hotel.id}
+                        type="button"
+                        onClick={() => {
+                          setDestination(hotel.hotel_name);
+                          setDestinationDropdownOpen(false);
+                        }}
+                        className="block w-full appearance-none border-0 border-b border-ink/5 bg-white px-4 py-2.5 text-left text-sm last:border-b-0 hover:bg-sand/40"
+                      >
+                        <span className="font-medium text-ink">{hotel.hotel_name}</span>
+                        <span className="ml-2 text-slate/60">
+                          {[hotel.city, hotel.country].filter(Boolean).join(", ")}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />

@@ -88,6 +88,8 @@
     "heroSubtitle": "Real rates straight from Contract Engine — seasons, special offers and transfers already factored in.",
     "destinationLabel": "Destination / hotel",
     "destinationPlaceholder": "Maldives, Rixos...",
+    "destinationSuggestionsLoading": "Loading hotels...",
+    "destinationNoSuggestions": "No matching hotels",
     "datesLabel": "Dates",
     "guestsLabel": "Guests",
     "adultsLabel": "Adults",

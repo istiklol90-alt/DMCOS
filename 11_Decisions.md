@@ -5654,6 +5654,42 @@ Status: Implemented and verified. `npx tsc -b` clean (same 9-error pre-existing 
 
 ---
 
+# Decision 115
+
+Date: 2026-07-26
+
+Decision: Added live autocomplete to `HotelSearch.tsx`'s destination field, reusing `financeShared.tsx`'s `AgentSearchSelect` dropdown/debounce interaction pattern but adapted to a client-side in-memory catalog rather than a server-side debounced search endpoint — the full hotel catalog is already fetched in one call at real scale, the same reasoning already established for `matchesDestination` itself. The catalog now loads once on mount (`catalogHotels`/`catalogLoaded` state) and is reused by `handleSearch` (previously re-fetched identical data at submit time), with a fallback fetch if the background load hasn't completed by submit. The dropdown appears after 2 characters, debounced 150ms purely to avoid flicker — not for network cost, since filtering an in-memory array is cheap even at real future scale. Selecting a suggestion fills the destination field only, consistent with this file's existing `InitialSearch` "pre-fill only, never auto-submit" convention — `handleSearch` remains the single place a real search executes.
+
+Explicitly required and verified: the underlying `matchesDestination` formula must remain genuinely destination-agnostic — narrowing correctly to 2 hotels today or 500 hotels across 10 destinations tomorrow with zero code changes, only new data. Verified via a synthetic 502-hotel dataset (500 generated + the 2 real hotels) spanning 10 countries: "Kandima"/"Siyam" still isolate exactly 1 hotel each, unaffected by the other 500; "Turkey"/"Dubai"/"Bali" correctly narrow to only their own country despite nothing being hardcoded to a specific place; "Marriott" (a brand, not a place) correctly spans multiple countries, confirming the field-agnostic OR-across-columns design; a nonexistent place returns zero results, never a fallback to "show everything."
+
+Reason: an autocomplete UX improvement is only real, project-consistent progress if it's built on and preserves a genuinely reusable underlying formula — the project owner explicitly required proof, not just an assertion, that this holds at real future scale before accepting the feature, matching the discipline now made an explicit, standing principle by Decision 116.
+
+Approved By: Daler
+
+Status: Implemented and verified. `npx tsc -b` clean (9-error pre-existing baseline, zero new). `npx vite build` clean. Confirmed live by the project owner in-browser. Synthetic 502-hotel/10-destination genericity test (documented above) passed with zero code changes needed to `matchesDestination` or the new autocomplete logic.
+
+---
+
+# Decision 116
+
+Date: 2026-07-26
+
+Decision: Formalizing an explicit, project-wide strategic principle, elevated by the project owner from what has been an implicit practice since Decisions 036/064/065: the current 2 real hotels (Kandima Maldives, Siyam World) and their contracts are a TEST GROUND, not the end goal. They exist specifically to validate that the underlying architecture and business-logic FORMULAS — pricing, search, special offers, cancellation policies, transfers, and every future mechanism — are correct before real scale (hundreds of hotels, dozens of destinations) arrives.
+
+**The rule:** every mechanism built against today's 2 test hotels must be a genuinely reusable formula requiring zero code changes when hotel #3, #50, or #500 is added — only new DATA. If a proposed approach only works because there happen to be 2 hotels, 1 destination, or some other small-number coincidence of today's real dataset, it does not meet this bar, regardless of how well it passes today's tests.
+
+**Not a new rule — an explicit elevation of existing precedent.** Decision 064 already documented this exact reasoning for hotel-integration readiness ("Documenting this now, while the architecture is still small (2 real hotels), ensures future integration work builds on an already-compatible foundation rather than requiring rework"). Decisions 036/065 already apply the same "build only once a proven need exists, and build it as a reusable mechanism, not a one-off" discipline to AI Core Engine specifically. What changes here: this is no longer scoped to AI Core or to future integration alone — it is now the explicit, primary lens for evaluating ANY future feature request across every Engine, not an implicit practice inferred from prior decisions' reasoning sections.
+
+**How this changes evaluation going forward:** for any future feature request, the first question is not just "does this solve the immediate problem" but "does this scale as a formula to hundreds of hotels/destinations, or does it only work for today's 2 test hotels?" A request that risks being hotel-specific, destination-specific, or otherwise sized to today's small real dataset should be flagged explicitly before implementation, not discovered after the fact once real scale arrives. Verification of new features should include a genericity check against synthetic data at real-world scale where the underlying formula's data-size-independence isn't otherwise obvious — the same standard just applied to Decision 115's autocomplete work.
+
+Reason: with only 2 real hotels in the system, it is easy for a feature to accidentally work "by coincidence" against today's small dataset (e.g., a filter that happens to be correct because there's only one real country, an autocomplete that happens to be fast because there are only 2 rows to search) without the underlying mechanism actually being sound at real scale. Making this the explicit evaluation lens, rather than trusting it to be inferred, catches this class of gap before it ships, not after hotel #50 exposes it.
+
+Approved By: Daler
+
+Status: Logged as a binding, project-wide evaluation principle governing all future feature work, superseding the implicit version of this practice previously scattered across Decisions 036/064/065's individual reasoning. Not a code change — a standing discipline for how any future request (across any Engine, not just AI Core) should be assessed before implementation.
+
+---
+
 # Decision Template
 
 Decision Number:

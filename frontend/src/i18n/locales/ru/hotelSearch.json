@@ -90,6 +90,8 @@
     "heroSubtitle": "Реальные тарифы напрямую из Contract Engine — сезоны, спецпредложения и трансферы уже учтены.",
     "destinationLabel": "Направление / отель",
     "destinationPlaceholder": "Мальдивы, Rixos...",
+    "destinationSuggestionsLoading": "Загрузка отелей...",
+    "destinationNoSuggestions": "Совпадений не найдено",
     "datesLabel": "Даты",
     "guestsLabel": "Гости",
     "adultsLabel": "Взрослые",
