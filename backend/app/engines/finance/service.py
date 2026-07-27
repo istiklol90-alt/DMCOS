@@ -131,6 +131,99 @@ def compute_booking_financials(booking: Booking) -> dict:
     }
 
 
+# Rooms in these statuses were never actually delivered/charged -- a
+# Rejected room's pricing fields are all NULL (never priced, see
+# BookingRoom's own docstring), and a Cancelled/Cancellation-Requested
+# room's allotment is being or has been given back. None of the three
+# should ever contribute to an invoice.
+_NON_BILLABLE_ROOM_STATUSES = {"Rejected", "Cancelled", "Cancellation Requested"}
+
+
+def compute_application_financials(db: Session, booking: Booking) -> dict:
+    """
+    Stage 4 (multi-room booking applications): aggregates Net/Sale/Profit
+    across every currently-billable room (BookingRoom) in an application,
+    plus the itemized per-room breakdown the project owner explicitly
+    asked for (room 1: names + sum, room 2: names + sum, grand total).
+
+    Reuses compute_booking_financials completely UNCHANGED, called once
+    per billable room -- BookingRoom exposes the exact same
+    total_amount/agent_markup_amount/agent_exclusive_discount_amount/
+    transfer_total/mandatory_tax_total/currency/id attributes Booking
+    itself does (duck-typing compatible, confirmed by inspection: both
+    are the same columns, just living on two different tables since
+    Stage 1), so there's no separate room-level formula to keep in sync
+    with the booking-level one.
+
+    Falls back to the OLD direct-on-Booking computation, wrapped in the
+    same {"rooms": [...]} shape, for any booking with zero BookingRoom
+    rows at all -- a booking created via the original single-room
+    create_booking path (Stage 2 left that function completely
+    untouched), which never gets a BookingRoom row. Every one of the 59
+    bookings that predate this feature DOES have exactly one
+    migrated BookingRoom (Stage 1), so this fallback is only ever
+    exercised by bookings created through the old endpoint after Stage 2
+    shipped alongside it, not by historical data.
+    """
+    rooms = booking_service.list_booking_rooms(db, booking.id)
+
+    if not rooms:
+        fin = compute_booking_financials(booking)
+        return {**fin, "rooms": [{**fin, "booking_room_id": None, "sequence_number": 1, "guest_names": None}]}
+
+    billable = [r for r in rooms if r.status not in _NON_BILLABLE_ROOM_STATUSES]
+
+    if not billable:
+        # Every room in the application was rejected/cancelled -- nothing
+        # was actually delivered, so nothing is owed. 0.0/None follow the
+        # exact same NULL-vs-zero convention compute_booking_financials
+        # itself already uses (a real, computed zero, not "not computed").
+        return {
+            "booking_id": booking.id,
+            "currency": booking.currency,
+            "subtotal": 0.0,
+            "net_total": 0.0,
+            "sale_total": 0.0,
+            "discount_amount": 0.0,
+            "commission_amount": 0.0,
+            "tax_amount": 0.0,
+            "profit": 0.0,
+            "rooms": [],
+        }
+
+    room_breakdowns = []
+    for room in billable:
+        fin = compute_booking_financials(room)
+        guests = booking_service.list_guests_for_room(db, room.id)
+        guest_names = ", ".join(f"{g.first_name} {g.last_name}" for g in guests) or None
+        fin = {
+            **fin,
+            "booking_room_id": room.id,
+            "sequence_number": room.sequence_number,
+            "guest_names": guest_names,
+        }
+        del fin["booking_id"]
+        room_breakdowns.append(fin)
+
+    markup_computed_all = all(b["markup_computed"] for b in room_breakdowns)
+
+    def _sum(key: str) -> float:
+        return sum((b[key] or 0.0) for b in room_breakdowns)
+
+    return {
+        "booking_id": booking.id,
+        "currency": room_breakdowns[0]["currency"],
+        "subtotal": _sum("subtotal"),
+        "net_total": _sum("net_total"),
+        "sale_total": _sum("sale_total"),
+        "discount_amount": _sum("discount_amount"),
+        "commission_amount": _sum("commission_amount"),
+        "tax_amount": _sum("tax_amount"),
+        "profit": _sum("profit") if markup_computed_all else None,
+        "rooms": room_breakdowns,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Invoice
 # ---------------------------------------------------------------------------
@@ -151,8 +244,24 @@ def _attach_review_notes(db: Session, invoice: Invoice) -> Invoice:
     call this (or _attach_review_notes_bulk) before returning, since
     the attribute doesn't exist on the ORM object otherwise -- and
     db.refresh() wipes any previously-attached value, so this must run
-    AFTER the last refresh, not before."""
+    AFTER the last refresh, not before.
+
+    Stage 4: also attaches room_breakdown here (single-invoice fetches
+    only, NOT _attach_review_notes_bulk's list views -- a list table
+    doesn't render per-room itemization). Reads the FROZEN
+    InvoiceRoomLine rows created once by create_invoice_for_booking --
+    deliberately NOT recomputed live from BookingRoom's current data. An
+    earlier version of this did recompute live, and a real bug was
+    caught during Stage 4's own verification: an existing invoice's
+    frozen `total` silently disagreed with a live-recomputed breakdown
+    once the underlying booking had moved on after invoicing. Invoice is
+    a "frozen financial document" by its own docstring -- its breakdown
+    must stay frozen too, or the two can drift and disagree. If a room's
+    price genuinely changes after invoicing, InvoiceReviewNote is the
+    existing, correct mechanism to surface that -- not something this
+    breakdown should paper over by quietly showing different numbers."""
     invoice.review_notes = repository.list_review_notes_by_invoice(db, invoice.id)
+    invoice.room_breakdown = repository.list_invoice_room_lines(db, invoice.id)
     return invoice
 
 
@@ -192,7 +301,13 @@ def create_invoice_for_booking(db: Session, booking_id: int, created_by: int) ->
     if repository.get_invoice_by_booking(db, booking_id) is not None:
         raise ValueError(f"Booking {booking_id} already has an invoice")
 
-    financials = compute_booking_financials(booking)
+    # Stage 4 (multi-room booking applications): Invoice's own stored
+    # columns are the grand-total aggregate across every billable room in
+    # the application (compute_application_financials sums them) --
+    # unchanged in shape from before, and byte-identical to the old
+    # compute_booking_financials(booking) result for any booking with
+    # exactly one room (every pre-Stage-4 booking, migrated or not).
+    financials = compute_application_financials(db, booking)
     invoice = repository.create_invoice(
         db,
         invoice_number=_generate_invoice_number(),
@@ -200,7 +315,7 @@ def create_invoice_for_booking(db: Session, booking_id: int, created_by: int) ->
         agent_id=booking.agent_id,
         hotel_id=booking.hotel_id,
         issue_date=date.today(),
-        currency=booking.currency,
+        currency=financials["currency"],
         subtotal=financials["subtotal"],
         discount=financials["discount_amount"],
         commission=financials["commission_amount"],
@@ -209,6 +324,33 @@ def create_invoice_for_booking(db: Session, booking_id: int, created_by: int) ->
         status="Draft",
         created_by=created_by,
     )
+
+    # The itemized per-room breakdown is FROZEN here, once, into
+    # InvoiceRoomLine -- never recomputed live on later reads (see that
+    # model's own docstring for the real bug this fixed during Stage 4's
+    # verification). financials["rooms"] is the exact same list just used
+    # to compute the grand-total columns above, so the line items and the
+    # total can never disagree with each other at least at this moment.
+    for room_fin in financials["rooms"]:
+        repository.create_invoice_room_line(
+            db,
+            invoice_id=invoice.id,
+            booking_room_id=room_fin["booking_room_id"],
+            sequence_number=room_fin["sequence_number"],
+            guest_names=room_fin["guest_names"],
+            currency=room_fin["currency"],
+            room_net=room_fin["room_net"],
+            room_sale=room_fin["room_sale"],
+            transfer_amount=room_fin["transfer_amount"],
+            tax_amount=room_fin["tax_amount"],
+            discount_amount=room_fin["discount_amount"],
+            commission_amount=room_fin["commission_amount"],
+            subtotal=room_fin["subtotal"],
+            net_total=room_fin["net_total"],
+            sale_total=room_fin["sale_total"],
+            profit=room_fin["profit"],
+        )
+
     return _attach_review_notes(db, invoice)
 
 
@@ -1016,6 +1158,82 @@ def create_and_send_voucher(db: Session, booking_id: int, created_by: int) -> Vo
         created_by=created_by,
         email_sent_at=datetime.utcnow() if sent else None,
     )
+
+
+def create_and_send_voucher_for_room(db: Session, booking_room_id: int, created_by: int) -> Voucher:
+    """
+    Stage 4 (multi-room booking applications): the per-room counterpart
+    to create_and_send_voucher above, which stays completely untouched
+    for legacy single-room bookings. Confirmed directly with the project
+    owner (2026-07-27): a voucher is issued separately per room, since
+    different rooms in the same application can have entirely different
+    guests, room types, meal plans -- resolved here from BookingRoom
+    (own hotel_id/room_type_id/meal_plan_id/dates) and
+    list_guests_for_room (only the guests actually assigned to THIS
+    room, via BookingRoomGuest -- never the whole application's guest
+    list). Same trigger shape as the original: requires
+    BookingRoom.confirmation_number to already be set.
+    """
+    room = booking_service.get_booking_room(db, booking_room_id)
+    if not room.confirmation_number:
+        raise ValueError(
+            f"Booking room {booking_room_id} has no confirmation_number -- nothing to generate a voucher for"
+        )
+
+    booking = booking_service.get_booking(db, room.booking_id)
+    agent = db.query(User).filter(User.id == booking.agent_id).first()
+    if agent is None or not agent.email:
+        raise ValueError(f"Agent {booking.agent_id} has no resolvable email -- cannot send voucher")
+
+    hotel = hotel_service.get_hotel(db, room.hotel_id)
+    room_type = hotel_service.get_room_type(db, room.room_type_id)
+    meal_plan = contract_service.get_contract_meal_plan(db, room.meal_plan_id) if room.meal_plan_id else None
+    guests = booking_service.list_guests_for_room(db, room.id)
+    guest_names = ", ".join(f"{g.first_name} {g.last_name}" for g in guests) or None
+
+    sent = email_service.send_voucher_email({
+        "confirmation_number": room.confirmation_number,
+        "hotel_name": hotel.hotel_name,
+        "booking_number": booking.booking_number,
+        "arrival_date": room.arrival_date,
+        "departure_date": room.departure_date,
+        "room_type_name": room_type.room_name,
+        "meal_plan_label": (meal_plan.meal_name or meal_plan.meal_code) if meal_plan else None,
+        "guest_names": guest_names,
+        "adults": room.adults,
+        "children": room.children,
+        "infants": room.infants,
+        "agent_name": agent.name,
+        "agent_email": agent.email,
+    })
+
+    return repository.create_voucher(
+        db,
+        booking_id=booking.id,
+        booking_room_id=room.id,
+        agent_id=booking.agent_id,
+        hotel_id=room.hotel_id,
+        confirmation_number=room.confirmation_number,
+        hotel_name=hotel.hotel_name,
+        arrival_date=room.arrival_date,
+        departure_date=room.departure_date,
+        room_type_name=room_type.room_name,
+        meal_plan_label=(meal_plan.meal_name or meal_plan.meal_code) if meal_plan else None,
+        guest_names=guest_names,
+        adults=room.adults,
+        children=room.children,
+        infants=room.infants,
+        created_by=created_by,
+        email_sent_at=datetime.utcnow() if sent else None,
+    )
+
+
+def get_latest_voucher_for_room(db: Session, booking_room_id: int) -> Voucher:
+    """Stage 4: same append-only "most recent wins" resolution as get_latest_voucher, scoped to one room."""
+    vouchers = repository.list_vouchers_by_room(db, booking_room_id)
+    if not vouchers:
+        raise ValueError(f"Booking room {booking_room_id} has no voucher yet")
+    return vouchers[-1]
 
 
 def get_invoice_status(db: Session, booking_id: int) -> str | None:

@@ -42,7 +42,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.engines.booking import repository
-from app.engines.booking.models import Booking, Guest, BookingCorrespondence
+from app.engines.booking.models import Booking, Guest, BookingCorrespondence, BookingRoom
 from app.engines.booking.schemas import (
     BookingCreate,
     BookingUpdate,
@@ -50,6 +50,8 @@ from app.engines.booking.schemas import (
     BookingDateChangeRequest,
     ConfirmCancellationRequest,
     GuestCreate,
+    BookingApplicationCreate,
+    BookingRoomRejectRequest,
 )
 from app.engines.booking.validators import (
     validate_booking_status,
@@ -59,6 +61,7 @@ from app.engines.booking.validators import (
     validate_stay_dates,
     validate_nights_consistency,
     validate_occupancy,
+    validate_can_approve_or_reject_room,
     TERMINAL_STATUSES,
 )
 
@@ -91,6 +94,13 @@ def _require_guest(db: Session, guest_id: int) -> Guest:
     if guest is None:
         raise ValueError(f"Guest {guest_id} not found")
     return guest
+
+
+def _require_booking_room(db: Session, booking_room_id: int) -> BookingRoom:
+    room = repository.get_booking_room(db, booking_room_id)
+    if room is None:
+        raise ValueError(f"Booking room {booking_room_id} not found")
+    return room
 
 
 def _require_agent(db: Session, agent_id: int) -> User:
@@ -664,6 +674,493 @@ def update_guest(db: Session, guest_id: int, **fields) -> Guest:
     """Update an existing guest's fields."""
     guest = _require_guest(db, guest_id)
     return repository.update_guest(db, guest, **fields)
+
+
+# ---------------------------------------------------------------------------
+# Multi-room booking application (Stage 2)
+# ---------------------------------------------------------------------------
+# Booking becomes "the application" (agent_id, guest list, whole-application
+# cancel/claim/correspondence — all unchanged, single-room create_booking
+# above is untouched). BookingRoom is one row per actual room/leg within
+# that application. Confirmed directly with the project owner (2026-07-27):
+# same guests throughout one application (a different guest set is a new,
+# separate application); rooms may be different hotels but must share the
+# same destination/country; the system never auto-confirms a room — a
+# successfully-reserved room stays "Pending" until a manager approves it
+# (Stage 3); partial fulfillment is expected and correct — some rooms
+# succeeding while others are rejected for lack of availability is not an
+# error to roll back, it's the normal outcome for a multi-room request.
+
+
+class NoAllotmentAvailable(ValueError):
+    """
+    Internal-only signal, never raised past _price_application_room's own
+    caller: distinguishes "no inventory for this room" (a soft, per-room
+    outcome — the room becomes status="Rejected", the rest of the
+    application proceeds normally) from every other ValueError this
+    pipeline can raise (missing contract, invalid occupancy, a required
+    transfer not supplied) — those are treated as fatal, aborting the
+    whole application, since they mean something is wrong with the
+    request itself, not that inventory happens to be sold out.
+    """
+
+
+def _price_application_room(db: Session, agent_id: int, room_data) -> dict:
+    """
+    Runs every READ-only step of create_booking's own pipeline (contract
+    resolution, transfer-required check, allotment check, room/transfer/
+    tax pricing, agent pricing) for one room of a multi-room application,
+    without writing anything at all — not even reserve_allotment. Returns
+    a plain dict; never mutates the database. Deliberately duplicated from
+    create_booking rather than refactored out of it — create_booking is
+    part of the already-LOCKED, already-verified single-room path, and
+    reusing this by extracting shared internals wasn't worth the risk of
+    touching it for this additive feature.
+
+    "contract_id" is always present in the returned dict (a missing
+    contract raises before the allotment check ever runs, so this
+    function never returns without one). "rejected" distinguishes a soft,
+    per-room no-availability outcome (True) from a fully-priced,
+    ready-to-reserve room (False) — every OTHER failure mode (missing
+    contract, invalid occupancy/dates, a required transfer not given)
+    raises a plain ValueError instead of returning, which the caller
+    treats as fatal for the whole application.
+    """
+    hotel_service.get_room_type(db, room_data.room_type_id)
+    validate_stay_dates(room_data.arrival_date, room_data.departure_date)
+    validate_occupancy(room_data.adults, room_data.children, room_data.infants)
+
+    contract = contract_service.get_active_contract(db, room_data.hotel_id, room_data.arrival_date)
+    if contract is None:
+        raise ValueError(f"Hotel {room_data.hotel_id} has no currently-active contract")
+
+    if contract.transfer_required and room_data.transfer_type is None:
+        raise ValueError(
+            f"Hotel {room_data.hotel_id}'s contract requires selecting a transfer option"
+        )
+
+    available = contract_service.check_allotment(
+        db, contract.id, room_data.room_type_id, room_data.arrival_date, room_data.departure_date
+    )
+    if not available:
+        return {
+            "rejected": True,
+            "rejection_reason": (
+                f"Room type {room_data.room_type_id} is not available for "
+                f"{room_data.arrival_date} to {room_data.departure_date}"
+            ),
+            "contract_id": contract.id,
+        }
+
+    price = contract_service.get_room_price(
+        db,
+        contract.id,
+        room_data.room_type_id,
+        room_data.arrival_date,
+        room_data.departure_date,
+        room_data.meal_plan,
+        room_data.adults,
+        room_data.children,
+        room_data.infants,
+    )
+
+    transfer_total = None
+    if room_data.transfer_type is not None:
+        transfer_price = contract_service.get_transfer_price(
+            db,
+            contract.id,
+            room_data.transfer_type,
+            room_data.arrival_date,
+            room_data.departure_date,
+            room_data.adults,
+            room_data.children,
+            room_data.infants,
+        )
+        transfer_total = transfer_price["total"]
+
+    nights = (room_data.departure_date - room_data.arrival_date).days
+    validate_nights_consistency(nights, room_data.arrival_date, room_data.departure_date)
+
+    mandatory_tax_total = contract_service.get_mandatory_tax(
+        db, contract.id, nights, room_data.adults, room_data.children
+    )["total"]
+
+    agent_pricing = pricing_service.apply_agent_pricing(
+        db, agent_id, contract.id, price["final_total"], nights,
+        room_data.room_type_id, price["meal_plan_id"], room_data.arrival_date, room_data.departure_date,
+    )
+
+    special_offer_ids = price.get("applied_special_offer_ids", [])
+    applied_special_offer_id = special_offer_ids[0] if len(special_offer_ids) == 1 else None
+
+    return {
+        "rejected": False,
+        "contract_id": contract.id,
+        "rate_id": price["rate_id"],
+        "meal_plan_id": price["meal_plan_id"],
+        "applied_special_offer_id": applied_special_offer_id,
+        "nights": nights,
+        "currency": price["currency"],
+        "total_amount": agent_pricing["agent_room_total"],
+        "agent_markup_amount": agent_pricing["markup_amount"],
+        "agent_exclusive_discount_amount": agent_pricing["exclusive_discount_amount"],
+        "transfer_total": transfer_total,
+        "mandatory_tax_total": mandatory_tax_total,
+    }
+
+
+def create_booking_application(db: Session, data: BookingApplicationCreate) -> Booking:
+    """
+    Create a multi-room booking application: 1 or more rooms under one
+    shared Booking (application) row, same guests throughout, priced and
+    allotment-checked independently per room via the exact same Contract
+    Engine functions create_booking already uses.
+
+    Phase 1 (reads only, zero writes): every room's pricing pipeline runs
+    via _price_application_room. A fatal error (missing contract, invalid
+    occupancy, a required transfer not given) on ANY room raises
+    immediately — since nothing has been written yet at this point, there
+    is nothing to roll back, unlike create_booking's own single-room
+    compensating-release pattern. A room with no available inventory does
+    NOT raise — it's recorded as a soft rejection and every other room in
+    the application still proceeds.
+
+    Phase 2 (writes): the Booking (application) row is created first,
+    using the first successfully-priced room as a "representative"
+    legacy-field snapshot (hotel_id/room_type_id/dates/contract_id/
+    rate_id/meal_plan_id/currency/total_amount/etc.) — kept populated for
+    backward compatibility with any code not yet updated to read
+    BookingRoom directly (Finance Engine, admin list views), a known,
+    accepted limitation until a later stage closes it. If literally every
+    room was rejected, rate_id/meal_plan_id default to 0 and
+    total_amount to 0.0 — not placeholders, but the genuinely correct
+    values, since nothing was actually booked or priced. Then the
+    application's guests are created once (entered once per trip, per the
+    project owner's explicit instruction), then each room is
+    reserve_allotment'd (only now, only for rooms that priced
+    successfully) and inserted as its own BookingRoom row with
+    status="Pending" (never auto-"Confirmed" — Stage 3 adds the
+    manager-approve step), or status="Rejected" for a no-availability
+    room. A reserve_allotment race (another booking took the room between
+    this function's read-phase and write-phase) is treated the same as a
+    pre-existing rejection, not a fatal error for the whole application.
+
+    The application's own status is "Pending" if at least one room is
+    ready/pending, "Rejected" only if every single room was rejected.
+    "Confirmed"/"Partially Confirmed" are never set here — those only
+    happen once a manager actually approves individual rooms (Stage 3).
+    """
+    _require_agent(db, data.agent_id)
+
+    # Destination/country constraint (project owner's explicit rule,
+    # 2026-07-27): every room in one application must share the same
+    # country — may be different hotels within it (Kandima -> Siyam
+    # World, both Maldives, is fine; Maldives + UAE in one application is
+    # not). A plain comparison against Hotel Engine's own country field,
+    # never a hardcoded hotel/destination list — holds identically at 2
+    # hotels or 5000 (Decision 116/117's formula principle).
+    first_hotel = hotel_service.get_hotel(db, data.rooms[0].hotel_id)
+    for room_data in data.rooms[1:]:
+        hotel = hotel_service.get_hotel(db, room_data.hotel_id)
+        if hotel.country != first_hotel.country:
+            raise ValueError(
+                f"All rooms in one application must be in the same destination "
+                f"— '{first_hotel.country}' vs '{hotel.country}'"
+            )
+
+    # Phase 1: read-only pricing for every room. Any fatal ValueError here
+    # propagates immediately — nothing has been written yet.
+    resolved = [_price_application_room(db, data.agent_id, room_data) for room_data in data.rooms]
+
+    representative = next((r for r in resolved if not r["rejected"]), None)
+    application_status = "Pending" if representative is not None else "Rejected"
+
+    first_room_data = data.rooms[0]
+    nights_fallback = (first_room_data.departure_date - first_room_data.arrival_date).days
+
+    # Phase 2: writes. Booking (application) row first.
+    booking = repository.create_booking(
+        db,
+        agent_id=data.agent_id,
+        hotel_id=first_room_data.hotel_id,
+        contract_id=resolved[0]["contract_id"],
+        rate_id=(representative or {}).get("rate_id", 0),
+        room_type_id=first_room_data.room_type_id,
+        meal_plan_id=(representative or {}).get("meal_plan_id", 0),
+        market_id=first_room_data.market_id,
+        applied_special_offer_id=(representative or {}).get("applied_special_offer_id"),
+        arrival_date=first_room_data.arrival_date,
+        departure_date=first_room_data.departure_date,
+        nights=(representative or {}).get("nights", nights_fallback),
+        adults=first_room_data.adults,
+        children=first_room_data.children,
+        infants=first_room_data.infants,
+        status=application_status,
+        currency=(representative or {}).get("currency") or "USD",
+        total_amount=(representative or {}).get("total_amount") or 0.0,
+        agent_markup_amount=(representative or {}).get("agent_markup_amount"),
+        agent_exclusive_discount_amount=(representative or {}).get("agent_exclusive_discount_amount"),
+        transfer_type=first_room_data.transfer_type,
+        transfer_total=(representative or {}).get("transfer_total"),
+        mandatory_tax_total=(representative or {}).get("mandatory_tax_total"),
+        special_requests=data.special_requests,
+        arrival_flight_number=data.arrival_flight_number,
+        departure_flight_number=data.departure_flight_number,
+        created_by=data.created_by,
+    )
+    # arrival_flight_date/time and departure_flight_date/time aren't part
+    # of repository.create_booking's existing kwarg set (BookingCreate
+    # never included them either — set post-insert, same as every other
+    # field this project treats as "editable after creation").
+    if any([
+        data.arrival_flight_date, data.arrival_flight_time,
+        data.departure_flight_date, data.departure_flight_time,
+    ]):
+        booking = repository.update_booking(
+            db,
+            booking,
+            arrival_flight_date=data.arrival_flight_date,
+            arrival_flight_time=data.arrival_flight_time,
+            departure_flight_date=data.departure_flight_date,
+            departure_flight_time=data.departure_flight_time,
+        )
+
+    # Guests -- entered once per application, not per room.
+    created_guests = [
+        repository.create_guest(
+            db,
+            booking_id=booking.id,
+            first_name=g.first_name,
+            last_name=g.last_name,
+            gender=g.gender,
+            date_of_birth=g.date_of_birth,
+            nationality=g.nationality,
+            passport_number=g.passport_number,
+            passport_expiry=g.passport_expiry,
+            special_requests=g.special_requests,
+            is_lead_guest=g.is_lead_guest,
+        )
+        for g in data.guests
+    ]
+
+    for sequence_number, (room_data, result) in enumerate(zip(data.rooms, resolved), start=1):
+        if result["rejected"]:
+            room = repository.create_booking_room(
+                db,
+                booking_id=booking.id,
+                sequence_number=sequence_number,
+                hotel_id=room_data.hotel_id,
+                contract_id=result["contract_id"],
+                room_type_id=room_data.room_type_id,
+                arrival_date=room_data.arrival_date,
+                departure_date=room_data.departure_date,
+                nights=(room_data.departure_date - room_data.arrival_date).days,
+                adults=room_data.adults,
+                children=room_data.children,
+                infants=room_data.infants,
+                status="Rejected",
+                rejection_reason=result["rejection_reason"],
+                transfer_type=room_data.transfer_type,
+                special_requests=room_data.special_requests,
+                market_id=room_data.market_id,
+            )
+        else:
+            # Only now — after the Booking application row and every
+            # other room's outcome is already known — does this actually
+            # reserve inventory. A race (another booking took it between
+            # the read-phase check_allotment and this reserve_allotment)
+            # is treated as a rejection for this room, not a fatal error
+            # for the whole application, matching the same "no
+            # availability" outcome the read-phase would have produced
+            # had it lost the race a moment earlier.
+            try:
+                contract_service.reserve_allotment(
+                    db, result["contract_id"], room_data.room_type_id,
+                    room_data.arrival_date, room_data.departure_date,
+                )
+            except Exception as e:
+                room = repository.create_booking_room(
+                    db,
+                    booking_id=booking.id,
+                    sequence_number=sequence_number,
+                    hotel_id=room_data.hotel_id,
+                    contract_id=result["contract_id"],
+                    room_type_id=room_data.room_type_id,
+                    arrival_date=room_data.arrival_date,
+                    departure_date=room_data.departure_date,
+                    nights=result["nights"],
+                    adults=room_data.adults,
+                    children=room_data.children,
+                    infants=room_data.infants,
+                    status="Rejected",
+                    rejection_reason=str(e),
+                    transfer_type=room_data.transfer_type,
+                    special_requests=room_data.special_requests,
+                    market_id=room_data.market_id,
+                )
+            else:
+                room = repository.create_booking_room(
+                    db,
+                    booking_id=booking.id,
+                    sequence_number=sequence_number,
+                    hotel_id=room_data.hotel_id,
+                    contract_id=result["contract_id"],
+                    rate_id=result["rate_id"],
+                    room_type_id=room_data.room_type_id,
+                    meal_plan_id=result["meal_plan_id"],
+                    market_id=room_data.market_id,
+                    applied_special_offer_id=result["applied_special_offer_id"],
+                    arrival_date=room_data.arrival_date,
+                    departure_date=room_data.departure_date,
+                    nights=result["nights"],
+                    adults=room_data.adults,
+                    children=room_data.children,
+                    infants=room_data.infants,
+                    status="Pending",
+                    currency=result["currency"],
+                    total_amount=result["total_amount"],
+                    agent_markup_amount=result["agent_markup_amount"],
+                    agent_exclusive_discount_amount=result["agent_exclusive_discount_amount"],
+                    transfer_type=room_data.transfer_type,
+                    transfer_total=result["transfer_total"],
+                    mandatory_tax_total=result["mandatory_tax_total"],
+                    special_requests=room_data.special_requests,
+                )
+
+        for guest_index in room_data.guest_indices:
+            repository.create_booking_room_guest_link(db, room.id, created_guests[guest_index].id)
+
+    return booking
+
+
+def list_booking_rooms(db: Session, booking_id: int) -> list[BookingRoom]:
+    """Return every room belonging to one application, in display order. Raises ValueError if the application doesn't exist."""
+    _require_booking(db, booking_id)
+    return repository.list_booking_rooms(db, booking_id)
+
+
+def get_booking_room(db: Session, booking_room_id: int) -> BookingRoom:
+    """Fetch one room by id, or raise ValueError if it doesn't exist."""
+    return _require_booking_room(db, booking_room_id)
+
+
+def list_guests_for_room(db: Session, booking_room_id: int) -> list[Guest]:
+    """Return the guests assigned to one specific room within an application."""
+    _require_booking_room(db, booking_room_id)
+    return repository.list_guests_for_room(db, booking_room_id)
+
+
+# ---------------------------------------------------------------------------
+# Manager approve/reject (Stage 3)
+# ---------------------------------------------------------------------------
+# The project owner's explicit instruction (2026-07-27): the system never
+# auto-confirms a room, even one whose allotment reserved successfully
+# (Free Sale or Guaranteed Allotment) -- it stays "Pending" until a manager
+# actively approves it. Only then is it "Confirmed" and the agent sees it
+# as such. A manager can also reject a Pending room outright (distinct
+# from the automatic no-allotment rejection create_booking_application can
+# already produce) -- always with a reason, same "never a bare reject"
+# principle as cancellation.
+
+
+def _recompute_application_status(db: Session, booking_id: int) -> None:
+    """
+    Booking.status (the application) is a rollup of its own rooms'
+    statuses, never independently set once rooms exist: "Pending" while
+    any room is still awaiting a decision; "Confirmed" only once EVERY
+    room is Confirmed; "Rejected" only if EVERY room ended up Rejected
+    (matches create_booking_application's own initial-state logic);
+    "Cancelled" only if every room was cancelled; "Partially Confirmed"
+    (an already-documented status, 03_Domain_Model.md #39) for any other
+    mix, e.g. some Confirmed and some Rejected/Cancelled. Application-level
+    cancellation (the agent cancelling the whole application) is its own
+    dedicated flow, not derived here.
+    """
+    rooms = repository.list_booking_rooms(db, booking_id)
+    if not rooms:
+        return
+    statuses = {r.status for r in rooms}
+    if statuses == {"Cancelled"}:
+        new_status = "Cancelled"
+    elif "Pending" in statuses:
+        new_status = "Pending"
+    elif statuses <= {"Confirmed"}:
+        new_status = "Confirmed"
+    elif statuses <= {"Rejected", "Cancelled"}:
+        new_status = "Rejected"
+    else:
+        new_status = "Partially Confirmed"
+
+    booking = repository.get_booking(db, booking_id)
+    if booking.status != new_status:
+        repository.update_booking_status(db, booking, new_status)
+
+
+def approve_booking_room(db: Session, booking_room_id: int, approved_by: int) -> BookingRoom:
+    """
+    Manager's explicit sign-off on a Pending room (allotment already
+    reserved). Flips status to "Confirmed" and records who/when — this is
+    the ONLY path that ever sets a room to "Confirmed"; nothing does so
+    automatically. Recomputes the parent application's own aggregate
+    status afterward.
+    """
+    room = _require_booking_room(db, booking_room_id)
+    validate_can_approve_or_reject_room(room.status)
+
+    room = repository.update_booking_room(
+        db, room, status="Confirmed", approved_by=approved_by, approved_at=datetime.utcnow()
+    )
+    _recompute_application_status(db, room.booking_id)
+    return room
+
+
+def reject_booking_room(
+    db: Session, booking_room_id: int, data: BookingRoomRejectRequest, rejected_by: int
+) -> BookingRoom:
+    """
+    Manager declining a Pending room's approve request — distinct from
+    the automatic no-allotment rejection create_booking_application can
+    already produce (rejected_by stays NULL there; a manager's own reject
+    always sets it, and always requires a reason via
+    BookingRoomRejectRequest). Releases the allotment this room is
+    actually holding — a Pending room always has a real reservation
+    (unlike an automatic rejection, which never reserved anything) — same
+    release-on-reject precedent update_booking_status already established
+    for the single-room path.
+    """
+    room = _require_booking_room(db, booking_room_id)
+    validate_can_approve_or_reject_room(room.status)
+
+    contract_service.release_allotment(
+        db, room.contract_id, room.room_type_id, room.arrival_date, room.departure_date
+    )
+
+    room = repository.update_booking_room(
+        db, room, status="Rejected", rejection_reason=data.reason, rejected_by=rejected_by
+    )
+    _recompute_application_status(db, room.booking_id)
+    return room
+
+
+def list_pending_approval_rooms(db: Session) -> list[BookingRoom]:
+    """
+    The "needs urgent approve" list: every room whose allotment
+    successfully reserved and is still awaiting a manager's approve/
+    reject decision. A plain query over BookingRoom's own columns, not a
+    new audit table (see repository.list_pending_approval_booking_rooms).
+    """
+    return repository.list_pending_approval_booking_rooms(db)
+
+
+def update_booking_room(db: Session, booking_room_id: int, **fields) -> BookingRoom:
+    """
+    Stage 4: update one room's editable fields (confirmation_number,
+    special_requests) within an application. Thin wrapper, same shape as
+    update_guest — repository.update_booking_room already does the
+    generic field-set + updated_at bump.
+    """
+    room = _require_booking_room(db, booking_room_id)
+    return repository.update_booking_room(db, room, **fields)
 
 
 # ---------------------------------------------------------------------------

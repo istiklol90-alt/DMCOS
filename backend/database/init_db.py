@@ -34,7 +34,7 @@ from app.engines.contract.models import (
     ReleaseRule,
     MinimumStayRule,
 )
-from app.engines.booking.models import Booking, Guest
+from app.engines.booking.models import Booking, Guest, BookingRoom, BookingRoomGuest
 from app.engines.ai_core.models import (
     ContractIngestionJob,
     ExtractedField,
@@ -53,6 +53,7 @@ from app.engines.finance.models import (
     AgentStatementLine,
     HotelCashbackArrangement,
     HotelCashbackFulfillment,
+    InvoiceRoomLine,
 )
 
 

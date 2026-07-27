@@ -23,6 +23,11 @@ from app.engines.booking.schemas import (
     BookingCorrespondenceSendRequest,
     BookingCorrespondenceReplyRequest,
     BookingCorrespondenceResponse,
+    BookingApplicationCreate,
+    BookingApplicationResponse,
+    BookingRoomResponse,
+    BookingRoomRejectRequest,
+    BookingRoomUpdate,
 )
 from app.engines.hotel import service as hotel_service
 from app.engines.contract import service as contract_service
@@ -350,6 +355,141 @@ def change_booking_dates(
     existing = _run(lambda: service.get_booking(db, booking_id))
     _require_owner_or_admin(current_user, existing)
     return _run(lambda: service.change_booking_dates(db, booking_id, data))
+
+
+# ---------------------------------------------------------------------------
+# Multi-room booking application (Stage 2)
+# ---------------------------------------------------------------------------
+
+
+def _assemble_application_response(db: Session, booking: Booking) -> BookingApplicationResponse:
+    """
+    Booking has no ORM relationship() to BookingRoom/Guest (this project
+    never uses SQLAlchemy relationships, per every other Engine's own
+    precedent), so the full application view is assembled explicitly here
+    rather than via response_model's automatic from_attributes pass-through.
+    """
+    rooms = service.list_booking_rooms(db, booking.id)
+    guests = service.list_guests(db, booking.id)
+    return BookingApplicationResponse(
+        id=booking.id,
+        booking_number=booking.booking_number,
+        agent_id=booking.agent_id,
+        status=booking.status,
+        special_requests=booking.special_requests,
+        arrival_flight_number=booking.arrival_flight_number,
+        departure_flight_number=booking.departure_flight_number,
+        arrival_flight_date=booking.arrival_flight_date,
+        arrival_flight_time=booking.arrival_flight_time,
+        departure_flight_date=booking.departure_flight_date,
+        departure_flight_time=booking.departure_flight_time,
+        claimed_by=booking.claimed_by,
+        claimed_at=booking.claimed_at,
+        cancellation_reason=booking.cancellation_reason,
+        cancelled_at=booking.cancelled_at,
+        cancelled_by=booking.cancelled_by,
+        created_by=booking.created_by,
+        created_at=booking.created_at,
+        updated_at=booking.updated_at,
+        rooms=[BookingRoomResponse.model_validate(r) for r in rooms],
+        guests=[GuestResponse.model_validate(g) for g in guests],
+    )
+
+
+@router.post(
+    "/applications", response_model=BookingApplicationResponse, status_code=status.HTTP_201_CREATED
+)
+def create_booking_application(
+    data: BookingApplicationCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """
+    Create a multi-room (1 or more rooms) booking application — see
+    service.create_booking_application's docstring for the full
+    partial-fulfillment/destination-constraint/guest-assignment behavior.
+    """
+    booking = _run(lambda: service.create_booking_application(db, data))
+    return _assemble_application_response(db, booking)
+
+
+@router.get("/applications/{booking_id}", response_model=BookingApplicationResponse)
+def get_booking_application(
+    booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    booking = _run(lambda: service.get_booking(db, booking_id))
+    return _assemble_application_response(db, booking)
+
+
+@router.get("/bookings/{booking_id}/rooms", response_model=list[BookingRoomResponse])
+def list_booking_rooms(
+    booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    return _run(lambda: service.list_booking_rooms(db, booking_id))
+
+
+@router.get("/rooms/pending-approval", response_model=list[BookingRoomResponse])
+def list_pending_approval_rooms(
+    db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """
+    Stage 3's "needs urgent approve" list — every room whose allotment
+    reserved successfully and is still awaiting a manager's approve/
+    reject decision. Registered BEFORE /rooms/{booking_room_id} so
+    FastAPI doesn't try to match "pending-approval" as an int path param
+    (same route-ordering class of bug already documented elsewhere in
+    this project for /agent-registrations/stats).
+    """
+    _require_admin(current_user)
+    return _run(lambda: service.list_pending_approval_rooms(db))
+
+
+@router.get("/rooms/{booking_room_id}", response_model=BookingRoomResponse)
+def get_booking_room(
+    booking_room_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    return _run(lambda: service.get_booking_room(db, booking_room_id))
+
+
+@router.post("/rooms/{booking_room_id}/approve", response_model=BookingRoomResponse)
+def approve_booking_room(
+    booking_room_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """Manager's explicit sign-off on a Pending room — the only path that ever sets a room to "Confirmed" (the system never auto-confirms). Admin-only, same convention as claim_booking/confirm_cancellation."""
+    _require_admin(current_user)
+    return _run(lambda: service.approve_booking_room(db, booking_room_id, approved_by=current_user.id))
+
+
+@router.post("/rooms/{booking_room_id}/reject", response_model=BookingRoomResponse)
+def reject_booking_room(
+    booking_room_id: int,
+    data: BookingRoomRejectRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Manager declining a Pending room's approve request — always requires a reason. Releases the allotment this room was holding. Admin-only, same convention as approve."""
+    _require_admin(current_user)
+    return _run(lambda: service.reject_booking_room(db, booking_room_id, data, rejected_by=current_user.id))
+
+
+@router.put("/rooms/{booking_room_id}", response_model=BookingRoomResponse)
+def update_booking_room(
+    booking_room_id: int,
+    data: BookingRoomUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Update one room's confirmation_number/special_requests — same admin-or-owning-agent shape as update_booking, since setting a room's confirmation number is a normal part of processing an agent's own booking, not a manager-only decision like approve/reject."""
+    room = _run(lambda: service.get_booking_room(db, booking_room_id))
+    booking = _run(lambda: service.get_booking(db, room.booking_id))
+    _require_owner_or_admin(current_user, booking)
+    update_data = data.model_dump(exclude_unset=True)
+    return _run(lambda: service.update_booking_room(db, booking_room_id, **update_data))
+
+
+@router.get("/rooms/{booking_room_id}/guests", response_model=list[GuestResponse])
+def list_guests_for_room(
+    booking_room_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    return _run(lambda: service.list_guests_for_room(db, booking_room_id))
 
 
 # ---------------------------------------------------------------------------

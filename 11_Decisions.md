@@ -5690,6 +5690,22 @@ Status: Logged as a binding, project-wide evaluation principle governing all fut
 
 ---
 
+# Decision 117
+
+Date: 2026-07-26
+
+Decision: Formalizing, at the project owner's explicit request, that "destination" is **not** a separate concept, entity, or manually-curated lookup in the hotel-search module — it is purely an inferred display/matching property read directly off each hotel's own record (`country`/`city`/`island`/`region`/`brand`). Searching by a hotel name (e.g. "Rixos Premium JBR") and searching by a destination keyword (e.g. "UAE" or "Maldives") are the same operation against the same fields — `matchesDestination` (Decision 115) already implements this as a single, field-agnostic substring match with no per-destination branch anywhere in the code. Confirmed directly against real data: searching "Siyam World" surfaces that hotel with its own `island`/`city`/`country` fields ("Noonu Atoll, Maldives") rendered automatically as the result card's location line (`HotelSearch.tsx`'s `HotelCard`, `location = [hotel.island, hotel.city, hotel.country].filter(Boolean).join(", ")`); searching "Kandima" does the same for its own distinct fields ("Dhaalu Atoll, Maldives"). Neither hotel's destination is hardcoded anywhere outside its own database row.
+
+This is not a new mechanism — it is the same Decision 116 "Test Ground" formula principle, applied specifically to hotel search/destination display: at real future scale (the project owner specifies ~5,000 hotels across many real destinations, with today's 2 hotels being explicitly a test ground to validate the mechanism, not the target scale), adding hotel #3 through #5,000 in any new country requires only a new `hotels` row with its own `country`/`city`/`island` populated — zero code changes to `matchesDestination`, `HotelCard`, or any other part of the search/display path. There is no "destination" table, enum, or selector to maintain in parallel with hotel data, and none should ever be introduced unless a real, proven need for a separate destination-grouping concept emerges (e.g., curated multi-country regions) — matching Decision 064's identical "build only once proven" reasoning already applied to hotel-integration readiness.
+
+Reason: the project owner wants this explicitly recorded (not just working by coincidence today) because the mental model matters for evaluating all future search/browse features — "destination" must never be designed as its own maintained concept that could drift out of sync with real hotel data; it must always be a live read of the hotel's own fields, which is what already guarantees correctness at any scale.
+
+Approved By: Daler
+
+Status: Confirmed as already-implemented, existing behavior — no code change made to the search/matching logic. Verified against real data via direct API call (`GET /hotel-engine/hotels`) and a replicated search simulation: "Siyam World" → "Siyam World" / "Noonu Atoll, Maldives"; "Kandima" → "Kandima Maldives" / "Dhaalu Atoll, Maldives" — both destinations correctly inferred from each hotel's own row, zero hardcoded hotel-to-destination mapping found anywhere in `HotelSearch.tsx`. Follow-up: the destination field's placeholder text was simplified to reference hotel name only (not "destination or hotel name"), matching this decision's clarified mental model that destination is never something an agent needs to separately specify.
+
+---
+
 # Decision Template
 
 Decision Number:

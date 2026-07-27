@@ -68,11 +68,37 @@
     "childrenLabel_one": "{{count}} child",
     "childrenLabel_other": "{{count}} children",
     "infantsLabel_one": "{{count}} infant",
-    "infantsLabel_other": "{{count}} infants"
+    "infantsLabel_other": "{{count}} infants",
+    "addToTrip": "Add to trip",
+    "addedToTrip": "Added ✓"
   },
   "hotelCard": {
     "noActiveContract": "No active contract",
     "noRoomTypes": "No room types available."
+  },
+  "cart": {
+    "title_one": "Trip: {{count}} room",
+    "title_other": "Trip: {{count}} rooms",
+    "hide": "Hide",
+    "show": "Show",
+    "remove": "Remove",
+    "checkout": "Create application",
+    "checkoutTitle": "Guest details",
+    "close": "Cancel",
+    "roomNumber": "Room {{number}}",
+    "adultsHeading": "Adults",
+    "childrenHeading": "Children",
+    "expectedChildAge": "Must match the age used at search: {{age}}",
+    "childAgeMismatch": "This date of birth gives age {{actual}}, but the room was searched/priced for age {{expected}} — enter the same child's real date of birth.",
+    "destinationMismatch": "All rooms in one application must be in the same destination — already have {{existing}}, tried to add {{attempted}}.",
+    "submitFailed": "Failed to create the application",
+    "submitting": "Submitting...",
+    "submit": "Submit application",
+    "cancel": "Cancel",
+    "applicationCreated": "Application created: # {{number}}",
+    "statusRejected": "No availability",
+    "statusPending": "Pending",
+    "done": "Done"
   },
   "page": {
     "accessDenied": "⛔ Access denied! Agents only.",
@@ -87,7 +113,7 @@
     "heroTitle": "Find a hotel",
     "heroSubtitle": "Real rates straight from Contract Engine — seasons, special offers and transfers already factored in.",
     "destinationLabel": "Destination / hotel",
-    "destinationPlaceholder": "Maldives, Rixos...",
+    "destinationPlaceholder": "Enter hotel name",
     "destinationSuggestionsLoading": "Loading hotels...",
     "destinationNoSuggestions": "No matching hotels",
     "datesLabel": "Dates",

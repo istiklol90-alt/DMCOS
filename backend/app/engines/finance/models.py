@@ -191,6 +191,50 @@ class InvoiceReviewNote(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class InvoiceRoomLine(Base):
+    """Stage 4 (multi-room booking applications): frozen line item, one
+    row per billable BookingRoom this invoice covered AT CREATION TIME --
+    same "frozen financial document, never silently drifts" principle
+    Invoice's own docstring already states, and the exact same
+    append-only precedent AgentStatementLine already established for its
+    own per-booking rollup (a statement's coverage "never silently
+    re-derivable/changeable after the fact").
+
+    Deliberately NOT computed live from BookingRoom on every read (the
+    first version of this feature did that, and a real bug was caught
+    during verification: an existing invoice's frozen total silently
+    disagreed with its own live-recomputed room breakdown once the
+    underlying booking data had moved on -- exactly the class of problem
+    InvoiceReviewNote already exists to flag explicitly, not something a
+    "breakdown" should paper over by quietly showing different numbers).
+    If a room's price changes after invoicing, InvoiceReviewNote is the
+    correct, existing mechanism to surface that -- this table stays
+    frozen regardless, same as invoices.total itself."""
+
+    __tablename__ = "invoice_room_lines"
+
+    id = Column(Integer, primary_key=True)
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False)
+    # Cross-engine ref into Booking Engine -- plain Integer, no
+    # ForeignKey, same convention every other reference in this file
+    # uses. NULL only for a legacy booking with zero BookingRoom rows at
+    # all (predates this feature).
+    booking_room_id = Column(Integer, nullable=True)
+    sequence_number = Column(Integer, nullable=False)
+    guest_names = Column(Text, nullable=True)
+    currency = Column(String(3), nullable=False)
+    room_net = Column(Float, nullable=False)
+    room_sale = Column(Float, nullable=False)
+    transfer_amount = Column(Float, nullable=True)
+    tax_amount = Column(Float, nullable=True)
+    discount_amount = Column(Float, nullable=True)
+    commission_amount = Column(Float, nullable=True)
+    subtotal = Column(Float, nullable=False)
+    net_total = Column(Float, nullable=False)
+    sale_total = Column(Float, nullable=False)
+    profit = Column(Float, nullable=True)
+
+
 class BookingReviewAcknowledgment(Base):
     """Decision 108: one row per booking, upserted -- replaces
     Invoice.flag_acknowledged_at/flag_acknowledged_by as the real,
@@ -395,6 +439,14 @@ class Voucher(Base):
     # Cross-engine refs into Booking/Hotel Engine -- plain Integer, no
     # ForeignKey, same convention every Engine uses.
     booking_id = Column(Integer, nullable=False)
+    # Stage 4 (multi-room booking applications): which specific room
+    # within the application this voucher is for -- NULL for a voucher
+    # generated the original way, against a booking with no BookingRoom
+    # rows at all (predates this feature). Every field below is still a
+    # frozen snapshot either way; this column is purely for traceability
+    # (e.g. "every voucher issued for this one room"), never re-read to
+    # derive anything on this row.
+    booking_room_id = Column(Integer, nullable=True)
     agent_id = Column(Integer, nullable=False)
     hotel_id = Column(Integer, nullable=False)
     confirmation_number = Column(String(100), nullable=False)

@@ -4,6 +4,7 @@ import type { TFunction } from "i18next";
 import i18n from "../i18n/i18n";
 import { API_URL } from "../config";
 import AgentTopNav from "../components/layout/AgentTopNav";
+import { IconPin, IconSearch } from "../components/ui/icons";
 
 function localeOf(lang: string): string {
   return lang === "en" ? "en-US" : "ru-RU";
@@ -177,6 +178,40 @@ type GuestFormValues = {
   passportExpiry: string;
   arrivalFlightNumber: string;
   departureFlightNumber: string;
+};
+
+// Stage 5 (multi-room booking applications) -- one room the agent has
+// added to an in-progress, not-yet-submitted "trip". Deliberately a
+// client-side-only concept: nothing is written to the backend until the
+// whole cart is submitted at once via POST /booking-engine/applications.
+// Carries both the real request fields (hotelId/roomTypeId/mealPlan/
+// dates/occupancy/transferType) and display-only fields (hotelName/
+// roomTypeName/mealPlanLabel/transferName/grandTotal) so the cart panel
+// never needs to re-fetch anything already known at add-to-cart time.
+type CartRoom = {
+  key: string;
+  hotelId: number;
+  hotelName: string;
+  country: string;
+  roomTypeId: number;
+  roomTypeName: string;
+  mealPlan: string;
+  mealPlanLabel: string;
+  arrivalDate: string;
+  departureDate: string;
+  adults: number;
+  children: number;
+  infants: number;
+  // The exact ages used to price this room at search time (same 2-11
+  // bucket deriveOccupancy itself computes `children` from) -- kept so
+  // the checkout form can require each child guest's real date of birth
+  // to reconcile with the age this room was actually priced at, not just
+  // a count. Length always equals `children` above.
+  childAges: number[];
+  transferType: string | null;
+  transferName: string | null;
+  currency: string | null;
+  grandTotal: number | null;
 };
 
 type ContractMealPlan = {
@@ -456,6 +491,20 @@ function isSameDate(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
+// Stage 5 -- age in whole years as of a given date, used by
+// ApplicationCheckoutForm to require a child guest's real date of birth
+// to match the age this room was actually priced at during search (see
+// CartRoom.childAges), not just any date the agent happens to type.
+function ageAtDate(dateOfBirth: string, atIso: string): number {
+  const dob = parseISODate(dateOfBirth);
+  const at = parseISODate(atIso);
+  let age = at.getFullYear() - dob.getFullYear();
+  const hadBirthdayThisYear =
+    at.getMonth() > dob.getMonth() || (at.getMonth() === dob.getMonth() && at.getDate() >= dob.getDate());
+  if (!hadBirthdayThisYear) age -= 1;
+  return age;
+}
+
 function buildMonthGrid(year: number, month: number): (Date | null)[] {
   const first = new Date(year, month, 1);
   const startWeekday = (first.getDay() + 6) % 7; // Sun=0..Sat=6 -> Mon=0..Sun=6
@@ -504,13 +553,13 @@ function MonthGrid({
 
   return (
     <div className="w-56">
-      <p className="text-center text-sm font-medium capitalize text-ink">{monthLabel}</p>
-      <div className="mt-2.5 grid grid-cols-7 gap-y-0.5 text-center text-[10px] font-medium text-slate/40">
+      <p className="text-center text-base font-semibold capitalize text-ink">{monthLabel}</p>
+      <div className="mt-3 grid grid-cols-7 text-center text-xs font-medium text-slate/40">
         {weekdayLabels.map((w) => (
           <span key={w}>{w}</span>
         ))}
       </div>
-      <div className="mt-0.5 grid grid-cols-7 gap-y-0.5 text-center text-xs">
+      <div className="mt-1 grid grid-cols-7 gap-y-0.5 text-center text-xs">
         {cells.map((day, i) => {
           if (!day) return <span key={i} />;
 
@@ -519,23 +568,29 @@ function MonthGrid({
           const isPast = day < today;
           const isCheckIn = checkInDate && isSameDate(day, checkInDate);
           const isCheckOut = checkOutDate && isSameDate(day, checkOutDate);
-          const isInRange = checkInDate && checkOutDate && day > checkInDate && day < checkOutDate;
+          const isEndpoint = Boolean(isCheckIn || isCheckOut);
+          // Marriott's own range look: a continuous light band spanning
+          // every day between check-in/check-out (a full-width rectangle on
+          // the cell itself, not a per-day circle), with only the two
+          // endpoint days shown as solid filled circles sitting on top of
+          // it -- not every in-range day getting its own separate dot.
+          const isInRangeInclusive = Boolean(checkInDate && checkOutDate && day >= checkInDate && day <= checkOutDate);
 
           return (
-            <button
-              key={i}
-              type="button"
-              disabled={isPast}
-              onClick={() => onDayClick(day)}
-              className={[
-                "mx-auto flex h-7 w-7 items-center justify-center rounded-full transition-colors",
-                isPast ? "cursor-not-allowed text-slate/20" : "text-ink hover:bg-sand",
-                isCheckIn || isCheckOut ? "bg-coral text-white hover:bg-coral" : "",
-                isInRange ? "bg-coral/10" : "",
-              ].join(" ")}
-            >
-              {day.getDate()}
-            </button>
+            <div key={i} className={isInRangeInclusive ? "bg-coral/10" : ""}>
+              <button
+                type="button"
+                disabled={isPast}
+                onClick={() => onDayClick(day)}
+                className={[
+                  "mx-auto flex h-7 w-7 appearance-none items-center justify-center rounded-full border-0 bg-transparent transition-colors",
+                  isPast ? "cursor-not-allowed text-slate/20" : "text-ink hover:bg-sand",
+                  isEndpoint ? "bg-coral text-white hover:bg-coral" : "",
+                ].join(" ")}
+              >
+                {day.getDate()}
+              </button>
+            </div>
           );
         })}
       </div>
@@ -548,6 +603,7 @@ export function DateRangePicker({
   checkOut,
   onChange,
   forceLang,
+  size = "sm",
 }: {
   checkIn: string;
   checkOut: string;
@@ -558,6 +614,11 @@ export function DateRangePicker({
   // Agent-facing callers (HotelSearch.tsx, Reservations.tsx) omit this and
   // follow the ambient i18n.language normally.
   forceLang?: "en" | "ru";
+  // "lg" is opt-in, only used by HotelSearch.tsx's own main search bar (the
+  // Marriott-style restyle) -- default "sm" keeps every other caller
+  // (Reservations.tsx's date-change flow, PriceCalculator.tsx) visually
+  // unchanged.
+  size?: "sm" | "lg";
 }) {
   const { t: ambientT, i18n: i18nInstance } = useTranslation("hotelSearch");
   const lang = forceLang ?? i18nInstance.language;
@@ -615,9 +676,13 @@ export function DateRangePicker({
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-slate"
+        className={
+          size === "lg"
+            ? "flex w-full items-center gap-2.5 px-7 py-1 text-left text-lg text-slate sm:text-xl"
+            : "flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-slate"
+        }
       >
-        <IconCalendar className="w-4 h-4 shrink-0 text-slate/50" />
+        <IconCalendar className={size === "lg" ? "w-5 h-5 shrink-0 text-slate/50" : "w-4 h-4 shrink-0 text-slate/50"} />
         <span className={checkIn || checkOut ? "text-slate" : "text-slate/40"}>
           {formatDateRangeLabel(t, lang, checkIn, checkOut)}
         </span>
@@ -625,12 +690,15 @@ export function DateRangePicker({
 
       {open && (
         <div className="absolute left-0 top-full z-20 mt-2 w-fit rounded-2xl border border-ink/10 bg-white p-3 shadow-lg">
-          <div className="mb-3 flex items-center gap-1.5">
+          {/* Marriott-style segmented control: a light gray track with the
+              active tab rendered as a raised white pill, not a solid-filled
+              tab against a transparent track. */}
+          <div className="mb-4 flex items-center gap-1 rounded-full bg-sand p-1">
             <button
               type="button"
               onClick={() => setDateMode("specific")}
-              className={`appearance-none rounded-full border-0 px-4 py-1.5 text-xs font-medium transition-colors ${
-                dateMode === "specific" ? "bg-ink text-white" : "bg-transparent text-slate/50 hover:text-ink"
+              className={`flex-1 appearance-none rounded-full border-0 px-4 py-2 text-xs font-semibold transition-colors ${
+                dateMode === "specific" ? "bg-white text-ink shadow-sm" : "bg-transparent text-slate/50 hover:text-ink"
               }`}
             >
               {t("dateRangePicker.specificDates")}
@@ -638,8 +706,8 @@ export function DateRangePicker({
             <button
               type="button"
               onClick={() => setDateMode("flexible")}
-              className={`appearance-none rounded-full border-0 px-4 py-1.5 text-xs font-medium transition-colors ${
-                dateMode === "flexible" ? "bg-ink text-white" : "bg-transparent text-slate/50 hover:text-ink"
+              className={`flex-1 appearance-none rounded-full border-0 px-4 py-2 text-xs font-semibold transition-colors ${
+                dateMode === "flexible" ? "bg-white text-ink shadow-sm" : "bg-transparent text-slate/50 hover:text-ink"
               }`}
             >
               {t("dateRangePicker.flexibleDates")}
@@ -857,9 +925,14 @@ function RoomTypeCard({
   adults,
   childrenCount,
   infants,
+  childAges,
   agentId,
   checkIn,
   checkOut,
+  hotelId,
+  hotelName,
+  hotelCountry,
+  onAddToTrip,
 }: {
   rt: RoomTypeResult;
   expanded: boolean;
@@ -871,9 +944,19 @@ function RoomTypeCard({
   adults: number;
   childrenCount: number;
   infants: number;
+  // Stage 5 -- real ages behind childrenCount, carried onto CartRoom.
+  childAges: number[];
   agentId: number;
   checkIn: string;
   checkOut: string;
+  // Stage 5 (multi-room booking applications) -- hotel context needed to
+  // build a CartRoom entry, and the callback that actually adds it to the
+  // in-progress trip (owned by the top-level HotelSearch component, not
+  // this card -- multiple cards across multiple hotels share one cart).
+  hotelId: number;
+  hotelName: string;
+  hotelCountry: string;
+  onAddToTrip: (room: CartRoom) => { ok: boolean; error?: string };
 }) {
   const { t, i18n: i18nInstance } = useTranslation("hotelSearch");
   const lang = i18nInstance.language;
@@ -886,6 +969,14 @@ function RoomTypeCard({
     bookingNumber: string;
     guestWarning: string | null;
   } | null>(null);
+
+  // Stage 5 (multi-room booking applications) -- "Добавить в поездку"
+  // feedback, entirely local/transient: addedToTripAt just flips a
+  // button label to a checkmark briefly, addToTripError surfaces the
+  // client-side same-destination pre-check (the real, authoritative
+  // check still runs server-side on submit).
+  const [addedToTripAt, setAddedToTripAt] = useState<number | null>(null);
+  const [addToTripError, setAddToTripError] = useState<string | null>(null);
 
   // Decision 074: per-meal-plan-option nightly breakdown, lazy-loaded on
   // toggle -- keyed by mealCode since this component is already scoped to
@@ -949,6 +1040,46 @@ function RoomTypeCard({
     selectedMeal?.agentPrice
       ? selectedMeal.agentPrice.agent_room_total + (selectedTransferTotal ?? 0) + (mandatoryTax?.total ?? 0)
       : null;
+
+  // Stage 5: adds the currently-selected meal plan (+ transfer, if any) to
+  // the shared trip cart. Deliberately does NOT require a transfer
+  // selection even when transferRequired is true -- that validation only
+  // matters at real submit time (ApplicationCheckoutForm), same as how
+  // "Забронировать" itself only checks it inside handleBookingSubmit, not
+  // before. Mirrors handleBookingSubmit's own guard shape, just with no
+  // network call at all (the cart is 100% client-side until checkout).
+  function handleAddToTrip() {
+    setAddToTripError(null);
+    if (!selectedMeal?.price) return;
+
+    const room: CartRoom = {
+      key: `${hotelId}-${rt.id}-${selectedMealCode}-${Date.now()}`,
+      hotelId,
+      hotelName,
+      country: hotelCountry,
+      roomTypeId: rt.id,
+      roomTypeName: rt.room_name,
+      mealPlan: selectedMealCode!,
+      mealPlanLabel: selectedMeal.mealName ?? selectedMealCode!,
+      arrivalDate: checkIn,
+      departureDate: checkOut,
+      adults,
+      children: childrenCount,
+      infants,
+      childAges,
+      transferType: selectedTransferType,
+      transferName: selectedTransfer?.option.transfer_name ?? selectedTransferType,
+      currency: selectedMeal.price.currency,
+      grandTotal,
+    };
+
+    const result = onAddToTrip(room);
+    if (result.ok) {
+      setAddedToTripAt(Date.now());
+    } else {
+      setAddToTripError(result.error ?? null);
+    }
+  }
 
   async function handleBookingSubmit(guest: GuestFormValues) {
     const token = localStorage.getItem("token");
@@ -1286,13 +1417,29 @@ function RoomTypeCard({
                   />
                 </div>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => setBookingFormOpen(true)}
-                  className="mt-3 w-full rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
-                >
-                  {t("roomTypeCard.bookNow")}
-                </button>
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={() => setBookingFormOpen(true)}
+                    className="flex-1 rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
+                  >
+                    {t("roomTypeCard.bookNow")}
+                  </button>
+                  {/* Stage 5 -- adds this exact selection to the shared
+                      multi-room trip cart instead of booking it
+                      immediately. Purely client-side until the whole cart
+                      is submitted at once from the cart panel. */}
+                  <button
+                    type="button"
+                    onClick={handleAddToTrip}
+                    className="flex-1 rounded-xl border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-sand"
+                  >
+                    {addedToTripAt ? t("roomTypeCard.addedToTrip") : t("roomTypeCard.addToTrip")}
+                  </button>
+                </div>
+              )}
+              {addToTripError && (
+                <p className="mt-2 text-xs font-medium text-coral">{addToTripError}</p>
               )}
             </div>
           )}
@@ -1308,18 +1455,23 @@ function HotelCard({
   adults,
   childrenCount,
   infants,
+  childAges,
   agentId,
   checkIn,
   checkOut,
+  onAddToTrip,
 }: {
   hotel: HotelResult;
   gradient: string;
   adults: number;
   childrenCount: number;
   infants: number;
+  // Stage 5 -- the real ages behind childrenCount (see CartRoom.childAges).
+  childAges: number[];
   agentId: number;
   checkIn: string;
   checkOut: string;
+  onAddToTrip: (room: CartRoom) => { ok: boolean; error?: string };
 }) {
   const { t } = useTranslation("hotelSearch");
   const [expandedRoomTypes, setExpandedRoomTypes] = useState<Set<number>>(new Set());
@@ -1375,14 +1527,487 @@ function HotelCard({
                   adults={adults}
                   childrenCount={childrenCount}
                   infants={infants}
+                  childAges={childAges}
                   agentId={agentId}
                   checkIn={checkIn}
                   checkOut={checkOut}
+                  hotelId={hotel.id}
+                  hotelName={hotel.hotel_name}
+                  hotelCountry={hotel.country}
+                  onAddToTrip={onAddToTrip}
                 />
               ))}
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Trip cart (Stage 5 -- multi-room booking applications)
+// ---------------------------------------------------------------------------
+
+// "2 adults, 1 child" style summary for one cart room, reusing the exact
+// same pluralized labels roomTypeCard's own transfer breakdown already
+// uses (roomTypeCard.adultsLabel/childrenLabel/infantsLabel) rather than
+// inventing a second set of guest-count strings.
+function formatCartOccupancy(t: TFunction, room: CartRoom): string {
+  const parts = [t("roomTypeCard.adultsLabel", { count: room.adults })];
+  if (room.children > 0) parts.push(t("roomTypeCard.childrenLabel", { count: room.children }));
+  if (room.infants > 0) parts.push(t("roomTypeCard.infantsLabel", { count: room.infants }));
+  return parts.join(", ");
+}
+
+// Floating summary of the in-progress trip cart -- every room the agent
+// has added via "Добавить в поездку" across any hotel result on this
+// page, not yet submitted. Purely a list/remove view; the actual
+// guest-entry/submit step is ApplicationCheckoutForm below.
+function CartPanel({
+  cart,
+  onRemove,
+  onCheckout,
+}: {
+  cart: CartRoom[];
+  onRemove: (key: string) => void;
+  onCheckout: () => void;
+}) {
+  const { t } = useTranslation("hotelSearch");
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="fixed bottom-4 right-4 z-30 w-[calc(100%-2rem)] max-w-sm sm:right-6 sm:bottom-6">
+      <div className="overflow-hidden rounded-2xl border border-ink/10 bg-white shadow-xl">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className="flex w-full appearance-none items-center justify-between border-0 bg-ink px-5 py-3.5 text-left text-white"
+        >
+          <span className="text-sm font-medium">{t("cart.title", { count: cart.length })}</span>
+          <span className="text-xs text-white/70">{open ? t("cart.hide") : t("cart.show")}</span>
+        </button>
+
+        {open && (
+          <div className="max-h-72 overflow-y-auto divide-y divide-ink/5">
+            {cart.map((room) => (
+              <div key={room.key} className="flex items-start justify-between gap-3 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-ink">{room.hotelName}</p>
+                  <p className="text-xs text-slate/60">
+                    {room.roomTypeName} · {room.mealPlanLabel}
+                  </p>
+                  <p className="text-xs text-slate/50">
+                    {room.arrivalDate} – {room.departureDate}
+                  </p>
+                  <p className="text-xs text-slate/50">{formatCartOccupancy(t, room)}</p>
+                  {room.grandTotal != null && (
+                    <p className="mt-0.5 font-mono text-xs font-semibold text-ink">
+                      {room.currency} {room.grandTotal.toLocaleString()}
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onRemove(room.key)}
+                  aria-label={t("cart.remove")}
+                  className="shrink-0 appearance-none rounded-md border-0 bg-transparent p-1 text-slate/40 transition-colors hover:bg-sand hover:text-coral"
+                >
+                  <IconMinus className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="border-t border-ink/10 p-3">
+          <button
+            type="button"
+            onClick={onCheckout}
+            className="w-full rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
+          >
+            {t("cart.checkout")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Guest entry (once per trip, not per room) + per-room guest assignment +
+// submit to POST /booking-engine/applications. Confirmed directly with the
+// project owner: same guests throughout one application; a different
+// guest set means a separate, new application -- so this form collects
+// exactly one flat guest list, then asks which room(s) each guest
+// occupies.
+// Stage 5 -- one room's worth of guest entry within the checkout form.
+// Deliberately per-room, not one shared list with checkboxes (the
+// project owner's explicit instruction): each room is numbered
+// ("Номер 1"), shows its own full details, then its own adult/child name
+// fields directly below. A child's date of birth is REQUIRED and must
+// reconcile with the exact age that room was priced at during search
+// (CartRoom.childAges) -- otherwise an agent could search with a young,
+// cheap/free age bracket and then quietly enter an older child's real
+// details at checkout, after the price was already locked in. The same
+// real person appearing in more than one room (e.g. a multi-leg trip)
+// still only becomes one Guest row -- buildGuestsPayload below dedupes
+// by exact name (+ date of birth for children) across rooms.
+type RoomGuestEntry = {
+  adults: { firstName: string; lastName: string }[];
+  children: { firstName: string; lastName: string; dateOfBirth: string }[];
+};
+
+function ApplicationCheckoutForm({
+  cart,
+  agentId,
+  onClose,
+  onSuccess,
+}: {
+  cart: CartRoom[];
+  agentId: number;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const { t } = useTranslation("hotelSearch");
+
+  const [roomGuests, setRoomGuests] = useState<Record<string, RoomGuestEntry>>(() => {
+    const initial: Record<string, RoomGuestEntry> = {};
+    for (const room of cart) {
+      initial[room.key] = {
+        adults: Array.from({ length: room.adults }, () => ({ firstName: "", lastName: "" })),
+        children: Array.from({ length: room.children }, () => ({
+          firstName: "",
+          lastName: "",
+          dateOfBirth: "",
+        })),
+      };
+    }
+    return initial;
+  });
+
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [result, setResult] = useState<{
+    bookingNumber: string;
+    rooms: { sequenceNumber: number; hotelName: string; status: string; rejectionReason: string | null }[];
+  } | null>(null);
+
+  function updateAdult(roomKey: string, index: number, field: "firstName" | "lastName", value: string) {
+    setRoomGuests((prev) => ({
+      ...prev,
+      [roomKey]: {
+        ...prev[roomKey],
+        adults: prev[roomKey].adults.map((a, i) => (i === index ? { ...a, [field]: value } : a)),
+      },
+    }));
+  }
+
+  function updateChild(
+    roomKey: string,
+    index: number,
+    field: "firstName" | "lastName" | "dateOfBirth",
+    value: string
+  ) {
+    setRoomGuests((prev) => ({
+      ...prev,
+      [roomKey]: {
+        ...prev[roomKey],
+        children: prev[roomKey].children.map((c, i) => (i === index ? { ...c, [field]: value } : c)),
+      },
+    }));
+  }
+
+  // Returns an error message if this child's entered date of birth
+  // doesn't reconcile with the exact age this room was priced at during
+  // search -- null if it matches (or nothing's been entered yet).
+  function childAgeError(room: CartRoom, index: number, dateOfBirth: string): string | null {
+    if (!dateOfBirth) return null;
+    const expected = room.childAges[index];
+    if (expected == null) return null;
+    const actual = ageAtDate(dateOfBirth, room.arrivalDate);
+    if (actual !== expected) {
+      return t("cart.childAgeMismatch", { expected, actual });
+    }
+    return null;
+  }
+
+  const canSubmit = cart.every((room) => {
+    const entry = roomGuests[room.key];
+    if (!entry) return false;
+    const adultsOk = entry.adults.every((a) => a.firstName.trim() && a.lastName.trim());
+    const childrenOk = entry.children.every(
+      (c, i) =>
+        c.firstName.trim() &&
+        c.lastName.trim() &&
+        c.dateOfBirth &&
+        !childAgeError(room, i, c.dateOfBirth)
+    );
+    return adultsOk && childrenOk;
+  });
+
+  // Flattens every room's own guest entries into one list for the API
+  // (Guest belongs to the application, not the room -- see
+  // BookingApplicationCreate), deduping by exact first+last name (and,
+  // for children, date of birth too) so the same real traveler entered
+  // in more than one room becomes exactly one Guest row assigned to both,
+  // never two duplicate rows.
+  function buildGuestsPayload() {
+    type FlatGuest = { firstName: string; lastName: string; dateOfBirth?: string };
+    const flat: FlatGuest[] = [];
+    const roomIndices: Record<string, number[]> = {};
+
+    function findOrAdd(entry: FlatGuest): number {
+      const existing = flat.findIndex(
+        (g) =>
+          g.firstName.trim().toLowerCase() === entry.firstName.trim().toLowerCase() &&
+          g.lastName.trim().toLowerCase() === entry.lastName.trim().toLowerCase() &&
+          (g.dateOfBirth ?? "") === (entry.dateOfBirth ?? "")
+      );
+      if (existing >= 0) return existing;
+      flat.push(entry);
+      return flat.length - 1;
+    }
+
+    for (const room of cart) {
+      const entry = roomGuests[room.key];
+      const indices: number[] = [];
+      for (const a of entry.adults) {
+        indices.push(findOrAdd({ firstName: a.firstName, lastName: a.lastName }));
+      }
+      for (const c of entry.children) {
+        indices.push(
+          findOrAdd({ firstName: c.firstName, lastName: c.lastName, dateOfBirth: c.dateOfBirth })
+        );
+      }
+      roomIndices[room.key] = indices;
+    }
+
+    return { flat, roomIndices };
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSubmit) return;
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    const { flat, roomIndices } = buildGuestsPayload();
+
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const application = await fetchJson<{
+        booking_number: string;
+        rooms: { sequence_number: number; hotel_id: number; status: string; rejection_reason: string | null }[];
+      }>("/booking-engine/applications", token, {
+        method: "POST",
+        body: JSON.stringify({
+          agent_id: agentId,
+          guests: flat.map((g, i) => ({
+            first_name: g.firstName,
+            last_name: g.lastName,
+            date_of_birth: g.dateOfBirth || null,
+            is_lead_guest: i === 0,
+          })),
+          rooms: cart.map((room) => ({
+            hotel_id: room.hotelId,
+            room_type_id: room.roomTypeId,
+            meal_plan: room.mealPlan,
+            arrival_date: room.arrivalDate,
+            departure_date: room.departureDate,
+            adults: room.adults,
+            children: room.children,
+            infants: room.infants,
+            transfer_type: room.transferType,
+            guest_indices: roomIndices[room.key] ?? [],
+          })),
+        }),
+      });
+
+      setResult({
+        bookingNumber: application.booking_number,
+        rooms: application.rooms.map((r) => ({
+          sequenceNumber: r.sequence_number,
+          hotelName: cart.find((c) => c.hotelId === r.hotel_id)?.hotelName ?? String(r.hotel_id),
+          status: r.status,
+          rejectionReason: r.rejection_reason,
+        })),
+      });
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : t("cart.submitFailed"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-ink/40 p-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+        {result ? (
+          <div>
+            <h3 className="font-display text-lg font-semibold text-ink">
+              {t("cart.applicationCreated", { number: result.bookingNumber })}
+            </h3>
+            <div className="mt-4 space-y-2">
+              {result.rooms.map((r) => (
+                <div
+                  key={r.sequenceNumber}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-ink/10 px-4 py-2.5"
+                >
+                  <div>
+                    <p className="text-sm font-medium text-ink">{r.hotelName}</p>
+                    {r.rejectionReason && <p className="text-xs text-coral">{r.rejectionReason}</p>}
+                  </div>
+                  <span
+                    className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                      r.status === "Rejected" ? "bg-coral/10 text-coral" : "bg-teal/10 text-teal"
+                    }`}
+                  >
+                    {r.status === "Rejected" ? t("cart.statusRejected") : t("cart.statusPending")}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={onSuccess}
+              className="mt-5 w-full rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
+            >
+              {t("cart.done")}
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit}>
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="font-display text-lg font-semibold text-ink">{t("cart.checkoutTitle")}</h3>
+              <button
+                type="button"
+                onClick={onClose}
+                className="appearance-none rounded-lg border-0 bg-transparent p-1 text-slate/50 hover:text-ink"
+              >
+                {t("cart.close")}
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-5">
+              {cart.map((room, roomIndex) => {
+                const entry = roomGuests[room.key];
+                return (
+                  <div key={room.key} className="rounded-xl border border-ink/10 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-coral">
+                      {t("cart.roomNumber", { number: roomIndex + 1 })}
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-ink">{room.hotelName}</p>
+                    <p className="text-xs text-slate/60">
+                      {room.roomTypeName} · {room.mealPlanLabel}
+                      {room.transferName ? ` · ${room.transferName}` : ""}
+                    </p>
+                    <p className="text-xs text-slate/50">
+                      {room.arrivalDate} – {room.departureDate} · {formatCartOccupancy(t, room)}
+                    </p>
+                    {room.grandTotal != null && (
+                      <p className="mt-0.5 font-mono text-xs font-semibold text-ink">
+                        {room.currency} {room.grandTotal.toLocaleString()}
+                      </p>
+                    )}
+
+                    <div className="mt-3 space-y-2">
+                      <p className="text-xs font-medium uppercase tracking-wide text-slate/50">
+                        {t("cart.adultsHeading")}
+                      </p>
+                      {entry.adults.map((a, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            placeholder={t("guestDetailsForm.firstNamePlaceholder")}
+                            value={a.firstName}
+                            onChange={(e) => updateAdult(room.key, i, "firstName", e.target.value)}
+                            className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                          />
+                          <input
+                            type="text"
+                            placeholder={t("guestDetailsForm.lastNamePlaceholder")}
+                            value={a.lastName}
+                            onChange={(e) => updateAdult(room.key, i, "lastName", e.target.value)}
+                            className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                          />
+                        </div>
+                      ))}
+                    </div>
+
+                    {entry.children.length > 0 && (
+                      <div className="mt-3 space-y-2">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate/50">
+                          {t("cart.childrenHeading")}
+                        </p>
+                        {entry.children.map((c, i) => {
+                          const error = childAgeError(room, i, c.dateOfBirth);
+                          return (
+                            <div key={i}>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  placeholder={t("guestDetailsForm.firstNamePlaceholder")}
+                                  value={c.firstName}
+                                  onChange={(e) => updateChild(room.key, i, "firstName", e.target.value)}
+                                  className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                                />
+                                <input
+                                  type="text"
+                                  placeholder={t("guestDetailsForm.lastNamePlaceholder")}
+                                  value={c.lastName}
+                                  onChange={(e) => updateChild(room.key, i, "lastName", e.target.value)}
+                                  className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                                />
+                                <input
+                                  type="date"
+                                  value={c.dateOfBirth}
+                                  onChange={(e) => updateChild(room.key, i, "dateOfBirth", e.target.value)}
+                                  className={`w-36 rounded-lg border bg-white px-3 py-2 text-sm text-slate focus:outline-none ${
+                                    error ? "border-coral" : "border-ink/15 focus:border-coral"
+                                  }`}
+                                />
+                              </div>
+                              <p className="mt-1 text-[11px] text-slate/50">
+                                {t("cart.expectedChildAge", { age: room.childAges[i] })}
+                              </p>
+                              {error && <p className="mt-0.5 text-xs font-medium text-coral">{error}</p>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {submitError && (
+              <div className="mt-4 flex items-center gap-2 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">
+                <IconAlert className="w-3.5 h-3.5" />
+                {submitError}
+              </div>
+            )}
+
+            <div className="mt-5 flex items-center gap-2">
+              <button
+                type="submit"
+                disabled={!canSubmit || submitting}
+                className="rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+              >
+                {submitting ? t("cart.submitting") : t("cart.submit")}
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={submitting}
+                className="rounded-xl border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {t("cart.cancel")}
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );
@@ -1446,6 +2071,43 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
   const [adults, setAdults] = useState(initialSearch?.adults ?? 2);
   const [childAges, setChildAges] = useState<number[]>([]);
   const occupancy = deriveOccupancy(adults, childAges);
+  // Same 2-11 bucket deriveOccupancy itself uses for occupancy.children --
+  // kept as the real ages (not just a count) so a cart room can remember
+  // exactly which ages were used to price it, and the checkout form can
+  // require each child guest's real date of birth to match (see
+  // ApplicationCheckoutForm's own docstring for why this matters).
+  const childBucketAges = childAges.filter((a) => a >= 2 && a < 12);
+
+  // Stage 5 (multi-room booking applications) -- the shared trip cart.
+  // Purely client-side: nothing is written to the backend until
+  // ApplicationCheckoutForm submits the whole thing at once via
+  // POST /booking-engine/applications. checkoutOpen controls the
+  // guest-assignment step; applicationResult shows the outcome afterward.
+  const [cart, setCart] = useState<CartRoom[]>([]);
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
+
+  function addToCart(room: CartRoom): { ok: boolean; error?: string } {
+    // Same destination/country constraint the backend enforces
+    // authoritatively (service.create_booking_application) -- checked
+    // here too purely so the agent gets instant feedback instead of a
+    // wasted round trip at submit time. A plain data comparison against
+    // the room's own country field, never a hardcoded hotel/destination
+    // list -- holds identically whether the cart has 2 rooms or 20
+    // (Decision 116/117's formula principle).
+    const existingCountry = cart[0]?.country;
+    if (existingCountry && room.country !== existingCountry) {
+      return {
+        ok: false,
+        error: t("cart.destinationMismatch", { existing: existingCountry, attempted: room.country }),
+      };
+    }
+    setCart((prev) => [...prev, room]);
+    return { ok: true };
+  }
+
+  function removeFromCart(key: string) {
+    setCart((prev) => prev.filter((r) => r.key !== key));
+  }
 
   // Full hotel catalog, loaded once on mount and reused by both the
   // destination autocomplete dropdown below and handleSearch's own
@@ -1742,8 +2404,15 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
       <main className="mx-auto max-w-6xl px-4 pb-8 sm:px-8">
         <form
           onSubmit={handleSearch}
-          className="-mt-10 rounded-2xl border border-ink/10 bg-white shadow-xl sm:-mt-12"
+          className="-mt-10 rounded-2xl border border-ink/10 bg-white shadow-xl sm:-mt-12 sm:rounded-[2.5rem]"
         >
+          {/* Decision (fix): sm:rounded-full previously computed a
+              border-radius of min(width, height)/2 -- fine for the fields
+              row alone, but this form's height genuinely varies (child-age
+              inputs, the "dates required" error banner below), and at
+              greater height that formula turns the whole card into a
+              stretched oval/blob rather than a stadium shape. A fixed large
+              radius keeps the same rounded, premium look at any height. */}
           {/* Decision (search-panel restyle): the old divide-x/divide-y
               utilities drew a full-height border between every field.
               Replaced with explicit inset divider elements (self-stretch +
@@ -1752,8 +2421,11 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
               spacing as the primary separator -- the outer panel's own
               border/shadow (on the form element itself) is untouched. */}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch sm:gap-0">
-            <div className="relative flex flex-1 flex-col gap-1.5 px-5 py-4 sm:py-6">
-              <label className="text-xs font-medium text-slate/50">{t("page.destinationLabel")}</label>
+            <div className="relative flex flex-1 flex-col gap-2 px-7 py-5 sm:py-7">
+              <label className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate/50">
+                <IconPin className="h-3.5 w-3.5 text-coral" />
+                {t("page.destinationLabel")}
+              </label>
               <input
                 type="text"
                 value={destination}
@@ -1763,7 +2435,7 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
                 }}
                 onFocus={() => setDestinationDropdownOpen(true)}
                 placeholder={t("page.destinationPlaceholder")}
-                className="w-full bg-transparent text-base text-slate placeholder:text-slate/40 focus:outline-none"
+                className="w-full bg-transparent text-lg text-slate placeholder:text-slate/40 focus:outline-none sm:text-xl"
               />
               {/* Live suggestions -- same dropdown/debounce pattern as
                   financeShared.tsx's AgentSearchSelect, adapted for an
@@ -1774,7 +2446,7 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
                   search itself uses -- narrowing to 500 hotels across 10
                   destinations needs no code change here, only real data. */}
               {destinationDropdownOpen && destination.trim().length >= 2 && (
-                <div className="absolute left-5 right-5 top-full z-20 mt-1 max-h-64 overflow-y-auto rounded-lg border border-ink/10 bg-white shadow-lg">
+                <div className="absolute left-7 right-7 top-full z-20 mt-1 max-h-64 overflow-y-auto rounded-lg border border-ink/10 bg-white shadow-lg">
                   {!catalogLoaded ? (
                     <p className="px-4 py-3 text-sm text-slate/50">{t("page.destinationSuggestionsLoading")}</p>
                   ) : destinationSuggestions.length === 0 ? (
@@ -1803,8 +2475,8 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
 
             <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />
 
-            <div className="flex flex-col gap-1.5 pt-4 sm:w-64 sm:shrink-0 sm:py-6">
-              <label className="px-5 text-xs font-medium text-slate/50">{t("page.datesLabel")}</label>
+            <div className="flex flex-col gap-2 pt-5 sm:w-72 sm:shrink-0 sm:py-7">
+              <label className="px-7 text-xs font-medium uppercase tracking-wide text-slate/50">{t("page.datesLabel")}</label>
               <DateRangePicker
                 checkIn={checkIn}
                 checkOut={checkOut}
@@ -1812,13 +2484,14 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
                   setCheckIn(ci);
                   setCheckOut(co);
                 }}
+                size="lg"
               />
             </div>
 
             <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />
 
-            <div className="flex flex-col gap-1.5 px-5 py-4 sm:w-64 sm:shrink-0 sm:py-6">
-              <label className="text-xs font-medium text-slate/50">{t("page.guestsLabel")}</label>
+            <div className="flex flex-col gap-2 px-7 py-5 sm:w-64 sm:shrink-0 sm:py-7">
+              <label className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("page.guestsLabel")}</label>
               <div className="flex flex-col gap-2">
                 <Counter label={t("page.adultsLabel")} value={adults} min={1} onChange={setAdults} />
                 <Counter label={t("page.childrenLabel")} value={childAges.length} min={0} onChange={handleChildCountChange} />
@@ -1844,12 +2517,13 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
 
             <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />
 
-            <div className="flex items-center px-5 py-4 sm:py-6 sm:pl-6 sm:pr-2 sm:shrink-0">
+            <div className="flex items-center px-5 py-4 sm:py-3 sm:pl-3 sm:pr-3 sm:shrink-0">
               <button
                 type="submit"
                 disabled={searching}
-                className="w-full rounded-xl bg-coral px-8 py-3.5 text-base font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 sm:w-auto"
+                className="flex w-full items-center justify-center gap-2 rounded-full bg-coral px-8 py-3.5 text-base font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 sm:w-auto"
               >
+                <IconSearch className="h-4 w-4" />
                 {searching ? t("page.searching") : t("page.searchButton")}
               </button>
             </div>
@@ -1871,7 +2545,10 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
         )}
 
         {!searching && hasSearched && !searchError && results.length === 0 && (
-          <p className="mt-6 text-sm text-slate/60">{t("page.noHotelsFound")}</p>
+          <div className="mt-6 flex items-center gap-2 rounded-xl bg-coral/10 px-5 py-4 text-sm font-medium text-coral">
+            <IconAlert />
+            {t("page.noHotelsFound")}
+          </div>
         )}
 
         <div className="mt-6 space-y-5">
@@ -1883,12 +2560,33 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
               adults={occupancy.adults}
               childrenCount={occupancy.children}
               infants={occupancy.infants}
+              childAges={childBucketAges}
               agentId={user.id}
               checkIn={checkIn}
               checkOut={checkOut}
+              onAddToTrip={addToCart}
             />
           ))}
         </div>
+
+        {/* Stage 5 -- floating trip-cart summary, only visible once at
+            least one room has been added. Fully separate from the
+            single-room "Забронировать" flow above. */}
+        {cart.length > 0 && !checkoutOpen && (
+          <CartPanel cart={cart} onRemove={removeFromCart} onCheckout={() => setCheckoutOpen(true)} />
+        )}
+
+        {checkoutOpen && (
+          <ApplicationCheckoutForm
+            cart={cart}
+            agentId={user.id}
+            onClose={() => setCheckoutOpen(false)}
+            onSuccess={() => {
+              setCart([]);
+              setCheckoutOpen(false);
+            }}
+          />
+        )}
       </main>
     </div>
   );

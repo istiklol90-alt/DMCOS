@@ -9,6 +9,7 @@ from database.db import SessionLocal
 from app.engines.finance.models import (
     Invoice,
     InvoiceReviewNote,
+    InvoiceRoomLine,
     BookingReviewAcknowledgment,
     CreditNote,
     AgentStatement,
@@ -158,6 +159,43 @@ def list_review_notes_by_booking(db: Session, booking_id: int) -> list[InvoiceRe
         .order_by(InvoiceReviewNote.sequence_number)
         .all()
     )
+
+
+# ---------------------------------------------------------------------------
+# InvoiceRoomLine (Stage 4) -- frozen at invoice creation, never updated.
+# ---------------------------------------------------------------------------
+
+def create_invoice_room_line(db: Session, **fields) -> InvoiceRoomLine:
+    row = InvoiceRoomLine(**fields)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_invoice_room_lines(db: Session, invoice_id: int) -> list[InvoiceRoomLine]:
+    return (
+        db.query(InvoiceRoomLine)
+        .filter(InvoiceRoomLine.invoice_id == invoice_id)
+        .order_by(InvoiceRoomLine.sequence_number)
+        .all()
+    )
+
+
+def list_invoice_room_lines_bulk(db: Session, invoice_ids: list[int]) -> dict[int, list[InvoiceRoomLine]]:
+    """Bulk variant for list-returning service functions, same shape as list_review_notes_by_invoice_ids."""
+    if not invoice_ids:
+        return {}
+    lines = (
+        db.query(InvoiceRoomLine)
+        .filter(InvoiceRoomLine.invoice_id.in_(invoice_ids))
+        .order_by(InvoiceRoomLine.invoice_id, InvoiceRoomLine.sequence_number)
+        .all()
+    )
+    grouped: dict[int, list[InvoiceRoomLine]] = {iid: [] for iid in invoice_ids}
+    for line in lines:
+        grouped[line.invoice_id].append(line)
+    return grouped
 
 
 # ---------------------------------------------------------------------------
@@ -367,3 +405,8 @@ def create_voucher(db: Session, **fields) -> Voucher:
 
 def list_vouchers_by_booking(db: Session, booking_id: int) -> list[Voucher]:
     return db.query(Voucher).filter(Voucher.booking_id == booking_id).order_by(Voucher.created_at).all()
+
+
+def list_vouchers_by_room(db: Session, booking_room_id: int) -> list[Voucher]:
+    """Stage 4: same append-only list, scoped to one room within a multi-room application."""
+    return db.query(Voucher).filter(Voucher.booking_room_id == booking_room_id).order_by(Voucher.created_at).all()

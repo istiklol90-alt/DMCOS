@@ -20,9 +20,64 @@
   --font-display: "Fraunces", ui-serif, serif;
   --font-sans: "Inter", ui-sans-serif, sans-serif;
 
+  /* Core brand palette -- unchanged from the existing design language.
+     Every semantic token below is additive, not a replacement. */
   --color-ink: #1b2340;
   --color-sand: #f3eee4;
   --color-teal: #3c6e71;
   --color-coral: #e8734a;
   --color-slate: #2c2c2c;
+
+  /* Semantic status tokens (DMC OS design system, Phase 0). Previously
+     every cancel/error/pending state hand-picked a raw stock Tailwind
+     color (red-500/600, amber-500/600) instead of a branded token --
+     these formalize that into the palette, tuned to sit next to
+     ink/coral/teal rather than clash with them.
+     --color-success is deliberately an ALIAS for the existing teal, not
+     a new hue: teal is already used project-wide as the "positive/
+     active/confirmed" signal (StatusBadge etc.) -- adding a second,
+     visually different "success green" would create two competing
+     positive colors instead of formalizing the one already in use. */
+  --color-danger: #c1443d;
+  --color-warning: #c08a2e;
+  --color-success: var(--color-teal);
+
+  /* Soft, barely-there elevation for cards/panels (Stripe-dashboard
+     style), tinted with the brand ink color instead of generic black --
+     replaces the inconsistent ad-hoc shadow-sm/md/lg/xl mix previously
+     used interchangeably for the same "card sitting on the page"
+     purpose. shadow-xl remains reserved for actual overlays (dropdowns,
+     modals), unchanged. */
+  --shadow-card: 0 1px 2px rgba(27, 35, 64, 0.04), 0 1px 3px rgba(27, 35, 64, 0.08);
 }
+
+/* ---------------------------------------------------------------------
+   DMC OS design system, Phase 0 -- documented CONVENTIONS, not new CSS
+   variables. Tailwind's own radius/spacing/type scales are already
+   complete and consistent; what was missing (confirmed during scoping:
+   5 different radius values in concurrent, undifferentiated use across
+   18 files; text sizes from text-xs to text-5xl picked per-page with no
+   naming) was a RULE for which existing value to use where. Enforced by
+   the components/ui/ primitives (Card always emits rounded-2xl, Button
+   always rounded-lg, Badge always rounded-full) so pages stop hand-
+   picking once they adopt those primitives -- not by new tokens
+   restating a scale Tailwind already provides.
+
+   RADIUS
+     rounded-2xl  cards, panels, modals, table wrappers   (Card)
+     rounded-lg   controls: buttons, inputs, small badges  (Button, Input)
+     rounded-full pills, status badges, avatars            (Badge)
+
+   TYPOGRAPHY
+     Display  font-display, text-4xl/5xl   hero titles (Home, Login's
+                                            eyebrow+heading pair)
+     H1       font-display, text-2xl/3xl   page/section titles
+     H2       font-sans font-semibold,     subsection headers
+              text-lg
+     Body     font-sans, text-sm           default running text
+     Label    font-sans font-medium        form labels, table headers --
+              uppercase tracking-wide      already the one genuinely
+              text-xs text-slate/50        consistent pattern pre-Phase-0,
+                                            formalized here rather than
+                                            changed
+   --------------------------------------------------------------------- */

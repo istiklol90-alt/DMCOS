@@ -189,6 +189,185 @@ class GuestResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Multi-room booking application (Stage 2)
+# ---------------------------------------------------------------------------
+# One application ("заявка") = one trip for one fixed set of guests, which
+# may span 1 or several rooms/hotels -- confirmed directly with the project
+# owner: same guests throughout (a different guest set is a new, separate
+# application), all rooms in the same destination/country (may be
+# different hotels, e.g. Kandima Maldives -> Siyam World Maldives as one
+# trip, never Maldives + UAE in one application). Each room is priced/
+# allotment-checked independently via the exact same Contract Engine calls
+# create_booking already uses -- a room with no availability is recorded
+# as "Rejected" rather than aborting the whole application (partial
+# fulfillment, per the project owner's explicit instruction).
+
+# BookingRoom.status -- deliberately reuses Booking's own status
+# vocabulary (see models.py's BookingRoom docstring), not a new enum.
+BookingRoomStatus = Literal[
+    "Pending", "Confirmed", "Rejected", "Cancellation Requested", "Cancelled",
+]
+
+
+class BookingApplicationGuestCreate(BaseModel):
+    """One real traveler on this application's trip -- entered once, then
+    assigned to whichever room(s) they occupy via
+    BookingApplicationRoomCreate.guest_indices."""
+
+    first_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str = Field(..., min_length=1, max_length=100)
+    gender: Optional[str] = None
+    date_of_birth: Optional[date] = None
+    nationality: Optional[str] = None
+    passport_number: Optional[str] = None
+    passport_expiry: Optional[date] = None
+    special_requests: Optional[str] = None
+    is_lead_guest: bool = False
+
+
+class BookingApplicationRoomCreate(BaseModel):
+    """One room/leg within the application -- own hotel, own dates, own
+    transfer, same shape as BookingCreate's per-room fields, minus
+    agent_id (that's the application's, not per-room)."""
+
+    hotel_id: int
+    room_type_id: int
+    meal_plan: str = Field(..., min_length=2, max_length=20)
+    arrival_date: date
+    departure_date: date
+    adults: int = Field(..., ge=1)
+    children: int = Field(0, ge=0)
+    infants: int = Field(0, ge=0)
+    market_id: Optional[int] = None
+    transfer_type: Optional[str] = None
+    special_requests: Optional[str] = None
+    # Indices into BookingApplicationCreate.guests -- which of the
+    # application's guests occupy this specific room.
+    guest_indices: list[int] = Field(default_factory=list)
+
+
+class BookingApplicationCreate(BaseModel):
+    agent_id: int
+    rooms: list[BookingApplicationRoomCreate] = Field(..., min_length=1)
+    guests: list[BookingApplicationGuestCreate] = Field(default_factory=list)
+    special_requests: Optional[str] = None
+    arrival_flight_number: Optional[str] = None
+    departure_flight_number: Optional[str] = None
+    arrival_flight_date: Optional[date] = None
+    arrival_flight_time: Optional[str] = Field(None, max_length=5)
+    departure_flight_date: Optional[date] = None
+    departure_flight_time: Optional[str] = Field(None, max_length=5)
+    created_by: Optional[int] = None
+
+
+class BookingRoomApproveRequest(BaseModel):
+    """Manager's explicit sign-off (system never auto-confirms) that a
+    Pending room -- allotment already secured -- is approved. No reason
+    needed; approval is the default expected path."""
+    pass
+
+
+class BookingRoomRejectRequest(BaseModel):
+    """Manager declining a Pending room's approve request. Distinct from
+    an automatic no-allotment rejection (rejected_by stays NULL for that
+    case) -- a manager's own reject always requires a reason, same
+    "never a bare reject with no explanation" principle as every other
+    reason-required action in this project (e.g. BookingCancelRequest)."""
+    reason: str = Field(..., min_length=2)
+
+
+class BookingRoomUpdate(BaseModel):
+    """Stage 4: editable fields on one room within an application --
+    confirmation_number is the hotel's own per-room reference (Decision
+    097's shape, now scoped to a room instead of a whole booking), the
+    trigger Finance Engine's per-room Voucher generation orchestrates off
+    of (frontend-only, no coupling here, same pattern as Booking's own
+    confirmation_number)."""
+    confirmation_number: Optional[str] = None
+    special_requests: Optional[str] = None
+
+
+class BookingRoomResponse(BaseModel):
+    id: int
+    booking_id: int
+    sequence_number: int
+    hotel_id: int
+    contract_id: int
+    rate_id: Optional[int] = None
+    room_type_id: int
+    meal_plan_id: Optional[int] = None
+    market_id: Optional[int] = None
+    applied_special_offer_id: Optional[int] = None
+    arrival_date: date
+    departure_date: date
+    nights: int
+    adults: int
+    children: int
+    infants: int
+    status: str
+    rejection_reason: Optional[str] = None
+    rejected_by: Optional[int] = None
+    approved_by: Optional[int] = None
+    approved_at: Optional[datetime] = None
+    currency: Optional[str] = None
+    total_amount: Optional[float] = None
+    agent_markup_amount: Optional[float] = None
+    agent_exclusive_discount_amount: Optional[float] = None
+    transfer_type: Optional[str] = None
+    transfer_total: Optional[float] = None
+    mandatory_tax_total: Optional[float] = None
+    special_requests: Optional[str] = None
+    confirmation_number: Optional[str] = None
+    date_change_reason: Optional[str] = None
+    dates_changed_at: Optional[datetime] = None
+    cancellation_reason: Optional[str] = None
+    cancelled_at: Optional[datetime] = None
+    cancellation_fee: Optional[float] = None
+    cancelled_by: Optional[int] = None
+    cancellation_confirmation_number: Optional[str] = None
+    cancellation_confirmed_at: Optional[datetime] = None
+    cancellation_confirmed_by: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class BookingApplicationResponse(BaseModel):
+    """Booking (the application) plus its rooms and guests, assembled by
+    service.py -- not a raw ORM passthrough like BookingResponse, since
+    Booking itself has no relationship() to either (this project never
+    uses SQLAlchemy relationships, per every other Engine's own
+    precedent)."""
+
+    id: int
+    booking_number: str
+    agent_id: int
+    status: str
+    special_requests: Optional[str] = None
+    arrival_flight_number: Optional[str] = None
+    departure_flight_number: Optional[str] = None
+    arrival_flight_date: Optional[date] = None
+    arrival_flight_time: Optional[str] = None
+    departure_flight_date: Optional[date] = None
+    departure_flight_time: Optional[str] = None
+    claimed_by: Optional[int] = None
+    claimed_at: Optional[datetime] = None
+    cancellation_reason: Optional[str] = None
+    cancelled_at: Optional[datetime] = None
+    cancelled_by: Optional[int] = None
+    created_by: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+    rooms: list[BookingRoomResponse]
+    guests: list[GuestResponse]
+
+    class Config:
+        from_attributes = True
+
+
+# ---------------------------------------------------------------------------
 # Booking Correspondence (Decision 049)
 # ---------------------------------------------------------------------------
 # created_by is never accepted from the client -- resolved from

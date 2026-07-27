@@ -178,6 +178,136 @@ class Guest(Base):
     is_lead_guest = Column(Boolean, default=False)
 
 
+class BookingRoom(Base):
+    """
+    Multi-room booking, Stage 1 (data model only -- additive, nothing in
+    Booking/Guest changes or gets removed yet; no service/API code reads
+    this table until a later stage wires it in).
+
+    Booking becomes the "application" (agent_id, guest list via Guest.
+    booking_id which already points here, whole-application cancel/claim/
+    correspondence) -- one row per real reservation request, which may
+    cover 1 or many rooms. BookingRoom is one row per actual room/leg
+    within that application: its own hotel/contract/dates/pricing/status,
+    independent of every other room in the same application. Confirmed
+    directly with the project owner via a real example: one agent books
+    Kandima Maldives 08.08-14.08 then Siyam World 14.08-16.08 for the
+    same guests, same trip, same destination (Maldives) -- two
+    BookingRoom rows under one Booking (application), each with its own
+    dates/transfer/price, never one Booking row trying to hold both.
+
+    Every cross-engine reference (hotel_id/contract_id/rate_id/room_type_id/
+    meal_plan_id/market_id/applied_special_offer_id) is a plain Integer,
+    same decoupling convention Booking itself already established -- no
+    ForeignKey into Hotel/Contract Engine's own tables.
+    """
+
+    __tablename__ = "booking_rooms"
+
+    id = Column(Integer, primary_key=True, index=True)
+    booking_id = Column(Integer, ForeignKey("bookings.id"), nullable=False)
+    # 1, 2, 3... display order within the application ("Room 2 of 3") --
+    # not a room-type/rate identifier, purely a stable display sequence.
+    sequence_number = Column(Integer, nullable=False)
+
+    hotel_id = Column(Integer, nullable=False)
+    # contract_id is required -- a room row is only ever created once an
+    # active contract was actually found (no active contract at all is a
+    # fatal, whole-application error, never a soft per-room rejection; see
+    # service.py's create_booking_application). rate_id/meal_plan_id/
+    # currency/total_amount below, by contrast, are only resolved by
+    # get_room_price, which never runs if check_allotment already failed
+    # -- nullable so a room rejected purely for lack of availability can
+    # still be recorded (dates/occupancy/hotel known, price never
+    # computed) instead of needing a fabricated placeholder value.
+    contract_id = Column(Integer, nullable=False)
+    rate_id = Column(Integer, nullable=True)
+    room_type_id = Column(Integer, nullable=False)
+    meal_plan_id = Column(Integer, nullable=True)
+    market_id = Column(Integer, nullable=True)
+    applied_special_offer_id = Column(Integer, nullable=True)
+
+    arrival_date = Column(Date, nullable=False)
+    departure_date = Column(Date, nullable=False)
+    nights = Column(Integer, nullable=False)
+    adults = Column(Integer, nullable=False)
+    children = Column(Integer, nullable=False, default=0)
+    infants = Column(Integer, nullable=False, default=0)
+
+    # Pending (allotment reserved, awaiting manager approve per the
+    # project owner's explicit "system never auto-confirms" instruction)
+    # / Confirmed (manager approved) / Rejected (either no allotment was
+    # available -- rejected_by stays NULL for this case -- or a manager
+    # explicitly declined the approve request -- rejected_by set,
+    # rejection_reason required) / Cancellation Requested / Cancelled.
+    # Deliberately the same vocabulary Booking.status already uses, not a
+    # new invented enum, since the terminal-status/allotment-release
+    # meaning is identical, just scoped to one room instead of one
+    # booking.
+    status = Column(String(30), default="Pending")
+    rejection_reason = Column(Text, nullable=True)
+    # NULL = rejected automatically (no allotment); set = a manager
+    # explicitly declined this room's approve request. Plain Integer,
+    # same not-a-ForeignKey convention as every other actor-tracking
+    # column in this file.
+    rejected_by = Column(Integer, nullable=True)
+    approved_by = Column(Integer, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+
+    currency = Column(String(3), nullable=True)
+    total_amount = Column(Float, nullable=True)
+    agent_markup_amount = Column(Float, nullable=True)
+    agent_exclusive_discount_amount = Column(Float, nullable=True)
+    transfer_type = Column(String(50), nullable=True)
+    transfer_total = Column(Float, nullable=True)
+    mandatory_tax_total = Column(Float, nullable=True)
+
+    special_requests = Column(Text, nullable=True)
+
+    # The hotel's own per-room reference number (each room in a
+    # multi-room application gets its own hotel confirmation) -- same
+    # shape/precedent as Booking.confirmation_number (Decision 097).
+    confirmation_number = Column(String(100), nullable=True)
+
+    date_change_reason = Column(Text, nullable=True)
+    dates_changed_at = Column(DateTime, nullable=True)
+
+    # Room-level cancellation -- used by the admin-only per-room cancel
+    # exception (the project owner's explicit instruction: an agent can
+    # only cancel the whole application; a manager, via the admin panel,
+    # can cancel/change one specific room without touching the rest).
+    # Mirrors Booking's own cancellation fields' shape exactly.
+    cancellation_reason = Column(Text, nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
+    cancellation_fee = Column(Float, nullable=True)
+    cancelled_by = Column(Integer, nullable=True)
+    cancellation_confirmation_number = Column(String(100), nullable=True)
+    cancellation_confirmed_at = Column(DateTime, nullable=True)
+    cancellation_confirmed_by = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class BookingRoomGuest(Base):
+    """
+    Which of the application's guests (Guest.booking_id already points at
+    the application, entered once per trip per the project owner's
+    explicit instruction: same guests throughout one application, a
+    different guest set means a new, separate application) occupy which
+    specific room. Pure many-to-many link, no extra fields -- needed
+    because room occupancy (adults/children) can differ per room, so a
+    flat "all guests belong to all rooms" assumption doesn't hold once
+    there's more than one room.
+    """
+
+    __tablename__ = "booking_room_guests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    booking_room_id = Column(Integer, ForeignKey("booking_rooms.id"), nullable=False)
+    guest_id = Column(Integer, ForeignKey("guests.id"), nullable=False)
+
+
 class BookingCorrespondence(Base):
     """
     Decision 049: the permanent, booking-linked hotel email thread.

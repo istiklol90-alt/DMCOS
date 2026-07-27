@@ -455,6 +455,43 @@ def download_voucher(booking_id: int, db: Session = Depends(get_db), current_use
     )
 
 
+# ---------------------------------------------------------------------------
+# Voucher per room -- Stage 4 (multi-room booking applications)
+# ---------------------------------------------------------------------------
+# Mirrors the two endpoints above exactly, scoped to one BookingRoom
+# instead of a whole (legacy, single-room) Booking. The original two
+# endpoints stay completely untouched for bookings created via the
+# original create_booking path.
+
+
+@router.post("/rooms/{booking_room_id}/voucher", response_model=VoucherResponse, status_code=201)
+def create_and_send_voucher_for_room(
+    booking_room_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """Same trigger shape as create_and_send_voucher — called right after saving a room's own confirmation_number."""
+    _require_admin(current_user)
+    return _run(
+        lambda: service.create_and_send_voucher_for_room(db, booking_room_id, created_by=current_user.id)
+    )
+
+
+@router.get("/rooms/{booking_room_id}/voucher/download")
+def download_voucher_for_room(
+    booking_room_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """Admin OR the application's own agent, same authorization shape as download_voucher."""
+    room = _run(lambda: booking_service.get_booking_room(db, booking_room_id))
+    booking = _run(lambda: booking_service.get_booking(db, room.booking_id))
+    _require_admin_or_owning_agent(current_user, booking)
+    voucher = _run(lambda: service.get_latest_voucher_for_room(db, booking_room_id))
+    content = service.build_voucher_download_text(voucher)
+    return Response(
+        content=content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{voucher.voucher_number}.txt"'},
+    )
+
+
 @router.get("/bookings/{booking_id}/invoice/status")
 def get_invoice_status_for_booking(booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     """Decision 102: admin OR the booking's own agent. Returns ONLY a

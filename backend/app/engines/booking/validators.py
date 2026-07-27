@@ -133,6 +133,22 @@ def validate_nights_consistency(nights: int, arrival_date: date, departure_date:
         )
 
 
+def validate_can_approve_or_reject_room(current_status: str) -> None:
+    """
+    Stage 3 (multi-room booking applications): only a room genuinely
+    awaiting a manager's decision (status="Pending") can be approved or
+    rejected. The system never auto-confirms a room (project owner's
+    explicit instruction, 2026-07-27) — "Pending" always means "allotment
+    reserved, awaiting manager approve" here, so an already-Confirmed/
+    Rejected/Cancelled room has nothing left to decide.
+    """
+    if current_status != "Pending":
+        raise ValueError(
+            f"Room status '{current_status}' — only a Pending room (awaiting manager approve) "
+            f"can be approved or rejected"
+        )
+
+
 def validate_occupancy(adults: int, children: int, infants: int) -> None:
     """
     Raise ValueError if adults < 1, or children/infants < 0.

@@ -26,6 +26,38 @@ class InvoiceReviewNoteResponse(BaseModel):
         from_attributes = True
 
 
+class InvoiceRoomLineResponse(BaseModel):
+    """Stage 4 (multi-room booking applications): one FROZEN line item
+    per billable room in the application, snapshotted once at invoice
+    creation time (service.create_invoice_for_booking) into the
+    InvoiceRoomLine table -- the project owner's explicit "room 1: names
+    + sum, room 2: names + sum, grand total" requirement. Never
+    recomputed live from BookingRoom's current data (an earlier version
+    did, and a real bug was caught in verification -- see
+    InvoiceRoomLine's own model docstring). Invoice's own subtotal/
+    discount/commission/tax/total columns remain the grand-total
+    aggregate, unchanged in shape. booking_room_id is None only for a
+    legacy booking with zero BookingRoom rows at all (created via the
+    original single-room create_booking, predates this feature)."""
+    booking_room_id: Optional[int] = None
+    sequence_number: int
+    guest_names: Optional[str] = None
+    currency: str
+    room_net: float
+    room_sale: float
+    transfer_amount: Optional[float] = None
+    tax_amount: Optional[float] = None
+    discount_amount: Optional[float] = None
+    commission_amount: Optional[float] = None
+    subtotal: float
+    net_total: float
+    sale_total: float
+    profit: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
+
 class InvoiceResponse(BaseModel):
     id: int
     invoice_number: str
@@ -44,6 +76,7 @@ class InvoiceResponse(BaseModel):
     created_at: Optional[datetime] = None
     email_sent_at: Optional[datetime] = None
     review_notes: List[InvoiceReviewNoteResponse] = []
+    room_breakdown: List[InvoiceRoomLineResponse] = []
     flag_acknowledged_at: Optional[datetime] = None
     flag_acknowledged_by: Optional[int] = None
     approved_by: Optional[int] = None
@@ -212,6 +245,10 @@ class VoucherResponse(BaseModel):
     id: int
     voucher_number: str
     booking_id: int
+    # Stage 4: which room within the application, when applicable -- None
+    # for a voucher generated the original way (booking with no
+    # BookingRoom rows at all).
+    booking_room_id: Optional[int] = None
     agent_id: int
     hotel_id: int
     confirmation_number: str

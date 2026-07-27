@@ -5,7 +5,7 @@ import uuid
 from sqlalchemy.orm import Session
 
 from database.db import SessionLocal
-from app.engines.booking.models import Booking, Guest, BookingCorrespondence
+from app.engines.booking.models import Booking, Guest, BookingCorrespondence, BookingRoom, BookingRoomGuest
 
 
 def get_db():
@@ -131,6 +131,87 @@ def confirm_cancellation(
     db.commit()
     db.refresh(booking)
     return booking
+
+
+# ---------------------------------------------------------------------------
+# BookingRoom / BookingRoomGuest (Stage 2 — multi-room applications)
+# ---------------------------------------------------------------------------
+
+
+def create_booking_room(db: Session, **fields) -> BookingRoom:
+    """Insert a new room row under an application. No flush/commit-then-overwrite
+    trick needed here (unlike Booking.booking_number) — BookingRoom has no
+    unique generated identifier of its own, just sequence_number, already
+    known by the caller before insert."""
+    room = BookingRoom(**fields)
+    db.add(room)
+    db.commit()
+    db.refresh(room)
+    return room
+
+
+def get_booking_room(db: Session, booking_room_id: int) -> Optional[BookingRoom]:
+    """Fetch a single room by its primary key, or None if it doesn't exist."""
+    return db.query(BookingRoom).filter(BookingRoom.id == booking_room_id).first()
+
+
+def list_booking_rooms(db: Session, booking_id: int) -> list[BookingRoom]:
+    """Return every room belonging to one application, in display order."""
+    return (
+        db.query(BookingRoom)
+        .filter(BookingRoom.booking_id == booking_id)
+        .order_by(BookingRoom.sequence_number)
+        .all()
+    )
+
+
+def update_booking_room(db: Session, room: BookingRoom, **fields) -> BookingRoom:
+    """Apply the given field values to an existing room row and persist them — generic update, same shape as update_booking."""
+    for key, value in fields.items():
+        setattr(room, key, value)
+    room.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(room)
+    return room
+
+
+def create_booking_room_guest_link(db: Session, booking_room_id: int, guest_id: int) -> BookingRoomGuest:
+    """Assign one of the application's guests to one specific room."""
+    link = BookingRoomGuest(booking_room_id=booking_room_id, guest_id=guest_id)
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+    return link
+
+
+def list_guests_for_room(db: Session, booking_room_id: int) -> list[Guest]:
+    """Return the actual Guest rows assigned to one room, via the BookingRoomGuest link table."""
+    return (
+        db.query(Guest)
+        .join(BookingRoomGuest, BookingRoomGuest.guest_id == Guest.id)
+        .filter(BookingRoomGuest.booking_room_id == booking_room_id)
+        .all()
+    )
+
+
+def list_pending_approval_booking_rooms(db: Session) -> list[BookingRoom]:
+    """
+    Stage 3's "needs urgent approve" list: every room whose allotment was
+    successfully reserved (status="Pending") and hasn't yet been approved
+    or rejected by a manager. A plain query, not a new audit table --
+    BookingRoom's own status/approved_by/rejected_by columns already
+    carry everything needed.
+    """
+    return (
+        db.query(BookingRoom)
+        .filter(
+            BookingRoom.status == "Pending",
+            BookingRoom.approved_by.is_(None),
+            BookingRoom.rejected_by.is_(None),
+        )
+        .order_by(BookingRoom.created_at)
+        .all()
+    )
 
 
 # ---------------------------------------------------------------------------
