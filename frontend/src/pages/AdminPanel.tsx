@@ -16,7 +16,7 @@ import Card from "../components/ui/Card";
 import Badge, { type BadgeTone } from "../components/ui/Badge";
 import Button from "../components/ui/Button";
 import Input from "../components/ui/Input";
-import { SkeletonText } from "../components/ui/Skeleton";
+import { Skeleton, SkeletonText, SkeletonRow } from "../components/ui/Skeleton";
 import {
   TableShell,
   TableHeadRow,
@@ -172,15 +172,14 @@ const AdminPanel = () => {
     { key: "inactive", label: "Inactive", value: stats.inactive },
   ];
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-sand px-5 py-4 font-sans text-slate">
-        <div className="mx-auto max-w-[1400px]">
-          <SkeletonText width="120px" />
-        </div>
-      </div>
-    );
-  }
+  // UX pass (2026-07-29, same treatment as Reservations.tsx's BookingsList
+  // and BookingsSubViews.tsx, Decision 127): this used to fully unmount
+  // the ENTIRE admin panel -- AdminNav included -- on every loadData()
+  // call, which fires not just on mount but also after every
+  // approve/reject action. An admin approving a registration would
+  // briefly lose the whole nav bar. Now AdminNav/Log out stay mounted
+  // unconditionally; only the Users tab's own stat cards/table react to
+  // `loading`, matching Google Material's skeleton-screen guidance.
 
   return (
     <I18nextProvider i18n={adminI18n}>
@@ -227,31 +226,42 @@ const AdminPanel = () => {
 
         {/* ===== STATS ===== */}
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
-          {statCards.map((card) => (
-            <Card
-              key={card.key}
-              padding="sm"
-              shadow="card"
-              onClick={() => handleFilter(card.key)}
-              className={`relative cursor-pointer transition-colors ${
-                filterType === card.key ? "border-coral bg-coral/5" : "hover:border-coral/30"
-              }`}
-            >
-              {filterType === card.key && (
-                <span className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-coral text-[10px] text-white">
-                  ✓
-                </span>
-              )}
-              <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{card.label}</p>
-              <p className="mt-1 font-display text-2xl font-semibold text-ink">{card.value}</p>
-            </Card>
-          ))}
-          <Card padding="sm" shadow="card" className={stats.pending > 0 ? "border-coral/30 bg-coral/5" : ""}>
-            <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Applications</p>
-            <p className={`mt-1 font-display text-2xl font-semibold ${stats.pending > 0 ? "text-coral" : "text-ink"}`}>
-              {stats.pending}
-            </p>
-          </Card>
+          {loading ? (
+            Array.from({ length: 7 }).map((_, i) => (
+              <Card key={i} padding="sm" shadow="card">
+                <SkeletonText width="60%" className="h-3" />
+                <Skeleton className="mt-2 h-6 w-10" />
+              </Card>
+            ))
+          ) : (
+            <>
+              {statCards.map((card) => (
+                <Card
+                  key={card.key}
+                  padding="sm"
+                  shadow="card"
+                  onClick={() => handleFilter(card.key)}
+                  className={`relative cursor-pointer transition-colors ${
+                    filterType === card.key ? "border-coral bg-coral/5" : "hover:border-coral/30"
+                  }`}
+                >
+                  {filterType === card.key && (
+                    <span className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-coral text-[10px] text-white">
+                      ✓
+                    </span>
+                  )}
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{card.label}</p>
+                  <p className="mt-1 font-display text-2xl font-semibold text-ink">{card.value}</p>
+                </Card>
+              ))}
+              <Card padding="sm" shadow="card" className={stats.pending > 0 ? "border-coral/30 bg-coral/5" : ""}>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Applications</p>
+                <p className={`mt-1 font-display text-2xl font-semibold ${stats.pending > 0 ? "text-coral" : "text-ink"}`}>
+                  {stats.pending}
+                </p>
+              </Card>
+            </>
+          )}
         </div>
 
         {/* ===== APPLICATIONS ===== */}
@@ -327,7 +337,9 @@ const AdminPanel = () => {
             <TableHeadCell>Last login</TableHeadCell>
           </TableHeadRow>
           <tbody>
-            {filteredUsers.length === 0 ? (
+            {loading ? (
+              Array.from({ length: 6 }).map((_, i) => <SkeletonRow key={i} columns={7} />)
+            ) : filteredUsers.length === 0 ? (
               <TableEmptyState colSpan={7}>No users found</TableEmptyState>
             ) : (
               filteredUsers.map((user: any, index: number) => {

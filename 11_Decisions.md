@@ -5859,6 +5859,128 @@ Status: Implemented and verified via real HTTP calls with a real admin JWT: `sea
 
 ---
 
+# Decision 126
+
+Date: 2026-07-29
+
+Decision: First item of a broader agent-panel UX pass (a project-owner-requested review researching Booking.com/Agoda/Google Material/Apple HIG/B2B power-user design patterns before proposing a task list — see that analysis for full sourcing). Added a "copy from" quick-fill control to `HotelSearch.tsx`'s multi-room cart checkout form (`ApplicationCheckoutForm`), directly implementing Apple HIG's "reuse previously entered data" principle against a real, daily pain point: a family of 4+ split across 2 rooms required re-typing the same surname and nationality for every single traveler, once per person, with zero reuse.
+
+New `copyableGuests` (a `useMemo` over the whole `cart`, not just the current room — deliberate: the exact case this exists for is a family split across rooms) builds a flat, ordered list of every guest already entered anywhere in the form (first+last name both non-empty). A new `CopyFromSelect` renders next to each "Tourist N"/"Child N" label (hidden entirely when there's nobody yet to copy from — the very first guest in an empty form). Selecting another guest copies **only `lastName` and `nationality`** into the current guest's fields — **deliberately never `passportNumber`/`passportExpiry`**, since a passport number is a unique per-person identifier; copying it would silently create two travelers sharing one passport number, a real data-integrity risk, not a hypothetical one. The select resets to a placeholder after each use (same "action select" pattern, not a persistent binding), so it can be used again immediately for the next guest.
+
+Reason: project-owner-approved item #1 from the agent-panel UX analysis/plan (same session) — the highest-value, lowest-risk item on that list (no backend/schema change, single file, immediately reduces real per-booking data entry for the most common real-world case).
+
+Approved By: Daler
+
+Status: Implemented and verified. `npx tsc -b` clean (same 9-error baseline, zero new). `npx vite build` clean. New i18n key `cart.copyFromPlaceholder` added to both `en`/`ru` `hotelSearch.json`. Not yet re-confirmed live in-browser (no automation tool available this session, same limitation as recent decisions) — worth a live check that the dropdown appears/disappears correctly as guests are filled in across multiple rooms, and that copying never touches passport fields.
+
+---
+
+# Decision 127
+
+Date: 2026-07-29
+
+Decision: Second item of the agent-panel UX pass — fixed `Reservations.tsx`'s `BookingsList` loading state, the exact component whose `if (loading) return <p>...</p>;` full-screen early return was already identified (Decision 125) as the root cause of the calendar-closing bug: it unmounted the ENTIRE screen, filter bar and open `DateRangePicker` included, on every single fetch, not just the first one.
+
+The filter bar/table shell now always stays mounted; only the table body reacts to `loading`/`error`, matching Google Material's skeleton-screen guidance (researched this session): a skeleton should mirror the actual content shape and never tear down parts of the screen that aren't actually reloading. Two distinct states, not one: **first load** (`bookings.length === 0`) renders 6 real `SkeletonRow`s (reusing the existing `components/ui/Skeleton.tsx` primitive, already built but unused here) sized to the table's actual current column count (`columnCount`, now computed once and reused for the skeleton/error/empty rows instead of being duplicated three times). **Background refresh** (`bookings.length > 0`, e.g. picking a new date or typing a search) keeps showing the previous, still-valid `filteredSorted` rows, dimmed via `opacity-50 pointer-events-none`, instead of flashing a skeleton over content the user was already looking at — deliberately not "skeleton on every reload," since Google's own guidance also warns against a loading flash shorter than ~300ms feeling worse than no indicator at all. The error state is now an inline table row (correctly `colSpan`'d), not a full-screen replacement either.
+
+This component is shared by both `AgentDashboard_v2.tsx` (agent's own bookings) and `AdminBookingFinance.tsx` (admin queue) — the fix benefits both surfaces from one change, no duplication.
+
+**Deliberately not extended to this pass:** `BookingsSubViews.tsx` (admin-only Transfers/Arrival/Departure views) and `AdminPanel.tsx`'s Users tab have the identical `if (loading) return ...` full-unmount pattern, found by the same grep sweep, but are admin-only — out of scope for an explicitly agent-panel-focused pass. Flagged as a known, straightforward follow-up using the same pattern established here.
+
+Reason: project-owner-approved item #2 from the agent-panel UX analysis/plan (same session as Decision 126).
+
+Approved By: Daler
+
+Status: Implemented and verified. `npx tsc -b` clean (same 9-error baseline, zero new). `npx vite build` clean. Not yet re-confirmed live in-browser (no automation tool available this session) — worth a live check that skeleton rows render correctly on first load, that changing a date range no longer flashes a skeleton (dims instead), and that the DateRangePicker genuinely stays open now during a background refresh.
+
+---
+
+# Decision 128
+
+Date: 2026-07-29
+
+Decision: Extended Decision 127's loading-state fix (project-owner-requested follow-up) to the two admin-only screens flagged but deliberately left out of that pass: `BookingsSubViews.tsx` (Transfers/Arrival/Departure) and `AdminPanel.tsx` (Users tab).
+
+`BookingsSubViews.tsx`: same treatment as `Reservations.tsx` — the filter bar (hotel filter, transfer/date-range toggles) now stays mounted; `loading`/`error` moved into the table body (`SkeletonRow` for loading, an inline error row instead of a full-screen replacement). This component's fetch effect only ever fires on mount or on a `mode` change (`[mode]` dependency, no filter-triggered refetch), so unlike `BookingsList` there's no "background refresh keeps the stale rows dimmed" case to handle here — every load is effectively a first load.
+
+`AdminPanel.tsx`: a **worse instance of the same bug family**, found while extending the fix — `if (loading) return ...` didn't just hide table content, it unmounted the **entire admin panel including `AdminNav`, the tab navigation itself**. `loadData()` fires not only on mount but also after every `handleApprove`/`handleReject` call, meaning an admin approving or rejecting a registration application would briefly lose the whole nav bar and get dropped back to a bare loading line — a real, jarring regression on one of the most frequent admin actions in the app, not a first-load-only cosmetic issue. Fixed the same way: `AdminNav`/"Log out" now render unconditionally; only the Users tab's own stat-card grid (7 skeleton `Card`s with `Skeleton`/`SkeletonText` bars while loading) and user table (`SkeletonRow`, `colSpan=7`) react to `loading`.
+
+Reason: direct project-owner follow-up request ("сделай то же самое для BookingsSubViews.tsx и AdminPanel.tsx") after Decision 127 explicitly flagged both as having the identical anti-pattern but out of that pass's agent-panel scope.
+
+Approved By: Daler
+
+Status: Implemented and verified. `npx tsc -b` clean (same 9-error baseline, zero new). `npx vite build` clean. Not yet re-confirmed live in-browser (no automation tool available this session) — worth a live check that approving/rejecting a registration no longer visibly drops the admin nav bar, and that the Transfers/Arrival/Departure tabs show skeleton rows instead of a blank screen while loading.
+
+---
+
+# Decision 129
+
+Date: 2026-07-29
+
+Decision: Third item of the agent-panel UX pass, directly implementing Booking.com/Agoda's "break complex, high-error-risk steps into stages instead of one long scrolling form" principle (researched this session). `HotelSearch.tsx`'s multi-room cart checkout (`ApplicationCheckoutForm`) previously rendered every room's full adult/child name/nationality/passport field set, one after another, followed by the flight-details section, all in a single continuously-scrolling form — for a real multi-room, multi-guest booking this was a lot to visually parse and easy to mis-fill without noticing (e.g. a passport field left blank three screens up).
+
+Restructured into a step-per-room wizard: `currentStep` indexes `[...cart rooms, flightStep]` (`totalSteps = cart.length + 1`), and only the current step's fields render at a time. A thin segmented progress bar (one filled/outlined bar per step, each directly clickable for free navigation between already-reachable steps) plus a "Room X of N" / "Flights" label sits above the active step. "Next" is gated per-room via a new `roomIsValid(room)` helper (extracted from the existing `canSubmit` check, which now just becomes `cart.every(roomIsValid)` — zero duplicated validation logic between the two). The final step's "Next" becomes "Submit," gated by the full `canSubmit` as before — free step-navigation via the progress bar can never bypass validation, since submission itself still re-checks everything regardless of which steps were visited. "Back"/"Cancel" (close the whole modal) are always available. `CopyFromSelect` (Decision 126) is untouched and still works across the whole cart, not just the visible step, since `copyableGuests` was already computed over the entire `roomGuests` state, not per-step.
+
+Reason: project-owner-requested item #3 of the agent-panel UX analysis/plan (same session as Decisions 126-128) — explicitly named as "форма гостей по стадиям."
+
+Approved By: Daler
+
+Status: Implemented and verified. `npx tsc -b` clean (same 9-error baseline, zero new). `npx vite build` clean. New i18n keys `cart.stepRoom`/`cart.stepRoomOf`/`cart.stepFlights`/`cart.back`/`cart.next` added to both `en`/`ru` `hotelSearch.json`. Not yet re-confirmed live in-browser (no automation tool available this session) — worth a live check with a real multi-room cart that: each room's step shows only that room's fields, "Next" stays disabled until the room's required fields are valid, the progress bar accurately reflects position, and submitting from the final step still produces the exact same API payload as before (no change to `buildGuestsPayload`/`handleSubmit`).
+
+---
+
+# Decision 130
+
+Date: 2026-07-29
+
+Decision: Fixed a real regression in Decision 129's stepped checkout form, found immediately by the project owner testing live: filling in a single room's guest names and clicking through created a real application (`BK-000069`, confirmed via direct DB query — `arrival_flight_number` and every other flight field `NULL`) **without the flight step ever rendering at all** (explicitly confirmed by the project owner — not a case of clicking through too fast, the screen genuinely never appeared).
+
+Root cause investigation was thorough before concluding this, not assumed: re-verified the actual JS the Vite dev server was serving (not just the source file, in case of stale HMR — killed and restarted the long-running dev process, then `curl`'d the compiled module directly) confirmed the room step's "Next" is correctly `type="button"` (never submits) and the `type="submit"` button only exists in the DOM once `isFlightStep` is true — the step logic itself was byte-correct as served. The remaining explanation: the native `<form onSubmit={handleSubmit}>` wrapping every step has its own browser-level implicit-submission behavior on pressing Enter in a text field, independent of which buttons happen to be visually present — a well-known class of quirk (behavior here isn't fully spec-consistent across browsers), and with 5 text fields per adult × 2 adults on the room step, a natural Enter-to-advance habit would trigger it.
+
+Fixed at the root, independent of which exact mechanism triggers a premature submit event: `handleSubmit` now starts with `if (!isFlightStep) return;`, immediately after `e.preventDefault()` — a structural guard, not a fix for one specific triggering path. Any submit event firing before the flight step is reached is now unconditionally a no-op, regardless of Enter-key quirks, future step-count changes, or any other trigger not yet identified.
+
+Reason: direct, reproducible project-owner report ("после имени сразу создаётся заявка"), confirmed via a real created booking with empty flight fields and an explicit yes/no answer ruling out the "clicked through too fast" theory.
+
+Approved By: Daler
+
+Status: Implemented and verified. `npx tsc -b` clean (same 9-error baseline, zero new). `npx vite build` clean. Verified the guard is actually live in the served dev bundle (`curl`'d `localhost:5173/src/pages/HotelSearch.tsx`, confirmed `if (!isFlightStep) return;` present), not just in the source file. Not yet re-confirmed by the project owner clicking through again — worth a real retest with the same "fill 2 adults, press Enter instead of clicking Next" sequence to confirm the application is no longer created prematurely.
+
+---
+
+# Decision 131
+
+Date: 2026-07-29
+
+Decision: Decision 130's fix did not resolve the issue — the project owner reproduced the identical premature-submission behavior twice more (`BK-000071`, again with empty flight fields, guest rows confirming a real, deliberate test) immediately after that fix was deployed and independently verified live in the served bundle. Explicitly confirmed via direct question: no flight screen ever visibly appears before "Заявка создана."
+
+Re-investigated from scratch rather than assuming the same root cause: re-verified via `curl` against a freshly restarted dev server that the "Next" button is genuinely `type="button"` and `handleSubmit`'s `isFlightStep` guard is genuinely present in the served code — both true. Concluded the real cause is different from Decision 130's theory: **"Next" and "Submit" occupy the exact same on-screen position** (same primary coral button slot in the footer), so a fast double-click — ordinary human behavior, especially during rapid testing — lands its *first* click on "Next" (advancing the step) and its *second* click, a moment later, on whatever now occupies that same position: "Submit" on the just-revealed final step. Decision 130's `isFlightStep` guard doesn't catch this because by the time the second click's event fires, the step genuinely *has* advanced — from the guard's perspective this is a legitimate final-step submission, not a bypass. This isn't a step being skipped; it's a real step transition happening faster than a human visually registers it.
+
+Fixed with a brief post-transition cooldown: new `navCooldown` state, set `true` by a new `goToStep(updater)` wrapper (now the only way `currentStep` changes — the step-indicator dots, "Back," and "Next" all route through it) immediately on any step change, cleared automatically after 400ms via `setTimeout`. `navCooldown` is added to the `disabled` condition of "Back," "Next," AND the "Submit" button — so immediately after any step transition, all three are briefly unclickable, closing the exact window a reflexive second click would land in. `handleSubmit` itself also gained `if (navCooldown) return;` (defense-in-depth alongside the `disabled` attribute, matching Decision 130's "guard the handler, not just the button" principle) in case the disabled attribute is ever bypassed by some mechanism not yet identified.
+
+Reason: direct, twice-reproduced project-owner report, with the previous fix's theory explicitly ruled out by re-verification before proposing a new one — not a guess stacked on a guess.
+
+Approved By: Daler
+
+Status: Implemented and verified. `npx tsc -b` clean (same 9-error baseline, zero new). `npx vite build` clean. This time verified against a **fully restarted** dev server (both the npm wrapper and vite child process killed and relaunched, not relying on HMR at all) — confirmed via `curl localhost:5173/src/pages/HotelSearch.tsx` that `navCooldown`, the `goToStep` wrapper, and all three `disabled` conditions are present in the actually-served code. Not yet re-confirmed by the project owner — worth a real retest, including a deliberately fast double-click on "Next" to confirm the second click is now swallowed rather than landing on "Submit."
+
+---
+
+# Decision 132
+
+Date: 2026-07-29
+
+Decision: Added an explicit confirmation before submitting the multi-room cart application with every flight-detail field left blank. Flight fields stay genuinely optional at the schema/validation level (a real, valid scenario — a guest arranging a transfer before their flight is actually booked) — this isn't a new required-field rule, just a deliberate "are you sure" so an agent can't submit with zero flight information without ever having been asked, closing the gap the project owner flagged right after Decisions 130/131's double-click fixes made the wizard fast and easy to click straight through.
+
+`handleSubmit` now checks `Object.values(flight).some((v) => v.trim() !== "")` immediately before the actual POST; if every flight field is empty, `window.confirm(t("cart.confirmNoFlightDetails"))` gates the submission — declining leaves the agent right back on the flight step to fill something in or reconsider. Same `window.confirm` pattern `AdminPanel.tsx` already uses for registration approve/reject (Decision-era precedent, not a new UI pattern introduced here).
+
+Reason: direct project-owner request, immediately following the double-click fixes — flight information (needed to actually arrange an airport transfer) was too easy to skip entirely without any signal that it was skipped.
+
+Approved By: Daler
+
+Status: Implemented and verified. `npx tsc -b` clean (same 9-error baseline, zero new). `npx vite build` clean. New i18n key `cart.confirmNoFlightDetails` added to both `en`/`ru` `hotelSearch.json`. Verified live in the served dev bundle (`curl localhost:5173/src/pages/HotelSearch.tsx`, confirmed `hasAnyFlightDetail`/`confirmNoFlightDetails` present). Not yet re-confirmed by the project owner clicking through — worth a real retest: submitting with flights blank should prompt, submitting with at least one flight field filled should not.
+
+---
+
 # Decision Template
 
 Decision Number:

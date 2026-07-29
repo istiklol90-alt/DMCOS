@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import i18n from "../i18n/i18n";
@@ -1589,6 +1589,79 @@ function ApplicationCheckoutForm({
     }));
   }
 
+  // "Copy from" guest list -- UX improvement (2026-07-29 analysis:
+  // Apple HIG's "reuse previously entered data" + the real, daily-use
+  // pain point of a family of 4+ split across 2 rooms, where an agent
+  // was re-typing the same surname/nationality for every single
+  // traveler). Deliberately copies ONLY lastName + nationality --
+  // passportNumber/passportExpiry are per-person unique identifiers,
+  // never safe to copy (would silently create two guests sharing one
+  // passport number). Cross-room by design: iterates the whole cart, not
+  // just the current room, since a family booking two rooms is the
+  // exact case this exists for. Recomputed on every keystroke (cheap --
+  // this list is at most a few dozen entries) so a guest becomes
+  // copyable the moment their name is filled in, from anywhere else in
+  // the form.
+  const copyableGuests = useMemo(() => {
+    const list: { key: string; label: string; lastName: string; nationality: string }[] = [];
+    for (const room of cart) {
+      const entry = roomGuests[room.key];
+      if (!entry) continue;
+      entry.adults.forEach((a, i) => {
+        if (a.firstName.trim() && a.lastName.trim()) {
+          list.push({
+            key: `${room.key}:adult:${i}`,
+            label: `${a.firstName.trim()} ${a.lastName.trim()}`,
+            lastName: a.lastName,
+            nationality: a.nationality,
+          });
+        }
+      });
+      entry.children.forEach((c, i) => {
+        if (c.firstName.trim() && c.lastName.trim()) {
+          list.push({
+            key: `${room.key}:child:${i}`,
+            label: `${c.firstName.trim()} ${c.lastName.trim()}`,
+            lastName: c.lastName,
+            nationality: c.nationality,
+          });
+        }
+      });
+    }
+    return list;
+  }, [cart, roomGuests]);
+
+  function CopyFromSelect({ ownKey }: { ownKey: string }) {
+    const options = copyableGuests.filter((o) => o.key !== ownKey);
+    if (options.length === 0) return null;
+    return (
+      <select
+        value=""
+        onChange={(e) => {
+          const opt = copyableGuests.find((o) => o.key === e.target.value);
+          if (!opt) return;
+          const [roomKey, type, idxStr] = ownKey.split(":");
+          const idx = Number(idxStr);
+          if (type === "adult") {
+            updateAdult(roomKey, idx, "lastName", opt.lastName);
+            if (opt.nationality) updateAdult(roomKey, idx, "nationality", opt.nationality);
+          } else {
+            updateChild(roomKey, idx, "lastName", opt.lastName);
+            if (opt.nationality) updateChild(roomKey, idx, "nationality", opt.nationality);
+          }
+        }}
+        className="rounded-md border border-ink/15 bg-white px-1.5 py-0.5 text-[11px] text-slate/70 focus:border-coral focus:outline-none"
+      >
+        <option value="">{t("cart.copyFromPlaceholder")}</option>
+        {options.map((o) => (
+          <option key={o.key} value={o.key}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
   // Returns an error message if this child's entered date of birth
   // doesn't reconcile with the exact age this room was priced at during
   // search -- null if it matches (or nothing's been entered yet).
@@ -1603,7 +1676,9 @@ function ApplicationCheckoutForm({
     return null;
   }
 
-  const canSubmit = cart.every((room) => {
+  // Shared by canSubmit (whole cart) and the stepped form's per-room
+  // "Next" gating below -- one room's guest fields are complete/valid.
+  function roomIsValid(room: CartRoom): boolean {
     const entry = roomGuests[room.key];
     if (!entry) return false;
     const adultsOk = entry.adults.every((a) => a.firstName.trim() && a.lastName.trim());
@@ -1615,7 +1690,39 @@ function ApplicationCheckoutForm({
         !childAgeError(room, i, c.dateOfBirth)
     );
     return adultsOk && childrenOk;
-  });
+  }
+
+  const canSubmit = cart.every(roomIsValid);
+
+  // UX pass (2026-07-29, item 3 -- Booking.com/Agoda's "break complex,
+  // high-error-risk steps into stages" principle, researched this
+  // session): one step per room's guest entry, plus a final flight-
+  // details step, instead of every room's full adult/child/passport
+  // field set scrolling past all at once. `currentStep` indexes into
+  // `[...cart rooms..., flightStep]` -- totalSteps = cart.length + 1.
+  const [currentStep, setCurrentStep] = useState(0);
+  const totalSteps = cart.length + 1;
+  const isFlightStep = currentStep === totalSteps - 1;
+  const currentRoom = isFlightStep ? null : cart[currentStep];
+
+  // Real, reproduced bug (Decision 131): "Next" and "Submit" occupy the
+  // exact same on-screen position (same primary-button slot), so a fast
+  // double-click -- normal human behavior, especially while testing --
+  // lands its first click on "Next" and its second click, a moment
+  // later, on whatever NOW renders in that same spot: "Submit" on the
+  // newly-advanced step. The isFlightStep guard in handleSubmit doesn't
+  // catch this because by the time the second click fires, the step
+  // genuinely has advanced -- this isn't a bypassed step, it's a real
+  // step transition happening faster than a human can visually register
+  // it. Brief cooldown after any step change makes the primary button
+  // un-clickable for a moment, so a reflexive second click can't land
+  // on the newly-revealed element at all.
+  const [navCooldown, setNavCooldown] = useState(false);
+  function goToStep(updater: (step: number) => number) {
+    setCurrentStep(updater);
+    setNavCooldown(true);
+    setTimeout(() => setNavCooldown(false), 400);
+  }
 
   // Flattens every room's own guest entries into one list for the API
   // (Guest belongs to the application, not the room -- see
@@ -1681,7 +1788,41 @@ function ApplicationCheckoutForm({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    // Hard guard, independent of which button/step triggered this --
+    // real project-owner report (2026-07-29): an application was
+    // created (BK-000069, real row, empty flight fields) after only the
+    // room step was filled, confirmed the flight step never even
+    // rendered. The room step's "Next" is `type="button"` (never
+    // submits) and the actual `type="submit"` button only exists in the
+    // DOM on the flight step -- but the native <form> still has its own
+    // implicit-submission behavior on Enter in a text field, which some
+    // browsers trigger even without a submit button present. Rather
+    // than chase that browser-specific quirk, this makes premature
+    // submission structurally impossible: any submit event firing
+    // before the flight step is reached is a no-op, regardless of what
+    // triggered it.
+    if (!isFlightStep) return;
+    // Decision 131: also refuses a submit that lands during the
+    // post-step-change cooldown -- the disabled attribute on the
+    // Submit button already blocks this in a spec-compliant browser,
+    // but this makes it true regardless of how the event actually fired.
+    if (navCooldown) return;
     if (!canSubmit) return;
+
+    // Flight details are optional at the field level (arranging a
+    // transfer without a confirmed flight is a real, valid scenario --
+    // e.g. the guest hasn't booked their flight yet), but leaving via
+    // Submit with ALL of them still blank is easy to do by accident on
+    // a fast click-through of the wizard. One explicit confirmation,
+    // same window.confirm pattern AdminPanel.tsx already uses for
+    // approve/reject -- not a blocking requirement, just a deliberate
+    // "are you sure" so an agent can't submit with no flight info
+    // without ever having been asked.
+    const hasAnyFlightDetail = Object.values(flight).some((v) => v.trim() !== "");
+    if (!hasAnyFlightDetail && !window.confirm(t("cart.confirmNoFlightDetails"))) {
+      return;
+    }
+
     const token = localStorage.getItem("token");
     if (!token) return;
 
@@ -1792,8 +1933,35 @@ function ApplicationCheckoutForm({
               </button>
             </div>
 
+            {/* ===== Step indicator -- one segment per room + one for
+                flights, current/completed filled, upcoming outlined.
+                Each segment is directly clickable (free navigation
+                between steps already visited or reachable) -- submit
+                itself still re-validates the whole cart via canSubmit,
+                so jumping around can never bypass a required field. */}
+            <div className="mt-4 flex items-center gap-1.5">
+              {Array.from({ length: totalSteps }).map((_, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => goToStep(() => i)}
+                  aria-label={i < cart.length ? t("cart.stepRoom", { number: i + 1 }) : t("cart.stepFlights")}
+                  className={`h-1.5 flex-1 rounded-full transition-colors ${
+                    i <= currentStep ? "bg-coral" : "bg-ink/10 hover:bg-ink/20"
+                  }`}
+                />
+              ))}
+            </div>
+            <p className="mt-1.5 text-xs font-medium text-slate/50">
+              {isFlightStep
+                ? t("cart.stepFlights")
+                : t("cart.stepRoomOf", { current: currentStep + 1, total: cart.length })}
+            </p>
+
             <div className="mt-4 space-y-5">
-              {cart.map((room, roomIndex) => {
+              {!isFlightStep && currentRoom && (() => {
+                const room = currentRoom;
+                const roomIndex = currentStep;
                 const entry = roomGuests[room.key];
                 return (
                   <div key={room.key} className="rounded-xl border border-ink/10 p-4">
@@ -1820,9 +1988,12 @@ function ApplicationCheckoutForm({
                       </p>
                       {entry.adults.map((a, i) => (
                         <div key={i} className="space-y-1.5">
-                          <p className="text-[11px] font-semibold text-slate/60">
-                            {t("cart.touristLabel", { number: i + 1 })}
-                          </p>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[11px] font-semibold text-slate/60">
+                              {t("cart.touristLabel", { number: i + 1 })}
+                            </p>
+                            <CopyFromSelect ownKey={`${room.key}:adult:${i}`} />
+                          </div>
                           <div className="flex items-center gap-2">
                             <input
                               type="text"
@@ -1875,9 +2046,12 @@ function ApplicationCheckoutForm({
                           const error = childAgeError(room, i, c.dateOfBirth);
                           return (
                             <div key={i} className="space-y-1.5">
-                              <p className="text-[11px] font-semibold text-slate/60">
-                                {t("cart.childLabel", { number: i + 1 })}
-                              </p>
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-[11px] font-semibold text-slate/60">
+                                  {t("cart.childLabel", { number: i + 1 })}
+                                </p>
+                                <CopyFromSelect ownKey={`${room.key}:child:${i}`} />
+                              </div>
                               <div className="flex items-center gap-2">
                                 <input
                                   type="text"
@@ -1936,10 +2110,10 @@ function ApplicationCheckoutForm({
                     )}
                   </div>
                 );
-              })}
-            </div>
+              })()}
 
-            <div className="mt-4 rounded-xl border border-ink/10 p-4">
+              {isFlightStep && (
+              <div className="rounded-xl border border-ink/10 p-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
                 {t("cart.flightHeading")}
               </p>
@@ -1987,6 +2161,8 @@ function ApplicationCheckoutForm({
                   className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
                 />
               </div>
+              </div>
+              )}
             </div>
 
             {submitError && (
@@ -1997,13 +2173,34 @@ function ApplicationCheckoutForm({
             )}
 
             <div className="mt-5 flex items-center gap-2">
-              <button
-                type="submit"
-                disabled={!canSubmit || submitting}
-                className="rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
-              >
-                {submitting ? t("cart.submitting") : t("cart.submit")}
-              </button>
+              {currentStep > 0 && (
+                <button
+                  type="button"
+                  onClick={() => goToStep((s) => s - 1)}
+                  disabled={submitting || navCooldown}
+                  className="rounded-xl border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {t("cart.back")}
+                </button>
+              )}
+              {!isFlightStep ? (
+                <button
+                  type="button"
+                  onClick={() => goToStep((s) => s + 1)}
+                  disabled={!currentRoom || !roomIsValid(currentRoom) || navCooldown}
+                  className="rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                >
+                  {t("cart.next")}
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={!canSubmit || submitting || navCooldown}
+                  className="rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                >
+                  {submitting ? t("cart.submitting") : t("cart.submit")}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onClose}

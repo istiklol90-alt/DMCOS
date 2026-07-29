@@ -5,6 +5,7 @@ import type { TFunction } from "i18next";
 import { API_URL } from "../config";
 import { DateRangePicker } from "./HotelSearch";
 import Input from "../components/ui/Input";
+import { SkeletonRow } from "../components/ui/Skeleton";
 
 // ---------------------------------------------------------------------------
 // Types (only the fields this screen actually reads)
@@ -2462,17 +2463,24 @@ const BookingsList = ({
 
   const sortArrow = (key: SortKey) => (sortKey === key ? (sortDir === "asc" ? " ▲" : " ▼") : "");
 
-  if (loading) {
-    return <p className="mt-10 text-center text-sm text-slate/60">{t("bookingsList.loading")}</p>;
-  }
-
-  if (error) {
-    return (
-      <p className="mt-10 text-center text-sm text-red-600">
-        {t("bookingsList.errorLabel")} {error}
-      </p>
-    );
-  }
+  // UX pass (2026-07-29 analysis, item 2 — Google Material's skeleton-
+  // screen guidance): this used to be `if (loading) return <p>...</p>`
+  // at the very top, before the filter bar was even rendered -- a full
+  // unmount of the ENTIRE screen (filter bar, DateRangePicker, table)
+  // on every single fetch, including a background refresh triggered by
+  // just picking a date. That was the literal root cause of Decision
+  // 125's "calendar closes after one click" bug: the open DateRangePicker
+  // got torn down and rebuilt from scratch. The filter bar/table shell
+  // now always stays mounted; only the table BODY reacts to loading/
+  // error, matching the actual shape of what's actually reloading.
+  const columnCount = 8 + (scope.type === "all" ? 1 : 0) + (adminExtensions?.extraColumnCount ?? 0);
+  // First paint (nothing to show yet) gets real skeleton rows -- a
+  // background refresh (bookings already has the previous result)
+  // keeps showing that stale-but-real data, just dimmed, instead of
+  // flashing a skeleton over content that's still perfectly valid to
+  // look at for another few hundred milliseconds.
+  const isFirstLoad = loading && bookings.length === 0;
+  const isBackgroundRefresh = loading && bookings.length > 0;
 
   return (
     <div>
@@ -2635,7 +2643,11 @@ const BookingsList = ({
         </div>
       )}
 
-      <div className="mt-4 overflow-x-auto rounded-2xl border border-ink/10 bg-white shadow-card">
+      <div
+        className={`mt-4 overflow-x-auto rounded-2xl border border-ink/10 bg-white shadow-card transition-opacity ${
+          isBackgroundRefresh ? "pointer-events-none opacity-50" : ""
+        }`}
+      >
         <table className="w-full min-w-[1180px] border-collapse text-left text-sm">
           <thead>
             <tr className="border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50">
@@ -2667,12 +2679,17 @@ const BookingsList = ({
             </tr>
           </thead>
           <tbody>
-            {filteredSorted.length === 0 ? (
+            {isFirstLoad ? (
+              Array.from({ length: 6 }).map((_, i) => <SkeletonRow key={i} columns={columnCount} />)
+            ) : error ? (
               <tr>
-                <td
-                  colSpan={8 + (scope.type === "all" ? 1 : 0) + (adminExtensions?.extraColumnCount ?? 0)}
-                  className="px-4 py-10 text-center text-sm text-slate/50"
-                >
+                <td colSpan={columnCount} className="px-4 py-10 text-center text-sm text-red-600">
+                  {t("bookingsList.errorLabel")} {error}
+                </td>
+              </tr>
+            ) : filteredSorted.length === 0 ? (
+              <tr>
+                <td colSpan={columnCount} className="px-4 py-10 text-center text-sm text-slate/50">
                   {t("bookingsList.noBookingsFound")}
                 </td>
               </tr>

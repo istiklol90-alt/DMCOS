@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchJson } from "./financeShared";
 import type { Booking } from "./Reservations";
+import { SkeletonRow } from "../components/ui/Skeleton";
 
 // ---------------------------------------------------------------------------
 // Three specialized, read-only presentations over the exact same booking
@@ -234,13 +235,10 @@ function BookingsSubView({ mode }: { mode: Mode }) {
     return transferNames[transferKey(b.contract_id, b.transfer_type)] ?? b.transfer_type;
   }
 
-  if (loading) {
-    return <p className="mt-10 text-center text-sm text-slate/60">Loading bookings...</p>;
-  }
-  if (error) {
-    return <p className="mt-10 text-center text-sm text-red-600">Error: {error}</p>;
-  }
-
+  // UX pass (2026-07-29, same treatment as Reservations.tsx's BookingsList,
+  // Decision 127): the filter bar now always stays mounted -- only the
+  // table body reacts to loading/error, matching Google Material's
+  // skeleton-screen guidance instead of unmounting the whole screen.
   const columnCount = mode === "transfers" ? 9 : 7;
 
   return (
@@ -322,7 +320,15 @@ function BookingsSubView({ mode }: { mode: Mode }) {
             </tr>
           </thead>
           <tbody>
-            {filteredRows.length === 0 ? (
+            {loading ? (
+              Array.from({ length: 6 }).map((_, i) => <SkeletonRow key={i} columns={columnCount} />)
+            ) : error ? (
+              <tr>
+                <td colSpan={columnCount} className="px-4 py-10 text-center text-sm text-red-600">
+                  Error: {error}
+                </td>
+              </tr>
+            ) : filteredRows.length === 0 ? (
               <tr>
                 <td colSpan={columnCount} className="px-4 py-10 text-center text-sm text-slate/50">
                   No bookings found
