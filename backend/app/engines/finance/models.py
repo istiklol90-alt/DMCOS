@@ -396,6 +396,67 @@ class HotelCashbackFulfillment(Base):
     recorded_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class BookingCommercialLine(Base):
+    """Per-room, per-category commercial cost/price ledger -- an
+    additive extension to this already-LOCKED Engine, built because a
+    real gap was found: only Room ever had a cost(net)/price(sale)
+    split anywhere in this project (via Booking.total_amount/
+    agent_markup_amount/agent_exclusive_discount_amount). Transfer
+    (transfer_total) and Tax (mandatory_tax_total) are pure pass-
+    through -- no markup mechanism touches them, cost always equals
+    price. Meal/CIP (airport)/Excursion never existed as standalone
+    figures at all -- meal cost in particular is silently folded into
+    Contract Engine's room rate with no exposed breakout. Category is a
+    plain string (not an enum table), same flexible-core precedent as
+    RateSupplement.adjustment_type -- room/transfer/meal/tax/cip/
+    excursion today, extensible without a migration if a 7th category
+    is ever needed.
+
+    booking_room_id is a plain Integer, no ForeignKey, same cross-
+    engine decoupling convention as InvoiceRoomLine.booking_room_id --
+    every real booking has exactly one BookingRoom row (Decision 119
+    migrated every pre-existing booking), so this works uniformly for
+    both old single-room and new multi-room applications.
+
+    base_cost/base_price are the system-computed starting figure --
+    auto-seeded once (service.get_or_seed_commercial_lines) for room/
+    transfer/tax from the BookingRoom's own frozen columns, and left
+    NULL for meal/cip/excursion until a manager enters one manually
+    (NULL = "not yet entered", same convention as
+    Booking.agent_markup_amount distinguishing "not computed" from a
+    real zero). adjustment_cost/adjustment_price are a DELIBERATELY
+    SEPARATE manual correction (e.g. a discount the hotel granted after
+    the booking was already made) -- never merged into base_*, so the
+    original system-computed figure is never silently overwritten or
+    lost, same "never mutate history" principle as InvoiceReviewNote/
+    HumanGateDecision. A line's real cost/price is always
+    (base_cost or 0) + (adjustment_cost or 0) / (base_price or 0) +
+    (adjustment_price or 0).
+
+    Deliberately NOT retrofitted into Invoice/InvoiceRoomLine/
+    AgentStatement generation -- those stay frozen on today's
+    Booking-column formula, unchanged. This table only feeds the live
+    BookingDetail screen's own Net/Sale/Profit display (owner-
+    confirmed: a correction here should be reflected immediately in
+    that on-screen figure), never an already-issued financial
+    document."""
+
+    __tablename__ = "booking_commercial_lines"
+
+    id = Column(Integer, primary_key=True)
+    booking_room_id = Column(Integer, nullable=False)
+    category = Column(String(20), nullable=False)
+    base_cost = Column(Float, nullable=True)
+    base_price = Column(Float, nullable=True)
+    adjustment_cost = Column(Float, nullable=False, default=0)
+    adjustment_price = Column(Float, nullable=False, default=0)
+    adjustment_note = Column(Text, nullable=True)
+    adjusted_by = Column(Integer, nullable=True)
+    adjusted_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class Voucher(Base):
     """Decision 097: the guest-facing proof-of-booking document -- hotel
     name/dates/room type/guest names/meal plan/the hotel's own

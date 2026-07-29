@@ -111,6 +111,44 @@ export function invoiceProfit(inv: { commission: number | null; discount: number
   return inv.commission - inv.discount;
 }
 
+// Per-room, per-category commercial cost/price ledger with a manual
+// adjustment mechanism -- mirrors backend/app/engines/finance/models.py's
+// BookingCommercialLine exactly (see its own docstring for the full
+// rationale: Room was the only category that ever had a cost/price split
+// before this; Transfer/Tax were pass-through; Meal/CIP/Excursion never
+// existed as standalone figures at all).
+export const COMMERCIAL_LINE_CATEGORIES = ["room", "transfer", "meal", "tax", "cip", "excursion"] as const;
+export type CommercialLineCategory = (typeof COMMERCIAL_LINE_CATEGORIES)[number];
+
+export interface BookingCommercialLine {
+  id: number;
+  booking_room_id: number;
+  category: CommercialLineCategory;
+  base_cost: number | null;
+  base_price: number | null;
+  adjustment_cost: number;
+  adjustment_price: number;
+  adjustment_note: string | null;
+  adjusted_by: number | null;
+  adjusted_at: string | null;
+}
+
+// Direct TypeScript mirror of finance/service.py's
+// compute_booking_room_commercial_totals -- the new source for
+// BookingDetail's on-screen Net/Sale/Profit box (owner-confirmed: a
+// manual correction here should be reflected immediately in that
+// figure), deliberately NOT used by Invoice/AgentStatement generation,
+// which stay on computeBookingFinancials' frozen-Booking-column formula.
+export function computeCommercialLineTotals(lines: BookingCommercialLine[]): {
+  netTotal: number;
+  saleTotal: number;
+  profit: number;
+} {
+  const netTotal = lines.reduce((sum, l) => sum + (l.base_cost ?? 0) + (l.adjustment_cost ?? 0), 0);
+  const saleTotal = lines.reduce((sum, l) => sum + (l.base_price ?? 0) + (l.adjustment_price ?? 0), 0);
+  return { netTotal, saleTotal, profit: saleTotal - netTotal };
+}
+
 export async function fetchJson<T>(path: string, token: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...options,

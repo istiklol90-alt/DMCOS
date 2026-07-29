@@ -30,6 +30,8 @@ from app.engines.finance.schemas import (
     HotelCashbackFulfillmentResponse,
     HotelCashbackFulfillmentCreate,
     VoucherResponse,
+    BookingCommercialLineResponse,
+    BookingCommercialLineUpsert,
 )
 
 router = APIRouter(prefix="/finance-engine", tags=["Finance Engine"])
@@ -525,4 +527,50 @@ def download_invoice(booking_id: int, db: Session = Depends(get_db), current_use
         content=content,
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{invoice.invoice_number}.txt"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# BookingCommercialLine -- per-room, per-category cost/price ledger with a
+# manual adjustment mechanism (see service.py's own section docstring).
+# Admin-only, same boundary as the rest of this router's money endpoints.
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/booking-rooms/{booking_room_id}/commercial-lines",
+    response_model=list[BookingCommercialLineResponse],
+)
+def get_commercial_lines(booking_room_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Auto-seeds room/transfer/tax on first call for this room (idempotent -- see service.get_or_seed_commercial_lines)."""
+    _require_admin(current_user)
+    return _run(lambda: service.get_or_seed_commercial_lines(db, booking_room_id))
+
+
+@router.put(
+    "/booking-rooms/{booking_room_id}/commercial-lines/{category}",
+    response_model=BookingCommercialLineResponse,
+)
+def put_commercial_line(
+    booking_room_id: int,
+    category: str,
+    data: BookingCommercialLineUpsert,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Create-or-update one category's line. Body fields are all
+    optional -- only what's provided changes (see
+    service.upsert_commercial_line)."""
+    _require_admin(current_user)
+    return _run(
+        lambda: service.upsert_commercial_line(
+            db,
+            booking_room_id,
+            category,
+            base_cost=data.base_cost,
+            base_price=data.base_price,
+            adjustment_cost=data.adjustment_cost,
+            adjustment_price=data.adjustment_price,
+            note=data.note,
+            user_id=current_user.id,
+        )
     )

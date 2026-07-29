@@ -291,6 +291,7 @@ async def approve_registration(
             role="agent",
             is_active=True,
             is_first_login=True,
+            company_name=registration.company_name,
         )
         
         db.add(new_user)

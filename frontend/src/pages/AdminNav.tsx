@@ -22,6 +22,7 @@ export const NAV_STRUCTURE: NavItem[] = [
     key: "bookings-group",
     label: "Bookings",
     children: [
+      { key: "bookings-needs-attention", label: "Needs Attention" },
       { key: "reservations", label: "Bookings" },
       { key: "bookings-transfers", label: "Transfers" },
       { key: "bookings-arrival", label: "Arrival" },

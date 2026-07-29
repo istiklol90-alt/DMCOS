@@ -38,6 +38,7 @@ from app.engines.finance.models import (
     HotelCashbackArrangement,
     HotelCashbackFulfillment,
     Voucher,
+    BookingCommercialLine,
 )
 from app.engines.booking.models import Booking
 from models.user import User
@@ -1313,3 +1314,145 @@ def build_invoice_download_text(db: Session, invoice: Invoice) -> str:
         f"ИТОГО К ОПЛАТЕ: {invoice.total} {invoice.currency}",
     ]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# BookingCommercialLine -- per-room, per-category cost/price ledger with a
+# manual adjustment mechanism (see the model's own docstring for the full
+# rationale: only Room ever had a cost/price split before this; Transfer/
+# Tax were pass-through; Meal/CIP/Excursion didn't exist at all).
+# ---------------------------------------------------------------------------
+
+# Fixed display/seed order. "room"/"transfer"/"tax" are auto-seeded from
+# BookingRoom's own frozen columns; "meal"/"cip"/"excursion" have no
+# system-computed source anywhere in this project, so they start absent
+# (never seeded) until a manager enters one manually via upsert_commercial_line.
+SEEDED_CATEGORIES = ("room", "transfer", "tax")
+ALL_CATEGORIES = ("room", "transfer", "meal", "tax", "cip", "excursion")
+
+
+def get_or_seed_commercial_lines(db: Session, booking_room_id: int) -> list[BookingCommercialLine]:
+    """
+    Idempotent: seeds room/transfer/tax exactly once per booking_room_id
+    (checked by category, not by "any row exists" -- a room that already
+    has a manually-added "meal" line but was never opened through this
+    function before still gets its room/transfer/tax rows seeded, not
+    skipped). After the first seed, edits are the source of truth for
+    those 3 categories too -- this function never overwrites an existing
+    row on a later call.
+
+    Raises ValueError (via booking_service.get_booking_room) if the room
+    doesn't exist -- same "let the caller's 400 mapping handle it" pattern
+    every other Engine uses.
+    """
+    room = booking_service.get_booking_room(db, booking_room_id)
+    existing = repository.list_commercial_lines(db, booking_room_id)
+    existing_categories = {line.category for line in existing}
+
+    if "room" not in existing_categories and room.total_amount is not None:
+        markup = room.agent_markup_amount or 0.0
+        discount = room.agent_exclusive_discount_amount or 0.0
+        row = repository.create_commercial_line(
+            db,
+            booking_room_id=booking_room_id,
+            category="room",
+            base_cost=room.total_amount - markup + discount,
+            base_price=room.total_amount,
+        )
+        existing.append(row)
+
+    if "transfer" not in existing_categories and room.transfer_total is not None:
+        row = repository.create_commercial_line(
+            db,
+            booking_room_id=booking_room_id,
+            category="transfer",
+            base_cost=room.transfer_total,
+            base_price=room.transfer_total,
+        )
+        existing.append(row)
+
+    if "tax" not in existing_categories and room.mandatory_tax_total is not None:
+        row = repository.create_commercial_line(
+            db,
+            booking_room_id=booking_room_id,
+            category="tax",
+            base_cost=room.mandatory_tax_total,
+            base_price=room.mandatory_tax_total,
+        )
+        existing.append(row)
+
+    return existing
+
+
+def upsert_commercial_line(
+    db: Session,
+    booking_room_id: int,
+    category: str,
+    base_cost: float | None = None,
+    base_price: float | None = None,
+    adjustment_cost: float | None = None,
+    adjustment_price: float | None = None,
+    note: str | None = None,
+    user_id: int | None = None,
+) -> BookingCommercialLine:
+    """
+    Create-or-update, same upsert precedent as Hotel Engine's
+    set_room_availability_status. Only the fields the caller actually
+    provided are changed -- omitted (None) fields keep their prior
+    value, so e.g. recording an adjustment doesn't require re-sending
+    base_cost/base_price every time. adjusted_by/adjusted_at are
+    stamped whenever ANY field on this call actually changes something,
+    covering both "correcting a base figure" (meal/cip/excursion) and
+    "recording an adjustment" (any category) under one audit trail.
+    """
+    if category not in ALL_CATEGORIES:
+        raise ValueError(f"Unknown commercial line category: {category}")
+
+    # Confirms the room exists -- same "let ValueError surface as 400"
+    # pattern as get_or_seed_commercial_lines.
+    booking_service.get_booking_room(db, booking_room_id)
+
+    line = repository.get_commercial_line(db, booking_room_id, category)
+    fields: dict = {}
+    if base_cost is not None:
+        fields["base_cost"] = base_cost
+    if base_price is not None:
+        fields["base_price"] = base_price
+    if adjustment_cost is not None:
+        fields["adjustment_cost"] = adjustment_cost
+    if adjustment_price is not None:
+        fields["adjustment_price"] = adjustment_price
+    if note is not None:
+        fields["adjustment_note"] = note
+
+    if fields:
+        fields["adjusted_by"] = user_id
+        fields["adjusted_at"] = datetime.utcnow()
+
+    if line is None:
+        return repository.create_commercial_line(
+            db, booking_room_id=booking_room_id, category=category, **fields
+        )
+    if fields:
+        return repository.update_commercial_line(db, line, **fields)
+    return line
+
+
+def compute_booking_room_commercial_totals(lines: list[BookingCommercialLine]) -> dict:
+    """
+    Sums (base_cost + adjustment_cost) / (base_price + adjustment_price)
+    across every commercial line for one room -- the new source for
+    BookingDetail's on-screen Net/Sale/Profit box (owner-confirmed: a
+    manual correction here should be reflected immediately in that
+    figure). Deliberately NOT used by Invoice/InvoiceRoomLine/
+    AgentStatement generation, which stay on compute_booking_financials'
+    frozen-Booking-column formula -- see this module's own top-level
+    docstring note and the model's docstring for why.
+    """
+    net_total = sum((line.base_cost or 0.0) + (line.adjustment_cost or 0.0) for line in lines)
+    sale_total = sum((line.base_price or 0.0) + (line.adjustment_price or 0.0) for line in lines)
+    return {
+        "net_total": net_total,
+        "sale_total": sale_total,
+        "profit": sale_total - net_total,
+    }

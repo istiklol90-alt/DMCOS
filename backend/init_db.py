@@ -54,6 +54,7 @@ from app.engines.finance.models import (
     HotelCashbackArrangement,
     HotelCashbackFulfillment,
     InvoiceRoomLine,
+    BookingCommercialLine,
 )
 
 def init_db():

@@ -17,6 +17,7 @@ from app.engines.finance.models import (
     HotelCashbackArrangement,
     HotelCashbackFulfillment,
     Voucher,
+    BookingCommercialLine,
 )
 
 
@@ -410,3 +411,42 @@ def list_vouchers_by_booking(db: Session, booking_id: int) -> list[Voucher]:
 def list_vouchers_by_room(db: Session, booking_room_id: int) -> list[Voucher]:
     """Stage 4: same append-only list, scoped to one room within a multi-room application."""
     return db.query(Voucher).filter(Voucher.booking_room_id == booking_room_id).order_by(Voucher.created_at).all()
+
+
+# ---------------------------------------------------------------------------
+# BookingCommercialLine -- one row per (booking_room_id, category), upserted.
+# ---------------------------------------------------------------------------
+
+def list_commercial_lines(db: Session, booking_room_id: int) -> list[BookingCommercialLine]:
+    return (
+        db.query(BookingCommercialLine)
+        .filter(BookingCommercialLine.booking_room_id == booking_room_id)
+        .all()
+    )
+
+
+def get_commercial_line(db: Session, booking_room_id: int, category: str) -> Optional[BookingCommercialLine]:
+    return (
+        db.query(BookingCommercialLine)
+        .filter(
+            BookingCommercialLine.booking_room_id == booking_room_id,
+            BookingCommercialLine.category == category,
+        )
+        .first()
+    )
+
+
+def create_commercial_line(db: Session, **fields) -> BookingCommercialLine:
+    row = BookingCommercialLine(**fields)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def update_commercial_line(db: Session, line: BookingCommercialLine, **fields) -> BookingCommercialLine:
+    for key, value in fields.items():
+        setattr(line, key, value)
+    db.commit()
+    db.refresh(line)
+    return line

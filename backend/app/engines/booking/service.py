@@ -315,9 +315,18 @@ def get_booking_by_number(db: Session, booking_number: str) -> Booking:
     return booking
 
 
-def list_bookings(db: Session, skip: int = 0, limit: int = 100) -> list[Booking]:
-    """Return a page of bookings across all agents/hotels."""
-    return repository.list_bookings(db, skip=skip, limit=limit)
+def list_bookings(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    created_from: date_type | None = None,
+    created_to: date_type | None = None,
+    search: str | None = None,
+) -> list[Booking]:
+    """Return a page of bookings across all agents/hotels, optionally scoped to a created_at date range and/or a booking_number search."""
+    return repository.list_bookings(
+        db, skip=skip, limit=limit, created_from=created_from, created_to=created_to, search=search
+    )
 
 
 def list_bookings_by_agent(db: Session, agent_id: int) -> list[Booking]:

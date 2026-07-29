@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { API_URL } from "../config";
 import { DateRangePicker } from "./HotelSearch";
+import Input from "../components/ui/Input";
 
 // ---------------------------------------------------------------------------
 // Types (only the fields this screen actually reads)
@@ -61,6 +62,40 @@ export interface Booking {
   created_at: string;
 }
 
+// One room/leg within a booking "application" (Stage 1-5, multi-room
+// booking applications). Every booking -- old single-room ones (migrated)
+// and every new one created via the trip-cart checkout -- has at least
+// one of these; a booking's own top-level fields (hotel_id/arrival_date/
+// total_amount/etc.) only ever reflect the FIRST room as a legacy
+// "representative" snapshot, so this is the only place that shows the
+// real, complete picture for an application with more than one room.
+interface BookingRoom {
+  id: number;
+  booking_id: number;
+  sequence_number: number;
+  hotel_id: number;
+  contract_id: number;
+  room_type_id: number;
+  meal_plan_id: number | null;
+  arrival_date: string;
+  departure_date: string;
+  nights: number;
+  adults: number;
+  children: number;
+  infants: number;
+  status: string;
+  rejection_reason: string | null;
+  currency: string | null;
+  agent_markup_amount: number | null;
+  agent_exclusive_discount_amount: number | null;
+  transfer_type: string | null;
+  transfer_total: number | null;
+  mandatory_tax_total: number | null;
+  total_amount: number | null;
+  confirmation_number: string | null;
+  special_requests: string | null;
+}
+
 interface Guest {
   id: number;
   first_name: string;
@@ -92,6 +127,7 @@ interface MealPlanInfo {
 interface UserRecord {
   id: number;
   name: string;
+  company_name?: string | null;
 }
 
 export interface BookingCorrespondenceRow {
@@ -151,6 +187,14 @@ export type Scope = { type: "all" } | { type: "agent"; agentId: number };
 export interface DetailCtx {
   booking: Booking;
   onBookingUpdated: (b: Booking) => void;
+  // The selected BookingRoom's own id (distinct from booking.id, the
+  // parent application) -- needed by renderFinancialSummary for
+  // per-room commercial-line endpoints. null only when no rooms exist
+  // at all for this application (legacy data, see the "Rooms" section
+  // above), or DetailCtx is constructed by a slot other than
+  // renderFinancialSummary that never had a room to select in the
+  // first place.
+  bookingRoomId?: number | null;
 }
 
 export interface AdminBookingExtensions {
@@ -166,6 +210,14 @@ export interface AdminBookingExtensions {
   renderReplyLogButton?: (ctx: DetailCtx) => ReactNode; // "Добавить ответ отеля вручную" button
   renderFinancialSummary?: (ctx: DetailCtx) => ReactNode; // Net/Sale/Profit block; replaces the base's default "Итого" line when present
   onAfterClaim?: (ctx: DetailCtx) => void; // auto-invoice-on-claim side effect
+  // list-level, additive (2026-07-27): a summary strip over whatever the
+  // list is CURRENTLY filtered to (typically a "By date" range) -- e.g.
+  // "23 applications, 10 cancelled, total profit $1,233". Receives the
+  // already-filtered/sorted list so it never needs its own copy of the
+  // filter logic; structurally absent for AgentDashboard_v2.tsx (never
+  // supplies adminExtensions), same profit-confidentiality boundary
+  // (Decision 102) as renderFinancialSummary.
+  renderListSummary?: (bookings: Booking[]) => ReactNode;
 }
 
 const TERMINAL_STATUSES = ["Cancelled", "Rejected", "Completed"];
@@ -1062,26 +1114,199 @@ function BookingDetail({
   booking,
   hotelName,
   roomTypeName,
+  hotels,
+  roomTypes,
+  mealPlans,
   mealPlanInfo,
   onClose,
   onBookingUpdated,
   permissions,
   claimerNames,
+  companyNames,
   adminExtensions,
 }: {
   booking: Booking;
   hotelName: string;
   roomTypeName: string;
+  // id->name lookups, same maps the list itself already fetched -- needed
+  // here too since a multi-room application's rooms (below) can each
+  // reference a different hotel_id/room_type_id/meal_plan_id than the
+  // parent booking's own "representative" fields.
+  hotels: Record<number, string>;
+  roomTypes: Record<number, string>;
+  mealPlans: Record<number, MealPlanInfo>;
   mealPlanInfo: MealPlanInfo | undefined;
   onClose: () => void;
   onBookingUpdated: (updated: Booking) => void;
   permissions: Permissions;
   claimerNames: Record<number, string>;
+  companyNames: Record<number, string>;
   adminExtensions?: AdminBookingExtensions;
 }) {
   const { t } = useTranslation("reservations");
   const [guests, setGuests] = useState<Guest[] | null>(null);
   const [guestsError, setGuestsError] = useState<string | null>(null);
+
+  // Stage 3 (manager approve/reject) -- every booking has at least one
+  // BookingRoom row (old single-room bookings were migrated, every new
+  // one is created with at least one). Fetched independently of `guests`
+  // since it has its own loading/error lifecycle and its own write
+  // actions (approve/reject) that need to refresh just this list plus
+  // the parent booking's own rollup status.
+  const [rooms, setRooms] = useState<BookingRoom[] | null>(null);
+  const [roomsError, setRoomsError] = useState<string | null>(null);
+  const [roomActionId, setRoomActionId] = useState<number | null>(null);
+  const [roomActionError, setRoomActionError] = useState<string | null>(null);
+  // Which room's own data (dates/guests/meal plan/Net-Sale-Profit/price
+  // breakdown) is shown below -- the project owner's own explicit fix for
+  // "unclear which room this data is for" once an application has more
+  // than one room. Defaults to the first room once loaded so there's
+  // never a moment with rooms visible but nothing selected below.
+  const [selectedRoomId, setSelectedRoomId] = useState<number | null>(null);
+
+  useEffect(() => {
+    setRooms(null);
+    setRoomsError(null);
+    setSelectedRoomId(null);
+    const token = localStorage.getItem("token") || "";
+    fetchJson<BookingRoom[]>(`/booking-engine/bookings/${booking.id}/rooms`, token)
+      .then((loaded) => {
+        setRooms(loaded);
+        if (loaded.length > 0) setSelectedRoomId(loaded[0].id);
+      })
+      .catch((err) => setRoomsError(err.message || "Failed to load rooms"));
+  }, [booking.id]);
+
+  // Transfer type -> human name, same "one bulk fetch per unique
+  // contract_id" pattern BookingsSubViews.tsx already established for
+  // the same lookup (GET /contracts/{id}/transfer-options, no new
+  // backend endpoint). Keyed by `${contract_id}:${transfer_type}` since
+  // the same raw code can mean different things on different contracts.
+  const [transferNames, setTransferNames] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!rooms) return;
+    const uniqueContractIds = Array.from(new Set(rooms.map((r) => r.contract_id)));
+    const token = localStorage.getItem("token") || "";
+    Promise.all(
+      uniqueContractIds.map(async (contractId) => {
+        try {
+          const options = await fetchJson<{ transfer_type: string; transfer_name: string | null }[]>(
+            `/contract-engine/contracts/${contractId}/transfer-options`,
+            token
+          );
+          return { contractId, options };
+        } catch {
+          return { contractId, options: [] };
+        }
+      })
+    ).then((results) => {
+      const map: Record<string, string> = {};
+      results.forEach(({ contractId, options }) => {
+        options.forEach((o) => {
+          map[`${contractId}:${o.transfer_type}`] = o.transfer_name ?? o.transfer_type;
+        });
+      });
+      setTransferNames(map);
+    });
+  }, [rooms]);
+
+  const displayRoom = rooms?.find((r) => r.id === selectedRoomId) ?? null;
+  const displayTransferName = displayRoom?.transfer_type
+    ? transferNames[`${displayRoom.contract_id}:${displayRoom.transfer_type}`] ?? displayRoom.transfer_type
+    : null;
+
+  // Adapts the selected BookingRoom's own fields onto a copy of the
+  // parent Booking so the existing, already-verified financial/breakdown
+  // machinery (computeBookingFinancials, useOwnMealPlan, useOwnBreakdown
+  // -- all built against the `Booking` shape) can be reused completely
+  // unchanged for a single room's figures instead of the application's
+  // blended "representative" ones. Fields not overridden (booking_number,
+  // agent_id, status, claimed_by, etc.) are structurally required by
+  // `Booking` but never read by that machinery, so inheriting them from
+  // the real parent booking is harmless.
+  // Memoized: FinancialSummaryBlock's own useOwnBreakdown effect
+  // dependency-arrays on this exact object by reference (same pattern
+  // its existing, unchanged `[booking, mealPlanInfo]` dependency already
+  // relies on for the single-room case) -- without memoizing, a plain
+  // object literal recreated on every render would look "changed" on
+  // every re-render (e.g. from unrelated guests/correspondence state
+  // updates elsewhere in this same component) and re-fire the contract-
+  // engine recalculation calls needlessly.
+  const effectiveBooking: Booking = useMemo(
+    () =>
+      displayRoom
+        ? {
+            ...booking,
+            hotel_id: displayRoom.hotel_id,
+            contract_id: displayRoom.contract_id,
+            room_type_id: displayRoom.room_type_id,
+            meal_plan_id: displayRoom.meal_plan_id ?? booking.meal_plan_id,
+            arrival_date: displayRoom.arrival_date,
+            departure_date: displayRoom.departure_date,
+            nights: displayRoom.nights,
+            adults: displayRoom.adults,
+            children: displayRoom.children,
+            infants: displayRoom.infants,
+            currency: displayRoom.currency ?? booking.currency,
+            total_amount: displayRoom.total_amount ?? 0,
+            agent_markup_amount: displayRoom.agent_markup_amount,
+            agent_exclusive_discount_amount: displayRoom.agent_exclusive_discount_amount,
+            transfer_type: displayRoom.transfer_type,
+            transfer_total: displayRoom.transfer_total,
+            mandatory_tax_total: displayRoom.mandatory_tax_total,
+          }
+        : booking,
+    [booking, displayRoom]
+  );
+  const effectiveMealPlanInfo = displayRoom ? mealPlans[displayRoom.meal_plan_id ?? -1] : mealPlanInfo;
+
+  async function refreshAfterRoomAction() {
+    const token = localStorage.getItem("token") || "";
+    try {
+      const [freshRooms, freshBooking] = await Promise.all([
+        fetchJson<BookingRoom[]>(`/booking-engine/bookings/${booking.id}/rooms`, token),
+        fetchJson<Booking>(`/booking-engine/bookings/${booking.id}`, token),
+      ]);
+      setRooms(freshRooms);
+      onBookingUpdated(freshBooking);
+    } catch (err: any) {
+      setRoomsError(err.message || "Failed to refresh rooms");
+    }
+  }
+
+  async function handleApproveRoom(roomId: number) {
+    const token = localStorage.getItem("token") || "";
+    setRoomActionError(null);
+    setRoomActionId(roomId);
+    try {
+      await fetchJson(`/booking-engine/rooms/${roomId}/approve`, token, { method: "POST" });
+      await refreshAfterRoomAction();
+    } catch (err: any) {
+      setRoomActionError(err.message || "Failed to approve room");
+    } finally {
+      setRoomActionId(null);
+    }
+  }
+
+  async function handleRejectRoom(roomId: number) {
+    const reason = window.prompt("Reason for rejecting this room:");
+    if (!reason || reason.trim().length < 2) return;
+    const token = localStorage.getItem("token") || "";
+    setRoomActionError(null);
+    setRoomActionId(roomId);
+    try {
+      await fetchJson(`/booking-engine/rooms/${roomId}/reject`, token, {
+        method: "POST",
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+      await refreshAfterRoomAction();
+    } catch (err: any) {
+      setRoomActionError(err.message || "Failed to reject room");
+    } finally {
+      setRoomActionId(null);
+    }
+  }
 
   // Read-only thread display stays here (both roles); the compose/send
   // (LPO) and reply-log write actions moved to AdminBookingFinance.tsx,
@@ -1251,12 +1476,31 @@ function BookingDetail({
     }
   }
 
+  // Scoped to the SELECTED room (same "which room is this data for"
+  // fix the Rooms section itself already established for dates/pricing)
+  // -- previously always fetched every guest across the whole
+  // application via /bookings/{id}/guests, so a 2-room booking showed
+  // both rooms' guests at once regardless of which room card was
+  // selected, a real gap the project owner found live. Waits for
+  // `rooms` to resolve (null while loading) before fetching, so this
+  // never fires once against the unscoped "everyone" endpoint and then
+  // again against the scoped one -- selectedRoomId is only ever null
+  // here for a legacy booking with zero BookingRoom rows at all
+  // (rooms === []), where the whole-application endpoint is correct.
   useEffect(() => {
+    if (rooms === null) return;
     const token = localStorage.getItem("token") || "";
-    fetchJson<Guest[]>(`/booking-engine/bookings/${booking.id}/guests`, token)
+    setGuests(null);
+    setGuestsError(null);
+    const url =
+      selectedRoomId !== null
+        ? `/booking-engine/rooms/${selectedRoomId}/guests`
+        : `/booking-engine/bookings/${booking.id}/guests`;
+    fetchJson<Guest[]>(url, token)
       .then(setGuests)
       .catch((err) => setGuestsError(err.message));
-  }, [booking.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [booking.id, selectedRoomId, rooms === null]);
 
   // Correspondence thread (Decision 049) -- fetched independently of
   // status/claim state so history stays visible even after a booking
@@ -1279,11 +1523,11 @@ function BookingDetail({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/40 px-4 py-10"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/40 px-4 py-6 sm:px-6"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-2xl rounded-2xl border border-ink/10 bg-white p-6 shadow-xl"
+        className="w-full max-w-6xl rounded-2xl border border-ink/10 bg-white p-8 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4">
@@ -1361,6 +1605,102 @@ function BookingDetail({
             </p>
           </div>
         )}
+
+        {/* ===== Rooms (Stage 1-5, multi-room booking applications) =====
+            Every application (single-room or multi-room) is really a
+            list of BookingRoom rows -- this is the only place that shows
+            each room's own hotel/dates/status and the ONLY place a
+            manager can actually approve/reject one (the system never
+            auto-confirms a room, even one whose allotment reserved
+            successfully). Approve/reject are backend admin-only
+            endpoints, so the actions themselves are gated the same way
+            ConfirmationNumberEdit already is (canConfirmWithHotel) --
+            not a new permission flag. Room pricing (total_amount) is
+            money, so it's only shown when adminExtensions is present
+            (structurally absent for AgentDashboard_v2.tsx), same
+            confidentiality boundary as the financial summary below. */}
+        <div className="mt-3">
+          <h4 className="mb-2 text-sm font-medium uppercase tracking-wide text-slate/50">
+            {t("bookingDetail.roomsTitle")}
+            {rooms && rooms.length > 1 && <span className="ml-1 normal-case text-slate/40">({rooms.length})</span>}
+          </h4>
+          {roomsError && <p className="text-sm text-red-600">{roomsError}</p>}
+          {!rooms && !roomsError && <p className="text-sm text-slate/50">{t("bookingDetail.roomsLoading")}</p>}
+          {roomActionError && (
+            <div className="mb-2 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{roomActionError}</div>
+          )}
+          {rooms && rooms.length > 1 && (
+            <p className="mb-2 text-xs text-slate/50">{t("bookingDetail.roomsClickHint")}</p>
+          )}
+          {rooms && rooms.length > 0 && (
+            <div className="space-y-2">
+              {rooms.map((room) => (
+                <div
+                  key={room.id}
+                  onClick={() => setSelectedRoomId(room.id)}
+                  className={`rounded-lg border p-3 transition-colors ${
+                    rooms.length > 1 ? "cursor-pointer" : ""
+                  } ${
+                    room.id === selectedRoomId
+                      ? "border-coral bg-coral/5"
+                      : "border-ink/10 hover:border-coral/30"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-ink">
+                        {rooms.length > 1 && (
+                          <span className="mr-1.5 text-slate/40">#{room.sequence_number}</span>
+                        )}
+                        {hotels[room.hotel_id] ?? `#${room.hotel_id}`} — {roomTypes[room.room_type_id] ?? `#${room.room_type_id}`}
+                      </p>
+                      <p className="text-xs text-slate/50">
+                        {formatDate(room.arrival_date)} — {formatDate(room.departure_date)} (
+                        {t("bookingDetail.nights", { count: room.nights })})
+                      </p>
+                      <p className="text-xs text-slate/50">
+                        {t("bookingDetail.adultsCount", { count: room.adults })} /{" "}
+                        {t("bookingDetail.childrenCount", { count: room.children })} /{" "}
+                        {t("bookingDetail.infantsCount", { count: room.infants })}
+                      </p>
+                      {room.rejection_reason && (
+                        <p className="mt-1 text-xs text-red-600">{room.rejection_reason}</p>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-1.5">
+                      <StatusBadge status={room.status} />
+                      {adminExtensions && room.total_amount !== null && (
+                        <span className="font-mono text-sm font-semibold text-ink">
+                          {formatMoney(room.total_amount, room.currency ?? booking.currency)}
+                        </span>
+                      )}
+                      {permissions.canConfirmWithHotel && room.status === "Pending" && (
+                        <div className="flex gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleApproveRoom(room.id)}
+                            disabled={roomActionId === room.id}
+                            className="rounded-lg bg-ink px-2.5 py-1 text-xs font-medium text-white transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                          >
+                            {t("bookingDetail.approveRoom")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRejectRoom(room.id)}
+                            disabled={roomActionId === room.id}
+                            className="rounded-lg border border-red-500/30 bg-white px-2.5 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {t("bookingDetail.rejectRoom")}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* ===== LPO — запрос на подтверждение отелю (Decision 046, gated
             admin-only by Decision 103) =====
@@ -1534,179 +1874,255 @@ function BookingDetail({
           </div>
         )}
 
-        <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-          <div>
-            <span className="text-slate/50">{t("bookingDetail.bookingDateLabel")} </span>
-            <span className="text-ink">{formatDate(booking.created_at)}</span>
-          </div>
-          <div>
-            <span className="text-slate/50">{t("bookingDetail.datesLabel")} </span>
-            <span className="text-ink">
-              {formatDate(booking.arrival_date)} — {formatDate(booking.departure_date)} (
-              {t("bookingDetail.nights", { count: booking.nights })})
-            </span>
-          </div>
-          <div>
-            <span className="text-slate/50">{t("bookingDetail.guestsLabel")} </span>
-            <span className="text-ink">
-              {t("bookingDetail.adultsCount", { count: booking.adults })} /{" "}
-              {t("bookingDetail.childrenCount", { count: booking.children })} /{" "}
-              {t("bookingDetail.infantsCount", { count: booking.infants })}
-            </span>
-          </div>
-          <div>
-            <span className="text-slate/50">{t("bookingDetail.mealPlanLabel")} </span>
-            <span className="text-ink">{mealPlanInfo?.meal_name || mealPlanInfo?.meal_code || `#${booking.meal_plan_id}`}</span>
-          </div>
-          {booking.confirmation_number && (
-            <div>
-              <span className="text-slate/50">{t("bookingDetail.confirmationNumberLabel")} </span>
-              <span className="text-ink">{booking.confirmation_number}</span>
-            </div>
-          )}
-          {booking.arrival_flight_number && (
-            <div>
-              <span className="text-slate/50">{t("bookingDetail.arrivalFlightLabel")} </span>
-              <span className="text-ink">{booking.arrival_flight_number}</span>
-            </div>
-          )}
-          {booking.departure_flight_number && (
-            <div>
-              <span className="text-slate/50">{t("bookingDetail.departureFlightLabel")} </span>
-              <span className="text-ink">{booking.departure_flight_number}</span>
-            </div>
-          )}
-          {booking.special_requests && (
-            <div className="col-span-2">
-              <span className="text-slate/50">{t("bookingDetail.specialRequestsLabel")} </span>
-              <span className="text-ink">{booking.special_requests}</span>
-            </div>
-          )}
-        </div>
-
-        {/* ===== Financial summary (Decision 101/102/106 lineage) =====
-            AdminBookingFinance.tsx's renderFinancialSummary now owns Net/
-            Sale/Profit AND the "Разбивка стоимости" price-breakdown block
-            (the fixed 9-slot interface has no separate slot for the
-            breakdown, so it's folded into this one, in the same position
-            "Итого" used to occupy) -- structurally absent, not just
-            gated, for any caller (e.g. AgentDashboard_v2.tsx) that never
-            supplies adminExtensions. The base's own default is the plain
-            sale total an agent needs to know they're charged. */}
-        {adminExtensions?.renderFinancialSummary ? (
-          adminExtensions.renderFinancialSummary(ctx)
-        ) : (
-          <div className="mt-4 rounded-lg bg-sand/50 p-3 text-sm">
-            <p className="text-slate/50">{t("bookingDetail.total")}</p>
-            <p className="font-medium text-ink">{formatMoney(saleTotal(booking), booking.currency)}</p>
-          </div>
-        )}
-
-        {/* ===== Подтверждение отеля (Decision 097) ===== */}
-        <div className="mt-4 flex items-center justify-between">
-          <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">
-            {t("bookingDetail.hotelConfirmationTitle")}
-          </h4>
-          <ConfirmationNumberEdit
-            booking={booking}
-            onUpdated={onBookingUpdated}
-            canEdit={permissions.canConfirmWithHotel}
-          />
-        </div>
-
-        {/* ===== Подтверждение отмены отелем (Decision 104) — stage 2 of
-            the two-step cancellation workflow. Admin-only, same
-            canConfirmWithHotel boundary as confirmation_number above (an
-            agent can request cancellation on their own booking, but does
-            not confirm the hotel processed it) -- this is hotel-
-            confirmation authority, not money-secrecy, per the Admin/Agent
-            Component Separation refactor's renamed permission. Only shown
-            while status is still "Cancellation Requested" -- once
-            confirmed, status flips to "Cancelled" and this section
-            naturally stops rendering. ===== */}
-        {permissions.canConfirmWithHotel && booking.status === "Cancellation Requested" && (
-          <div className="mt-4 flex items-center justify-between">
-            <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">
-              {t("bookingDetail.cancellationConfirmationTitle")}
-            </h4>
-            <CancellationConfirmationEdit booking={booking} onUpdated={onBookingUpdated} />
-          </div>
-        )}
-
-        {/* ===== Документы (Decision 102) — visible to admin and the
-            owning agent alike; not gated by permissions at all since this
-            is about document access/ownership, not the Cost/Profit
-            confidentiality boundary. ===== */}
-        <DocumentsSection booking={booking} />
-
-        {/* Decision 104: covers both stages now -- a "Cancellation
-            Requested" booking already has the request-side fields
-            (reason/cancelled_at/fee/cancelled_by, frozen at request
-            time); "Cancelled" additionally has the confirmation-side
-            fields (populated only once stage 2 completes). */}
-        {(booking.status === "Cancellation Requested" || booking.status === "Cancelled") && (
-          <div className="mt-4 rounded-lg bg-slate/5 p-3 text-sm">
-            <p className="font-medium text-ink">{t("bookingDetail.cancellationSectionTitle")}</p>
-            <p className="mt-1 text-slate/70">
-              {t("bookingDetail.reasonLabel")} {booking.cancellation_reason || "—"}
-            </p>
-            <p className="text-slate/70">
-              {t("bookingDetail.requestedLabel")}{" "}
-              {booking.cancelled_at ? formatDate(booking.cancelled_at) : "—"}
-            </p>
-            <p className="text-slate/70">
-              {t("bookingDetail.requestedByLabel")}{" "}
-              <strong className="text-ink">{booking.cancelled_by !== null ? (claimerNames[booking.cancelled_by] ?? `#${booking.cancelled_by}`) : "—"}</strong>
-            </p>
-            <p className="text-slate/70">
-              {t("bookingDetail.feeLabel")} {formatMoney(booking.cancellation_fee, booking.currency)}
-            </p>
-            {booking.status === "Cancelled" ? (
-              <>
-                <p className="mt-2 text-slate/70">
-                  {t("bookingDetail.confirmedByHotelLabel")}{" "}
-                  {booking.cancellation_confirmed_at ? formatDate(booking.cancellation_confirmed_at) : "—"}
-                  {booking.cancellation_confirmation_number && (
-                    <> ({t("bookingDetail.numberLabel")} {booking.cancellation_confirmation_number})</>
+        {/* Two-column layout once there's screen real estate to spare
+            (this modal is now near-fullscreen, 2026-07-27) -- lets a
+            manager see booking facts/confirmations AND money/guests at
+            once instead of scrolling through one long stacked column.
+            Single column below `lg` (unchanged on narrower screens). */}
+        <div className="mt-4 grid grid-cols-1 gap-8 lg:grid-cols-2">
+          <div className="space-y-4">
+            {/* ===== Block 1 -- booking facts, for a manager to compare
+                against the hotel's own confirmation (project owner's
+                explicit field list, 2026-07-28): agent, hotel, room type,
+                meal plan, transfer type, check-in/out, booking date,
+                special requests, full flight details. All sourced from
+                the SELECTED room (effectiveBooking/displayTransferName)
+                where the field is genuinely per-room, or from the
+                application itself (agent, booking date, flight details)
+                where it isn't -- flights are for the whole trip, not one
+                specific room. */}
+            <div className="grid grid-cols-2 gap-3 rounded-xl border border-ink/10 bg-sand/30 p-4">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.agentLabel")}</p>
+                <p className="mt-0.5 text-sm font-semibold text-ink">{claimerNames[booking.agent_id] ?? `#${booking.agent_id}`}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.agencyLabel")}</p>
+                <p className="mt-0.5 text-sm font-semibold text-ink">{companyNames[booking.agent_id] ?? "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.handledByLabel")}</p>
+                <p className="mt-0.5 text-sm font-semibold text-ink">
+                  {booking.claimed_by !== null ? claimerNames[booking.claimed_by] ?? `#${booking.claimed_by}` : t("bookingDetail.notClaimedYet")}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.hotelNameLabel")}</p>
+                <p className="mt-0.5 text-sm font-semibold text-ink">{hotels[effectiveBooking.hotel_id] ?? `#${effectiveBooking.hotel_id}`}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.roomTypeLabel")}</p>
+                <p className="mt-0.5 text-sm font-semibold text-ink">{roomTypes[effectiveBooking.room_type_id] ?? `#${effectiveBooking.room_type_id}`}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.mealPlanLabel")}</p>
+                <p className="mt-0.5 text-sm font-semibold text-ink">
+                  {effectiveMealPlanInfo?.meal_name || effectiveMealPlanInfo?.meal_code || `#${effectiveBooking.meal_plan_id}`}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.transferTypeLabel")}</p>
+                <p className="mt-0.5 text-sm font-semibold text-ink">{displayTransferName ?? "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.bookingDateLabel")}</p>
+                <p className="mt-0.5 text-sm font-semibold text-ink">{formatDate(booking.created_at)}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.datesLabel")}</p>
+                <p className="mt-0.5 text-sm font-semibold text-ink">
+                  {formatDate(effectiveBooking.arrival_date)} — {formatDate(effectiveBooking.departure_date)}
+                </p>
+                <p className="text-xs text-slate/50">{t("bookingDetail.nights", { count: effectiveBooking.nights })}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.guestsLabel")}</p>
+                <p className="mt-0.5 text-sm font-semibold text-ink">
+                  {t("bookingDetail.adultsCount", { count: effectiveBooking.adults })} /{" "}
+                  {t("bookingDetail.childrenCount", { count: effectiveBooking.children })} /{" "}
+                  {t("bookingDetail.infantsCount", { count: effectiveBooking.infants })}
+                </p>
+              </div>
+              {(booking.arrival_flight_number || booking.arrival_flight_date || booking.arrival_flight_time) && (
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.arrivalFlightLabel")}</p>
+                  <p className="mt-0.5 text-sm font-semibold text-ink">{booking.arrival_flight_number || "—"}</p>
+                  {(booking.arrival_flight_date || booking.arrival_flight_time) && (
+                    <p className="text-xs text-slate/50">
+                      {booking.arrival_flight_date ? formatDate(booking.arrival_flight_date) : ""}
+                      {booking.arrival_flight_time ? ` · ${booking.arrival_flight_time}` : ""}
+                    </p>
                   )}
+                </div>
+              )}
+              {(booking.departure_flight_number || booking.departure_flight_date || booking.departure_flight_time) && (
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.departureFlightLabel")}</p>
+                  <p className="mt-0.5 text-sm font-semibold text-ink">{booking.departure_flight_number || "—"}</p>
+                  {(booking.departure_flight_date || booking.departure_flight_time) && (
+                    <p className="text-xs text-slate/50">
+                      {booking.departure_flight_date ? formatDate(booking.departure_flight_date) : ""}
+                      {booking.departure_flight_time ? ` · ${booking.departure_flight_time}` : ""}
+                    </p>
+                  )}
+                </div>
+              )}
+              {(displayRoom?.special_requests || booking.special_requests) && (
+                <div className="col-span-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.specialRequestsLabel")}</p>
+                  <p className="mt-0.5 text-sm font-semibold text-ink">{displayRoom?.special_requests || booking.special_requests}</p>
+                </div>
+              )}
+            </div>
+
+            {/* ===== Guests (moved here from the commercial column -- guest
+                names are operational/manager info, not financial data;
+                Edit stays gated by canEditGuestDetails exactly as before,
+                only the position changed) ===== */}
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.guestsTitle")}</h4>
+                <FlightNumbersEdit
+                  booking={booking}
+                  onUpdated={onBookingUpdated}
+                  canEdit={permissions.canEditFlights}
+                />
+              </div>
+              {guestsError && <p className="text-sm text-red-600">{guestsError}</p>}
+              {!guests && !guestsError && <p className="text-sm text-slate/50">{t("bookingDetail.guestsLoading")}</p>}
+              {guests && guests.length === 0 && <p className="text-sm text-slate/50">{t("bookingDetail.noGuests")}</p>}
+              {guests && guests.length > 0 && (
+                <ul className="space-y-1.5 text-sm">
+                  {guests.map((g) => (
+                    <GuestRow
+                      key={g.id}
+                      guest={g}
+                      canEdit={permissions.canEditGuestDetails}
+                      onUpdated={(updated) =>
+                        setGuests((prev) => prev?.map((x) => (x.id === updated.id ? updated : x)) ?? null)
+                      }
+                    />
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {/* ===== Подтверждение отеля (Decision 097) ===== */}
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">
+                {t("bookingDetail.hotelConfirmationTitle")}
+              </h4>
+              <ConfirmationNumberEdit
+                booking={booking}
+                onUpdated={onBookingUpdated}
+                canEdit={permissions.canConfirmWithHotel}
+              />
+            </div>
+
+            {/* ===== Подтверждение отмены отелем (Decision 104) — stage 2
+                of the two-step cancellation workflow. Admin-only, same
+                canConfirmWithHotel boundary as confirmation_number above
+                (an agent can request cancellation on their own booking,
+                but does not confirm the hotel processed it) -- this is
+                hotel-confirmation authority, not money-secrecy, per the
+                Admin/Agent Component Separation refactor's renamed
+                permission. Only shown while status is still "Cancellation
+                Requested" -- once confirmed, status flips to "Cancelled"
+                and this section naturally stops rendering. ===== */}
+            {permissions.canConfirmWithHotel && booking.status === "Cancellation Requested" && (
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">
+                  {t("bookingDetail.cancellationConfirmationTitle")}
+                </h4>
+                <CancellationConfirmationEdit booking={booking} onUpdated={onBookingUpdated} />
+              </div>
+            )}
+
+            {/* ===== Документы (Decision 102) — visible to admin and the
+                owning agent alike; not gated by permissions at all since
+                this is about document access/ownership, not the Cost/
+                Profit confidentiality boundary. ===== */}
+            <DocumentsSection booking={booking} />
+
+            {/* Decision 104: covers both stages now -- a "Cancellation
+                Requested" booking already has the request-side fields
+                (reason/cancelled_at/fee/cancelled_by, frozen at request
+                time); "Cancelled" additionally has the confirmation-side
+                fields (populated only once stage 2 completes). */}
+            {(booking.status === "Cancellation Requested" || booking.status === "Cancelled") && (
+              <div className="rounded-lg bg-slate/5 p-3 text-sm">
+                <p className="font-medium text-ink">{t("bookingDetail.cancellationSectionTitle")}</p>
+                <p className="mt-1 text-slate/70">
+                  {t("bookingDetail.reasonLabel")} {booking.cancellation_reason || "—"}
                 </p>
                 <p className="text-slate/70">
-                  {t("bookingDetail.confirmedByLabel")}{" "}
-                  <strong className="text-ink">{booking.cancellation_confirmed_by !== null ? (claimerNames[booking.cancellation_confirmed_by] ?? `#${booking.cancellation_confirmed_by}`) : "—"}</strong>
+                  {t("bookingDetail.requestedLabel")}{" "}
+                  {booking.cancelled_at ? formatDate(booking.cancelled_at) : "—"}
                 </p>
-              </>
-            ) : (
-              <p className="mt-2 text-amber-600">{t("bookingDetail.awaitingHotelConfirmation")}</p>
+                <p className="text-slate/70">
+                  {t("bookingDetail.requestedByLabel")}{" "}
+                  <strong className="text-ink">{booking.cancelled_by !== null ? (claimerNames[booking.cancelled_by] ?? `#${booking.cancelled_by}`) : "—"}</strong>
+                </p>
+                <p className="text-slate/70">
+                  {t("bookingDetail.feeLabel")} {formatMoney(booking.cancellation_fee, booking.currency)}
+                </p>
+                {booking.status === "Cancelled" ? (
+                  <>
+                    <p className="mt-2 text-slate/70">
+                      {t("bookingDetail.confirmedByHotelLabel")}{" "}
+                      {booking.cancellation_confirmed_at ? formatDate(booking.cancellation_confirmed_at) : "—"}
+                      {booking.cancellation_confirmation_number && (
+                        <> ({t("bookingDetail.numberLabel")} {booking.cancellation_confirmation_number})</>
+                      )}
+                    </p>
+                    <p className="text-slate/70">
+                      {t("bookingDetail.confirmedByLabel")}{" "}
+                      <strong className="text-ink">{booking.cancellation_confirmed_by !== null ? (claimerNames[booking.cancellation_confirmed_by] ?? `#${booking.cancellation_confirmed_by}`) : "—"}</strong>
+                    </p>
+                  </>
+                ) : (
+                  <p className="mt-2 text-amber-600">{t("bookingDetail.awaitingHotelConfirmation")}</p>
+                )}
+              </div>
             )}
           </div>
-        )}
 
-        <div className="mt-5">
-          <div className="mb-2 flex items-center justify-between">
-            <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.guestsTitle")}</h4>
-            <FlightNumbersEdit
-              booking={booking}
-              onUpdated={onBookingUpdated}
-              canEdit={permissions.canEditFlights}
-            />
+          <div className="space-y-4">
+            {rooms && rooms.length > 1 && displayRoom && (
+              <p className="text-xs font-medium uppercase tracking-wide text-slate/50">
+                {t("bookingDetail.showingRoom", {
+                  number: displayRoom.sequence_number,
+                  name: `${hotels[displayRoom.hotel_id] ?? `#${displayRoom.hotel_id}`} — ${
+                    roomTypes[displayRoom.room_type_id] ?? `#${displayRoom.room_type_id}`
+                  }`,
+                })}
+              </p>
+            )}
+            {/* ===== Financial summary (Decision 101/102/106 lineage) =====
+                AdminBookingFinance.tsx's renderFinancialSummary now owns
+                Net/Sale/Profit AND the "Разбивка стоимости" price-
+                breakdown block (the fixed 9-slot interface has no
+                separate slot for the breakdown, so it's folded into this
+                one, in the same position "Итого" used to occupy) --
+                structurally absent, not just gated, for any caller (e.g.
+                AgentDashboard_v2.tsx) that never supplies adminExtensions.
+                The base's own default is the plain sale total an agent
+                needs to know they're charged. */}
+            {adminExtensions?.renderFinancialSummary ? (
+              adminExtensions.renderFinancialSummary({
+                booking: effectiveBooking,
+                onBookingUpdated,
+                bookingRoomId: displayRoom?.id ?? null,
+              })
+            ) : (
+              <div className="rounded-xl border border-ink/10 bg-sand/30 p-4">
+                <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("bookingDetail.total")}</p>
+                <p className="mt-1 font-display text-2xl font-semibold text-ink">
+                  {formatMoney(saleTotal(effectiveBooking), effectiveBooking.currency)}
+                </p>
+              </div>
+            )}
           </div>
-          {guestsError && <p className="text-sm text-red-600">{guestsError}</p>}
-          {!guests && !guestsError && <p className="text-sm text-slate/50">{t("bookingDetail.guestsLoading")}</p>}
-          {guests && guests.length === 0 && <p className="text-sm text-slate/50">{t("bookingDetail.noGuests")}</p>}
-          {guests && guests.length > 0 && (
-            <ul className="space-y-1.5 text-sm">
-              {guests.map((g) => (
-                <GuestRow
-                  key={g.id}
-                  guest={g}
-                  canEdit={permissions.canEditGuestDetails}
-                  onUpdated={(updated) =>
-                    setGuests((prev) => prev?.map((x) => (x.id === updated.id ? updated : x)) ?? null)
-                  }
-                />
-              ))}
-            </ul>
-          )}
         </div>
       </div>
     </div>
@@ -1721,10 +2137,24 @@ const BookingsList = ({
   scope,
   permissions,
   adminExtensions,
+  compactFilters,
+  initialDateMode,
 }: {
   scope: Scope;
   permissions: Permissions;
   adminExtensions?: AdminBookingExtensions;
+  // Admin-only (Decision: 2026-07-27 "make Bookings tidy at 100+/day
+  // volume") -- drops the Status/Hotel/Agent dropdowns (a proper
+  // replacement filter UI is a separate, future task, not built here)
+  // and puts Search first. Defaults to false/undefined so the agent's
+  // own Reservations screen (AgentDashboard_v2.tsx) is byte-identical
+  // to before -- only AdminBookingFinance.tsx opts in.
+  compactFilters?: boolean;
+  // Admin-only (Decision: 2026-07-27) -- opens the list already scoped
+  // to "By date" in the given view (dateFrom/dateTo both default to
+  // today), instead of the agent screen's unscoped default. undefined
+  // preserves the exact previous default-off behavior.
+  initialDateMode?: { view: "staying" | "created" | "cancellations" };
 }) => {
   const { t } = useTranslation("reservations");
   const [bookings, setBookings] = useState<Booking[]>([]);
@@ -1732,6 +2162,7 @@ const BookingsList = ({
   const [roomTypes, setRoomTypes] = useState<Record<number, string>>({});
   const [mealPlans, setMealPlans] = useState<Record<number, MealPlanInfo>>({});
   const [agentNames, setAgentNames] = useState<Record<number, string>>({});
+  const [companyNames, setCompanyNames] = useState<Record<number, string>>({});
   const [cancellationTiers, setCancellationTiers] = useState<Record<string, CancellationPolicy[]>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1740,20 +2171,81 @@ const BookingsList = ({
   const [hotelFilter, setHotelFilter] = useState<string>("all");
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
-  // Opt-in "by date" view -- unchecked by default so the screen's existing
-  // full-list behavior is unaffected until a manager explicitly asks for
-  // a single day's picture. dateModeView chooses between three genuinely
-  // different questions for that day: who's actually staying (excludes
-  // Cancelled/Rejected -- they were never really there), which
-  // reservations were CREATED that day (booking_date, independent of
-  // whenever the actual stay happens to be), and who was supposed to
-  // arrive but cancelled (arrival_date match + Cancelled only).
-  const [dateModeEnabled, setDateModeEnabled] = useState(false);
-  const [dateModeView, setDateModeView] = useState<"staying" | "created" | "cancellations">("staying");
-  const [selectedDate, setSelectedDate] = useState<string>(todayStr());
+  // "By date" view. dateModeView chooses between three genuinely
+  // different questions for the selected range: who's actually staying
+  // at any point in it (excludes Cancelled/Rejected -- they were never
+  // really there), which reservations were CREATED within it
+  // (booking_date, independent of whenever the actual stay happens to
+  // be), and who was supposed to arrive within it but cancelled.
+  // dateFrom/dateTo default to today. Opt-in default-OFF for the agent's
+  // own screen (AgentDashboard_v2.tsx never passes initialDateMode --
+  // an agent's own booking history shouldn't silently hide everything
+  // but today's on first load); the admin queue (AdminBookingFinance.tsx)
+  // passes initialDateMode={{view: "created"}} so it opens already
+  // scoped to "applications submitted today", matching the reference
+  // DMS workflow this was modeled on (2026-07-27).
+  // Decision 122-follow-up: when the caller opts into a default date
+  // scope at all (today only admin's AdminBookingsList does), date mode
+  // can never be turned off -- see the "By date" button's own comment
+  // below for why. Agent scope (initialDateMode undefined) is unaffected.
+  const dateModeRequired = initialDateMode !== undefined;
+  const [dateModeEnabled, setDateModeEnabled] = useState(initialDateMode !== undefined);
+  const [dateModeView, setDateModeView] = useState<"staying" | "created" | "cancellations">(
+    initialDateMode?.view ?? "staying"
+  );
+  const [dateFrom, setDateFrom] = useState<string>(todayStr());
+  const [dateTo, setDateTo] = useState<string>(todayStr());
   const [sortKey, setSortKey] = useState<SortKey>("created_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
+
+  // Server-side date scoping for the "created" (By date) view only --
+  // "staying"/"cancellations" stay unscoped-but-capped (same as before)
+  // so browsing arrival dates keeps its instant, client-side-only
+  // filtering with no reload flicker. null when not in "created" mode
+  // (or date mode is off), which the fetch effect below treats as
+  // "no server-side date scope, fall back to the safety-capped fetch".
+  //
+  // Real state (not a plain derived value), updated by its own effect
+  // below that deliberately does NOT advance while `dateTo` is still ""
+  // -- i.e. the user has picked only the first day of a new range and
+  // hasn't finished. Advancing on every `dateFrom` change (even
+  // mid-selection) was a real, found bug: it triggered an immediate
+  // refetch -> setLoading(true) -> the whole filter bar (including the
+  // still-open DateRangePicker) unmounts via this component's own
+  // `if (loading) return ...` early return further down, destroying
+  // the picker's own `open` state. To the user that looked exactly
+  // like "the calendar closes after picking just one date," even
+  // though DateRangePicker's own two-click range logic was never
+  // actually broken. Only a genuinely complete range (dateTo set)
+  // advances this key -- by then DateRangePicker has already
+  // legitimately closed itself via its own second-click handler, so
+  // the refetch's loading flicker never fights with an open calendar.
+  const [createdDateKey, setCreatedDateKey] = useState<string | null>(
+    dateModeEnabled && dateModeView === "created" && dateTo ? `${dateFrom}|${dateTo}` : null
+  );
+  useEffect(() => {
+    if (dateModeEnabled && dateModeView === "created") {
+      if (dateTo) setCreatedDateKey(`${dateFrom}|${dateTo}`);
+      // else: mid-selection (first day picked, second not yet) --
+      // deliberately leave the previous key alone, see comment above.
+    } else {
+      setCreatedDateKey(null);
+    }
+  }, [dateModeEnabled, dateModeView, dateFrom, dateTo]);
+
+  // Debounced booking-number search -- same setTimeout pattern
+  // financeShared.tsx's AgentSearchSelect already uses (~300ms). When
+  // active, it OVERRIDES date scoping entirely (fetches ?search=...,
+  // no created_from/created_to) -- a real, separate gap found live:
+  // search used to only ever look inside whatever was already fetched
+  // for the current date window, so a real booking outside that
+  // window was invisible to search even though it exists.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const handle = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 300);
+    return () => clearTimeout(handle);
+  }, [searchQuery]);
 
   useEffect(() => {
     const load = async () => {
@@ -1762,10 +2254,15 @@ const BookingsList = ({
         setLoading(true);
         setError(null);
 
-        const bookingsData =
+        const bookingsUrl =
           scope.type === "all"
-            ? await fetchJson<Booking[]>("/booking-engine/bookings?limit=500", token)
-            : await fetchJson<Booking[]>(`/booking-engine/agents/${scope.agentId}/bookings`, token);
+            ? debouncedSearch
+              ? `/booking-engine/bookings?limit=500&search=${encodeURIComponent(debouncedSearch)}`
+              : createdDateKey
+                ? `/booking-engine/bookings?limit=500&created_from=${dateFrom}&created_to=${dateTo}`
+                : "/booking-engine/bookings?limit=500"
+            : `/booking-engine/agents/${scope.agentId}/bookings`;
+        const bookingsData = await fetchJson<Booking[]>(bookingsUrl, token);
         setBookings(bookingsData);
 
         const hotelsData = await fetchJson<Hotel[]>("/hotel-engine/hotels", token);
@@ -1779,8 +2276,13 @@ const BookingsList = ({
         if (scope.type === "all") {
           const usersData = await fetchJson<UserRecord[]>("/users", token);
           const userMap: Record<number, string> = {};
-          usersData.forEach((u) => (userMap[u.id] = u.name));
+          const companyMap: Record<number, string> = {};
+          usersData.forEach((u) => {
+            userMap[u.id] = u.name;
+            if (u.company_name) companyMap[u.id] = u.company_name;
+          });
           setAgentNames(userMap);
+          setCompanyNames(companyMap);
         }
 
         const uniqueHotelIds = Array.from(new Set(bookingsData.map((b) => b.hotel_id)));
@@ -1838,9 +2340,13 @@ const BookingsList = ({
     load();
     // Depend on primitive values, not the scope object itself — a caller
     // passing an inline object literal would otherwise create a new
-    // reference every render and refetch in a loop.
+    // reference every render and refetch in a loop. createdDateKey and
+    // debouncedSearch are also primitives (string|null) derived from
+    // date-mode/search state, so this re-fetches (server-side scoped)
+    // only when the active "created" date window or the debounced
+    // search term actually changes, per the same rule.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope.type, scope.type === "agent" ? scope.agentId : null]);
+  }, [scope.type, scope.type === "agent" ? scope.agentId : null, createdDateKey, debouncedSearch]);
 
   // Decision 108: the "recently changed"/"recently cancelled" flags that
   // used to live here (24h ephemeral, no acknowledgment) were retired --
@@ -1874,32 +2380,51 @@ const BookingsList = ({
       list = list.filter((b) => String(b.agent_id) === agentFilter);
     }
     if (searchQuery.trim()) {
+      // Search overrides date scope entirely -- the fetch effect above
+      // already requested `?search=...` with no created_from/created_to
+      // (Decision 125), so `bookings` here is already every matching
+      // booking regardless of date. Re-applying the date-mode filter
+      // below on top of that would throw away exactly the out-of-range
+      // matches search exists to find -- the real bug this closes: the
+      // server-side fix alone wasn't enough, this client-side filter
+      // was independently re-narrowing the results back down by date.
       const q = searchQuery.trim().toLowerCase();
       list = list.filter((b) => b.booking_number.toLowerCase().includes(q));
-    }
-    if (dateModeEnabled) {
+    } else if (dateModeEnabled) {
+      // DateRangePicker (below) reports an empty checkOut while only the
+      // first day of a NEW range has been clicked -- treated as "just
+      // this one day" rather than an unbounded range, so a single click
+      // is enough to browse one day at a time (e.g. "26.07", then
+      // "02.07"), and a second click still completes a real range.
+      const effectiveDateTo = dateTo || dateFrom;
       if (dateModeView === "staying") {
         // ISO "YYYY-MM-DD" strings compare correctly lexicographically --
-        // same convention already used elsewhere in this file (e.g. the
-        // b.arrival_date > today check above), no Date parsing needed.
-        // [arrival_date, departure_date) -- a checkout-day booking has
-        // already left, so departure_date itself is excluded.
+        // same convention already used elsewhere in this file. A booking
+        // occupies [arrival_date, departure_date); it belongs in the
+        // range if that occupied interval overlaps [dateFrom, effectiveDateTo]
+        // at all (effectiveDateTo treated as inclusive) -- reduces to the
+        // original single-day check when dateFrom === effectiveDateTo.
         list = list.filter(
           (b) =>
-            selectedDate >= b.arrival_date &&
-            selectedDate < b.departure_date &&
+            b.arrival_date <= effectiveDateTo &&
+            b.departure_date > dateFrom &&
             b.status !== "Cancelled" &&
             b.status !== "Rejected"
         );
       } else if (dateModeView === "created") {
         // created_at is a full ISO datetime ("2026-07-14T12:26:08.987733"),
-        // not just a date -- compare only its first 10 characters against
-        // selectedDate. Independent of the booking's actual stay dates:
-        // a reservation created today for a stay next March belongs here,
-        // not in "Заезды".
-        list = list.filter((b) => b.created_at.slice(0, 10) === selectedDate);
+        // not just a date -- compare only its first 10 characters.
+        // Independent of the booking's actual stay dates: a reservation
+        // created today for a stay next March belongs here, not in
+        // "Заезды".
+        list = list.filter((b) => {
+          const createdDate = b.created_at.slice(0, 10);
+          return createdDate >= dateFrom && createdDate <= effectiveDateTo;
+        });
       } else {
-        list = list.filter((b) => b.arrival_date === selectedDate && b.status === "Cancelled");
+        list = list.filter(
+          (b) => b.arrival_date >= dateFrom && b.arrival_date <= effectiveDateTo && b.status === "Cancelled"
+        );
       }
     }
 
@@ -1920,7 +2445,8 @@ const BookingsList = ({
     searchQuery,
     dateModeEnabled,
     dateModeView,
-    selectedDate,
+    dateFrom,
+    dateTo,
     sortKey,
     sortDir,
   ]);
@@ -1953,66 +2479,86 @@ const BookingsList = ({
       <AIInsightStrip flags={aiFlags} hotels={hotels} />
 
       <div className="mt-6 flex flex-wrap items-center gap-2.5">
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-        >
-          <option value="all">{t("bookingsList.allStatuses")}</option>
-          {availableStatuses.map((s) => (
-            <option key={s} value={s}>
-              {statusLabel(t, s)}
-            </option>
-          ))}
-        </select>
-
-        <select
-          value={hotelFilter}
-          onChange={(e) => setHotelFilter(e.target.value)}
-          className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-        >
-          <option value="all">{t("bookingsList.allHotels")}</option>
-          {Object.entries(hotels).map(([id, name]) => (
-            <option key={id} value={id}>
-              {name}
-            </option>
-          ))}
-        </select>
-
-        {scope.type === "all" && (
-          <select
-            value={agentFilter}
-            onChange={(e) => setAgentFilter(e.target.value)}
-            className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-          >
-            <option value="all">{t("bookingsList.allAgents")}</option>
-            {availableAgentIds.map((id) => (
-              <option key={id} value={id}>
-                {agentNames[id] ?? `#${id}`}
-              </option>
-            ))}
-          </select>
-        )}
-
-        <input
+        <Input
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder={t("bookingsList.searchPlaceholder")}
-          className="w-48 appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+          scale="lg"
+          className="w-48"
         />
 
-        <button
-          type="button"
-          onClick={() => setDateModeEnabled(!dateModeEnabled)}
-          className={`appearance-none rounded-lg border px-3.5 py-2.5 text-sm font-medium transition-colors ${
-            dateModeEnabled
-              ? "border-coral bg-coral/10 text-coral"
-              : "border-ink/15 bg-white text-slate hover:bg-sand/60"
-          }`}
-        >
-          {t("bookingsList.byDate")}
-        </button>
+        {!compactFilters && (
+          <>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+            >
+              <option value="all">{t("bookingsList.allStatuses")}</option>
+              {availableStatuses.map((s) => (
+                <option key={s} value={s}>
+                  {statusLabel(t, s)}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={hotelFilter}
+              onChange={(e) => setHotelFilter(e.target.value)}
+              className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+            >
+              <option value="all">{t("bookingsList.allHotels")}</option>
+              {Object.entries(hotels).map(([id, name]) => (
+                <option key={id} value={id}>
+                  {name}
+                </option>
+              ))}
+            </select>
+
+            {scope.type === "all" && (
+              <select
+                value={agentFilter}
+                onChange={(e) => setAgentFilter(e.target.value)}
+                className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+              >
+                <option value="all">{t("bookingsList.allAgents")}</option>
+                {availableAgentIds.map((id) => (
+                  <option key={id} value={id}>
+                    {agentNames[id] ?? `#${id}`}
+                  </option>
+                ))}
+              </select>
+            )}
+          </>
+        )}
+
+        {/* Admin ("all" scope, initialDateMode passed) MUST always stay
+            date-scoped -- previously this toggle could turn date-scoping
+            off entirely, which fell back to an unscoped fetch (up to the
+            safety cap). At real volume (100+/day) that's exactly the
+            "shows everything, hangs" state the project owner flagged
+            live: toggling "By date" off, then back to seeing every
+            application ever made. There's no legitimate reason to leave
+            date mode here, so the toggle itself is hidden rather than
+            kept clickable-but-inert -- the date range/view picker below
+            is now unconditionally visible for this caller. The agent's
+            own dashboard (no initialDateMode) keeps the original opt-in
+            toggle unchanged -- one agent's own history is naturally
+            bounded by their own volume, not the whole company's. */}
+        {!dateModeRequired && (
+          <button
+            type="button"
+            onClick={() => setDateModeEnabled(!dateModeEnabled)}
+            className={`appearance-none rounded-lg border px-3.5 py-2.5 text-sm font-medium transition-colors ${
+              dateModeEnabled
+                ? "border-coral bg-coral/10 text-coral"
+                : "border-ink/15 bg-white text-slate hover:bg-sand/60"
+            }`}
+          >
+            {t("bookingsList.byDate")}
+          </button>
+        )}
 
         {(statusFilter !== "all" || hotelFilter !== "all" || agentFilter !== "all" || searchQuery.trim() || dateModeEnabled) && (
           <button
@@ -2021,8 +2567,16 @@ const BookingsList = ({
               setHotelFilter("all");
               setAgentFilter("all");
               setSearchQuery("");
-              setDateModeEnabled(false);
-              setDateModeView("staying");
+              // Restores the screen's own opening default (e.g. the
+              // admin Bookings tab opens scoped to "today, by created
+              // date") rather than turning date-scoping off entirely --
+              // an unscoped fetch showing every application ever made
+              // doesn't scale (100+/day => 3000+/month) and isn't a
+              // useful "reset" state to land on.
+              setDateModeEnabled(initialDateMode !== undefined);
+              setDateModeView(initialDateMode?.view ?? "staying");
+              setDateFrom(todayStr());
+              setDateTo(todayStr());
             }}
             className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-xs font-medium text-slate/70 transition-colors hover:bg-sand/60"
           >
@@ -2033,11 +2587,14 @@ const BookingsList = ({
 
       {dateModeEnabled && (
         <div className="mt-2.5 flex flex-wrap items-center gap-2.5 rounded-xl bg-sand/50 px-3.5 py-2.5">
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+          <DateRangePicker
+            checkIn={dateFrom}
+            checkOut={dateTo}
+            onChange={(from, to) => {
+              setDateFrom(from);
+              setDateTo(to);
+            }}
+            allowPast
           />
           <div className="flex items-center gap-1 rounded-lg border border-ink/15 bg-white p-1">
             <button
@@ -2078,7 +2635,7 @@ const BookingsList = ({
         </div>
       )}
 
-      <div className="mt-4 overflow-x-auto rounded-2xl border border-ink/10 bg-white">
+      <div className="mt-4 overflow-x-auto rounded-2xl border border-ink/10 bg-white shadow-card">
         <table className="w-full min-w-[1180px] border-collapse text-left text-sm">
           <thead>
             <tr className="border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50">
@@ -2185,11 +2742,16 @@ const BookingsList = ({
         </strong>
       </div>
 
+      {adminExtensions?.renderListSummary?.(filteredSorted)}
+
       {selectedBooking && (
         <BookingDetail
           booking={selectedBooking}
           hotelName={hotels[selectedBooking.hotel_id] ?? `#${selectedBooking.hotel_id}`}
           roomTypeName={roomTypes[selectedBooking.room_type_id] ?? `#${selectedBooking.room_type_id}`}
+          hotels={hotels}
+          roomTypes={roomTypes}
+          mealPlans={mealPlans}
           mealPlanInfo={mealPlans[selectedBooking.meal_plan_id]}
           onClose={() => setSelectedBooking(null)}
           onBookingUpdated={(updated) => {
@@ -2198,6 +2760,7 @@ const BookingsList = ({
           }}
           permissions={permissions}
           claimerNames={agentNames}
+          companyNames={companyNames}
           adminExtensions={adminExtensions}
         />
       )}

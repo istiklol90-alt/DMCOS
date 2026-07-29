@@ -1,8 +1,20 @@
 import { useEffect, useState } from "react";
-import type { InvoiceReviewNote } from "./financeShared";
-import { computeBookingFinancials, fetchJson, formatSingleNote } from "./financeShared";
+import type { InvoiceReviewNote, BookingCommercialLine, CommercialLineCategory } from "./financeShared";
+import {
+  computeBookingFinancials,
+  computeCommercialLineTotals,
+  COMMERCIAL_LINE_CATEGORIES,
+  fetchJson,
+  formatSingleNote,
+  hasPriceSnapshot,
+  hasDateSnapshot,
+} from "./financeShared";
 import BookingsList from "./Reservations";
 import type { Booking, Permissions, Scope, AdminBookingExtensions, DetailCtx, BookingCorrespondenceRow } from "./Reservations";
+import Badge from "../components/ui/Badge";
+import Button from "../components/ui/Button";
+import Input from "../components/ui/Input";
+import { TableShell, TableHeadRow, TableHeadCell, TableRow, TableCell } from "../components/ui/Table";
 
 // ---------------------------------------------------------------------------
 // Admin/Agent Component Separation refactor — everything genuinely
@@ -636,90 +648,353 @@ function ReplyLogButton({ ctx }: { ctx: DetailCtx }) {
 // breakdown; both occupy the single position "Total" used to.
 // ---------------------------------------------------------------------------
 
+const COMMERCIAL_CATEGORY_LABELS: Record<CommercialLineCategory, string> = {
+  room: "Room",
+  transfer: "Transfer",
+  meal: "Meal",
+  tax: "Tax",
+  cip: "CIP (airport)",
+  excursion: "Excursion",
+};
+
+function useCommercialLines(bookingRoomId: number | null | undefined) {
+  const [lines, setLines] = useState<BookingCommercialLine[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!bookingRoomId) {
+      setLines([]);
+      setLoading(false);
+      return;
+    }
+    const token = localStorage.getItem("token") || "";
+    setLoading(true);
+    setError(null);
+    fetchJson<BookingCommercialLine[]>(`/finance-engine/booking-rooms/${bookingRoomId}/commercial-lines`, token)
+      .then(setLines)
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [bookingRoomId]);
+
+  return { lines, setLines, error, loading };
+}
+
+// One row per category -- follows the ConfirmationNumberEdit inline-edit
+// pattern (local `editing` state -> PUT -> parent onUpdated refresh), just
+// packing base_cost/base_price/adjustment_cost/adjustment_price/note into
+// one row's edit form instead of a single field. A row with no `line` yet
+// (meal/cip/excursion before anyone has entered one) shows "—" and an
+// "Add" button instead of "Edit" -- same affordance, different label.
+function CommercialLineRow({
+  bookingRoomId,
+  category,
+  line,
+  currency,
+  onUpdated,
+}: {
+  bookingRoomId: number;
+  category: CommercialLineCategory;
+  line: BookingCommercialLine | undefined;
+  currency: string;
+  onUpdated: (updated: BookingCommercialLine) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [baseCost, setBaseCost] = useState("");
+  const [basePrice, setBasePrice] = useState("");
+  const [adjCost, setAdjCost] = useState("0");
+  const [adjPrice, setAdjPrice] = useState("0");
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function startEdit() {
+    setBaseCost(line?.base_cost != null ? String(line.base_cost) : "");
+    setBasePrice(line?.base_price != null ? String(line.base_price) : "");
+    setAdjCost(line ? String(line.adjustment_cost) : "0");
+    setAdjPrice(line ? String(line.adjustment_price) : "0");
+    setNote(line?.adjustment_note ?? "");
+    setError(null);
+    setEditing(true);
+  }
+
+  async function handleSave() {
+    const token = localStorage.getItem("token") || "";
+    setSubmitting(true);
+    setError(null);
+    try {
+      const updated = await fetchJson<BookingCommercialLine>(
+        `/finance-engine/booking-rooms/${bookingRoomId}/commercial-lines/${category}`,
+        token,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            base_cost: baseCost.trim() === "" ? null : parseFloat(baseCost),
+            base_price: basePrice.trim() === "" ? null : parseFloat(basePrice),
+            adjustment_cost: adjCost.trim() === "" ? null : parseFloat(adjCost),
+            adjustment_price: adjPrice.trim() === "" ? null : parseFloat(adjPrice),
+            note: note.trim() === "" ? null : note.trim(),
+          }),
+        }
+      );
+      onUpdated(updated);
+      setEditing(false);
+    } catch (err: any) {
+      setError(err.message || "Failed to save");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const totalCost = (line?.base_cost ?? 0) + (line?.adjustment_cost ?? 0);
+  const totalPrice = (line?.base_price ?? 0) + (line?.adjustment_price ?? 0);
+  const hasAdjustment = !!line && (line.adjustment_cost !== 0 || line.adjustment_price !== 0);
+
+  if (!editing) {
+    return (
+      <TableRow>
+        <TableCell className="font-medium text-ink">{COMMERCIAL_CATEGORY_LABELS[category]}</TableCell>
+        <TableCell>{line ? formatMoney(totalCost, currency) : "—"}</TableCell>
+        <TableCell>{line ? formatMoney(totalPrice, currency) : "—"}</TableCell>
+        <TableCell>
+          {hasAdjustment && (
+            <span title={line?.adjustment_note ?? undefined} className="cursor-help">
+              <Badge tone={(line!.adjustment_cost < 0 || line!.adjustment_price < 0) ? "success" : "warning"}>
+                {formatMoney(line!.adjustment_cost, currency)} / {formatMoney(line!.adjustment_price, currency)}
+              </Badge>
+            </span>
+          )}
+        </TableCell>
+        <TableCell>
+          <Button variant="secondary" size="sm" onClick={startEdit}>
+            {line ? "Edit" : "Add"}
+          </Button>
+        </TableCell>
+      </TableRow>
+    );
+  }
+
+  return (
+    <TableRow>
+      <td colSpan={5} className="px-4 py-3.5 text-slate/80">
+        <div className="flex flex-wrap items-end gap-2 py-1">
+          <span className="w-24 shrink-0 text-sm font-medium text-ink">{COMMERCIAL_CATEGORY_LABELS[category]}</span>
+          <label className="flex flex-col text-xs text-slate/50">
+            Base cost
+            <Input scale="sm" type="number" step="0.01" value={baseCost} onChange={(e) => setBaseCost(e.target.value)} placeholder="—" className="w-28" />
+          </label>
+          <label className="flex flex-col text-xs text-slate/50">
+            Base price
+            <Input scale="sm" type="number" step="0.01" value={basePrice} onChange={(e) => setBasePrice(e.target.value)} placeholder="—" className="w-28" />
+          </label>
+          <label className="flex flex-col text-xs text-slate/50">
+            Adjustment cost
+            <Input scale="sm" type="number" step="0.01" value={adjCost} onChange={(e) => setAdjCost(e.target.value)} className="w-28" />
+          </label>
+          <label className="flex flex-col text-xs text-slate/50">
+            Adjustment price
+            <Input scale="sm" type="number" step="0.01" value={adjPrice} onChange={(e) => setAdjPrice(e.target.value)} className="w-28" />
+          </label>
+          <label className="flex min-w-[160px] flex-1 flex-col text-xs text-slate/50">
+            Note (e.g. hotel discount)
+            <Input scale="sm" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Reason for the adjustment" />
+          </label>
+          <div className="flex gap-1.5">
+            <Button size="sm" onClick={handleSave} disabled={submitting}>
+              {submitting ? "Saving..." : "Save"}
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => setEditing(false)} disabled={submitting}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+        {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+      </td>
+    </TableRow>
+  );
+}
+
+// Replaces the old read-only, live-recomputed-from-contract "Price
+// breakdown" block. Each category (Room/Transfer/Meal/Tax/CIP/Excursion)
+// now has its own persisted cost+price, editable with an explicit,
+// audited adjustment (see BookingCommercialLine's own docstring on the
+// backend for the full rationale) instead of a number nobody could correct
+// when reality diverged from what the system originally computed.
+function CommercialLineItemsPanel({
+  bookingRoomId,
+  currency,
+  lines,
+  onLineUpdated,
+}: {
+  bookingRoomId: number;
+  currency: string;
+  lines: BookingCommercialLine[];
+  onLineUpdated: (updated: BookingCommercialLine) => void;
+}) {
+  const byCategory = new Map(lines.map((l) => [l.category, l]));
+
+  return (
+    <div className="rounded-xl border border-ink/10 p-4">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-slate/50">Commercial breakdown</h4>
+      <p className="mt-1 text-xs text-slate/50">
+        Cost/price per category, editable. An adjustment is a manual correction on top of the system-computed base
+        figure (e.g. a discount the hotel granted after booking) — the original figure is never overwritten.
+      </p>
+      <TableShell>
+        <TableHeadRow>
+          <TableHeadCell>Category</TableHeadCell>
+          <TableHeadCell>Cost</TableHeadCell>
+          <TableHeadCell>Price</TableHeadCell>
+          <TableHeadCell>Adjustment</TableHeadCell>
+          <TableHeadCell>{null}</TableHeadCell>
+        </TableHeadRow>
+        <tbody>
+          {COMMERCIAL_LINE_CATEGORIES.map((category) => (
+            <CommercialLineRow
+              key={category}
+              bookingRoomId={bookingRoomId}
+              category={category}
+              line={byCategory.get(category)}
+              currency={currency}
+              onUpdated={onLineUpdated}
+            />
+          ))}
+        </tbody>
+      </TableShell>
+    </div>
+  );
+}
+
 function FinancialSummaryBlock({ ctx }: { ctx: DetailCtx }) {
-  const { booking } = ctx;
-  const financials = computeBookingFinancials(booking);
-  const mealPlanInfo = useOwnMealPlan(booking);
-  const { roomBreakdown, transferBreakdown, mandatoryTaxBreakdown, breakdownError, breakdownLoading } =
-    useOwnBreakdown(booking, mealPlanInfo);
+  const { booking, bookingRoomId } = ctx;
+  const { lines, setLines, error: linesError, loading: linesLoading } = useCommercialLines(bookingRoomId);
+  // Falls back to the old frozen-Booking-column formula only while lines
+  // haven't loaded yet (or for the legacy "no rooms at all" case where
+  // bookingRoomId is null) -- once GET auto-seeds, lines is always the
+  // real source from then on, per the owner-confirmed decision that a
+  // manual correction here should be reflected immediately.
+  const financials =
+    lines && lines.length > 0 ? computeCommercialLineTotals(lines) : computeBookingFinancials(booking);
+
+  function handleLineUpdated(updated: BookingCommercialLine) {
+    setLines((prev) => {
+      const list = prev ?? [];
+      const idx = list.findIndex((l) => l.category === updated.category);
+      if (idx === -1) return [...list, updated];
+      const next = [...list];
+      next[idx] = updated;
+      return next;
+    });
+  }
 
   return (
     <div className="mt-4 space-y-3">
-      <div className="grid grid-cols-3 gap-3 rounded-lg bg-sand/50 p-3 text-sm">
+      <div className="grid grid-cols-3 gap-3 rounded-xl border border-ink/10 bg-sand/30 p-4">
         <div>
-          <p className="text-slate/50">Net cost</p>
-          <p className="font-medium text-ink">{formatMoney(financials.netTotal, booking.currency)}</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Net cost</p>
+          <p className="mt-1 font-display text-xl font-semibold text-ink">
+            {formatMoney(financials.netTotal, booking.currency)}
+          </p>
         </div>
         <div>
-          <p className="text-slate/50">Sale price</p>
-          <p className="font-medium text-ink">{formatMoney(financials.saleTotal, booking.currency)}</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Sale price</p>
+          <p className="mt-1 font-display text-xl font-semibold text-ink">
+            {formatMoney(financials.saleTotal, booking.currency)}
+          </p>
         </div>
         <div>
-          <p className="flex items-center gap-1 text-slate/50">
+          <p className="flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-slate/50">
             Profit
             {financials.profit === null && (
               <span
-                className="cursor-help text-slate/40"
+                className="cursor-help normal-case text-slate/40"
                 title="Not computed — booking was created before Pricing Engine (Decision 069)"
               >
                 ⓘ
               </span>
             )}
           </p>
-          <p className="font-medium text-ink">
+          <p
+            className={`mt-1 font-display text-xl font-semibold ${
+              financials.profit !== null && financials.profit < 0 ? "text-danger" : "text-ink"
+            }`}
+          >
             {financials.profit !== null ? formatMoney(financials.profit, booking.currency) : "—"}
           </p>
         </div>
       </div>
 
-      <div className="rounded-lg border border-ink/10 p-3 text-sm">
-        <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">Price breakdown</h4>
-        <p className="mt-1 text-xs text-slate/50">
-          Calculated using the contract's current terms — may differ if prices changed after booking.
-        </p>
-        {breakdownLoading && <p className="mt-2 text-slate/50">Recalculating...</p>}
-        {breakdownError && <p className="mt-2 text-red-600">{breakdownError}</p>}
-        {roomBreakdown && (
-          <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1">
-            <div>
-              <span className="text-slate/50">Base: </span>
-              <span className="text-ink">{formatMoney(roomBreakdown.base_total, roomBreakdown.currency)}</span>
-            </div>
-            <div>
-              <span className="text-slate/50">Supplements: </span>
-              <span className="text-ink">{formatMoney(roomBreakdown.supplements_total, roomBreakdown.currency)}</span>
-            </div>
-            <div>
-              <span className="text-slate/50">Before promo: </span>
-              <span className="text-ink">
-                {formatMoney(roomBreakdown.price_before_promotions, roomBreakdown.currency)}
-              </span>
-            </div>
-            <div>
-              <span className="text-slate/50">Room total: </span>
-              <span className="text-ink">{formatMoney(roomBreakdown.final_total, roomBreakdown.currency)}</span>
-            </div>
-          </div>
-        )}
-        {transferBreakdown && (
-          <div className="mt-2 border-t border-ink/5 pt-2">
-            <p className="text-slate/50">
-              Transfer ({transferBreakdown.transfer_name}):{" "}
-              <span className="text-ink">{formatMoney(transferBreakdown.total, transferBreakdown.currency)}</span>
-            </p>
-          </div>
-        )}
-        {mandatoryTaxBreakdown && mandatoryTaxBreakdown.total > 0 && (
-          <div className="mt-2 border-t border-ink/5 pt-2">
-            <p className="text-slate/50">
-              {mandatoryTaxBreakdown.label || "Mandatory tax"} ({mandatoryTaxBreakdown.chargeable_guests} pax ×{" "}
-              {formatMoney(mandatoryTaxBreakdown.rate_per_person_per_night, mandatoryTaxBreakdown.currency)} ×{" "}
-              {mandatoryTaxBreakdown.nights} nights, charged after discounts and not itself discountable):{" "}
-              <span className="text-ink">{formatMoney(mandatoryTaxBreakdown.total, mandatoryTaxBreakdown.currency)}</span>
-            </p>
-          </div>
-        )}
+      {linesLoading && <p className="text-sm text-slate/50">Loading commercial breakdown...</p>}
+      {linesError && <p className="text-sm text-red-600">{linesError}</p>}
+      {!linesLoading && !linesError && bookingRoomId && (
+        <CommercialLineItemsPanel
+          bookingRoomId={bookingRoomId}
+          currency={booking.currency}
+          lines={lines ?? []}
+          onLineUpdated={handleLineUpdated}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// renderListSummary slot -- aggregate strip over whatever the list is
+// currently filtered to (e.g. one "By date" day/range): total
+// applications, how many were cancelled, and total profit across the
+// rest. Grouped by currency (never assumes USD-only, per the project's
+// Test Ground formula discipline) -- in practice almost always renders
+// one figure since every real booking today is USD, but a second
+// currency shows as a second line instead of being silently summed
+// together or dropped.
+// ---------------------------------------------------------------------------
+
+function ListSummaryBar({ bookings }: { bookings: Booking[] }) {
+  if (bookings.length === 0) return null;
+
+  const cancelled = bookings.filter((b) => b.status === "Cancelled").length;
+  // Same exclusion as Finance Engine's own generate_agent_statement
+  // (backend/app/engines/finance/service.py): Cancelled/Rejected never
+  // contributed real profit, so they don't belong in the sum.
+  const billable = bookings.filter((b) => b.status !== "Cancelled" && b.status !== "Rejected");
+
+  const profitByCurrency: Record<string, number> = {};
+  let anyUncomputed = false;
+  for (const b of billable) {
+    const financials = computeBookingFinancials(b);
+    if (financials.profit === null) {
+      anyUncomputed = true;
+      continue;
+    }
+    profitByCurrency[b.currency] = (profitByCurrency[b.currency] ?? 0) + financials.profit;
+  }
+  const profitEntries = Object.entries(profitByCurrency);
+
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-6 rounded-xl border border-ink/10 bg-sand/30 p-4">
+      <div>
+        <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Applications</p>
+        <p className="mt-0.5 font-display text-xl font-semibold text-ink">{bookings.length}</p>
       </div>
+      <div>
+        <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Cancelled</p>
+        <p className={`mt-0.5 font-display text-xl font-semibold ${cancelled > 0 ? "text-coral" : "text-ink"}`}>
+          {cancelled}
+        </p>
+      </div>
+      <div>
+        <p className="text-xs font-medium uppercase tracking-wide text-slate/50">
+          Total profit{anyUncomputed ? " *" : ""}
+        </p>
+        <p className="mt-0.5 font-display text-xl font-semibold text-ink">
+          {profitEntries.length === 0
+            ? "—"
+            : profitEntries.map(([currency, amount]) => formatMoney(amount, currency)).join(" · ")}
+        </p>
+      </div>
+      {anyUncomputed && (
+        <p className="text-xs text-slate/40">* excludes bookings without a computed profit (pre-Pricing Engine)</p>
+      )}
     </div>
   );
 }
@@ -856,6 +1131,47 @@ function NeedsAttentionBadge({ summary }: { summary: UrgentBookingSummary }) {
 // with void/approve/send actions vs. a booking summary with one
 // acknowledge action) that forcing a shared generic component isn't
 // worth it.
+// Compact, single-line "what changed" summary for one urgent booking's
+// latest note -- shows only the CURRENT (new) dates plus the price-diff
+// badge, since at real volume (100+ applications/day, several changes
+// each) a two-line-per-row breakdown doesn't scale to a scannable queue.
+// The full before/after detail (old dates, old price) is never lost --
+// it's the exact same formatSingleNote() sentence InvoiceDetailModal
+// already uses, surfaced as a hover tooltip via the native title
+// attribute, same pattern NeedsAttentionBadge already established above.
+function CompactChangeSummary({ note, currency }: { note: InvoiceReviewNote; currency: string }) {
+  const fullDetail = formatSingleNote(note, currency);
+  if (hasPriceSnapshot(note)) {
+    const diff = note.new_total! - note.old_total!;
+    const noChange = Math.abs(diff) <= 0.01;
+    const diffTone = noChange ? "neutral" : diff > 0 ? "warning" : "success";
+    const diffLabel = noChange ? "no change" : `${diff > 0 ? "+" : ""}${formatMoney(diff, currency)}`;
+    return (
+      <span title={fullDetail} className="inline-flex cursor-help flex-wrap items-center gap-1.5 text-xs text-slate/70">
+        <span className="font-medium text-ink">
+          {formatDate(note.new_arrival_date!)} – {formatDate(note.new_departure_date!)}
+        </span>
+        <Badge tone={diffTone}>{diffLabel}</Badge>
+      </span>
+    );
+  }
+  if (hasDateSnapshot(note)) {
+    return (
+      <span title={fullDetail} className="inline-flex cursor-help flex-wrap items-center gap-1.5 text-xs text-slate/70">
+        <span className="font-medium text-ink">
+          {formatDate(note.new_arrival_date!)} – {formatDate(note.new_departure_date!)}
+        </span>
+        <Badge tone="neutral">dates changed</Badge>
+      </span>
+    );
+  }
+  return (
+    <span title={fullDetail} className="block max-w-[420px] cursor-help truncate text-xs text-slate/70">
+      {note.change_description ?? "—"}
+    </span>
+  );
+}
+
 function UrgentBookingsPanel({
   bookings,
   loading,
@@ -869,7 +1185,10 @@ function UrgentBookingsPanel({
 }) {
   return (
     <div className="mt-6">
-      <h3 className="font-display text-lg font-semibold text-ink">Needs Attention</h3>
+      <h3 className="flex items-center gap-2 font-display text-lg font-semibold text-ink">
+        Needs Attention
+        {bookings.length > 0 && <Badge tone="coral">{bookings.length}</Badge>}
+      </h3>
       {loading ? (
         <p className="mt-3 text-sm text-slate/60">Loading...</p>
       ) : bookings.length === 0 ? (
@@ -877,30 +1196,40 @@ function UrgentBookingsPanel({
           No bookings need attention
         </p>
       ) : (
-        <div className="mt-3 overflow-hidden rounded-2xl border border-ink/10 bg-white">
-          <table className="w-full text-left text-sm">
+        <div className="mt-3 overflow-hidden rounded-2xl shadow-card">
+          <TableShell minWidth="760px">
+            <TableHeadRow>
+              <TableHeadCell className="w-8">#</TableHeadCell>
+              <TableHeadCell>Booking</TableHeadCell>
+              <TableHeadCell>Change</TableHeadCell>
+              <TableHeadCell>Flagged</TableHeadCell>
+              <TableHeadCell>{null}</TableHeadCell>
+            </TableHeadRow>
             <tbody>
-              {bookings.map((b) => (
-                <tr key={b.booking_id} className="border-b border-ink/5 last:border-b-0">
-                  <td className="whitespace-nowrap px-4 py-3 font-medium text-ink">{b.booking_number}</td>
-                  <td className="px-4 py-3 text-slate/70">{latestNoteText(b) ?? "—"}</td>
-                  <td className="whitespace-nowrap px-4 py-3 text-slate/50">
+              {bookings.map((b, index) => (
+                <TableRow key={b.booking_id} className="hover:bg-sand/40 transition-colors">
+                  <TableCell className="py-2 text-slate/50">{index + 1}</TableCell>
+                  <TableCell className="whitespace-nowrap py-2 font-medium text-ink">{b.booking_number}</TableCell>
+                  <TableCell className="py-2">
+                    {b.latest_note ? <CompactChangeSummary note={b.latest_note} currency={b.currency} /> : "—"}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap py-2 text-xs text-slate/50">
                     {b.latest_note?.created_at ? formatDate(b.latest_note.created_at) : "—"}
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-right">
-                    <button
-                      type="button"
+                  </TableCell>
+                  <TableCell className="py-2 text-right">
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       onClick={() => onAcknowledge(b.booking_id)}
                       disabled={acknowledgingId === b.booking_id}
-                      className="rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {acknowledgingId === b.booking_id ? "..." : "Mark as reviewed"}
-                    </button>
-                  </td>
-                </tr>
+                    </Button>
+                  </TableCell>
+                </TableRow>
               ))}
             </tbody>
-          </table>
+          </TableShell>
         </div>
       )}
     </div>
@@ -924,20 +1253,21 @@ const FULL_ADMIN_PERMISSIONS: Permissions = {
   canConfirmWithHotel: true,
 };
 
-export default function AdminBookingsList({ scope }: { scope: Scope }) {
-  // Decision 108: keyed by booking_id, populated from ONE bulk
-  // GET /bookings/urgent call -- the booking-rooted source of truth,
-  // replacing the old invoice-only urgentInvoicesByBooking. Also drives
-  // the new dedicated "Needs Attention" panel above the list.
+// Own nav item under Bookings (2026-07-27 reorg) -- previously this same
+// panel sat above the full booking list on every page load, pushing the
+// actual list down; now it's a dedicated destination, reached only when a
+// manager actually wants the "what needs action" queue. Fully
+// self-contained (own fetch/state/handler) rather than a prop-drilled
+// piece of AdminBookingsList -- the two are independent nav destinations
+// now, not one screen's two halves. AdminBookingsList (below) still runs
+// its own, separate fetch of the same endpoint for the small inline
+// per-row "⚠ Invoice" badge (renderStatusBadgeExtra) -- that's a
+// different, smaller use of the same data, not worth threading through
+// two nav destinations just to share one HTTP call.
+export function AdminNeedsAttentionView() {
   const [urgentBookings, setUrgentBookings] = useState<UrgentBookingSummary[]>([]);
   const [urgentLoading, setUrgentLoading] = useState(true);
   const [acknowledgingId, setAcknowledgingId] = useState<number | null>(null);
-  // Per-booking invoice cache -- undefined (key absent) means "not yet
-  // fetched", null means "fetched, none exists". Shared between
-  // renderHeaderActions (reads/seeds it) and onAfterClaim (writes it
-  // after auto-creating), which otherwise have no way to talk to each
-  // other since onAfterClaim is a plain callback, not a component.
-  const [invoicesByBooking, setInvoicesByBooking] = useState<Record<number, InvoiceInfo | null>>({});
 
   async function loadUrgentBookings() {
     const token = localStorage.getItem("token") || "";
@@ -953,8 +1283,7 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
 
   useEffect(() => {
     loadUrgentBookings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope.type, scope.type === "agent" ? scope.agentId : null]);
+  }, []);
 
   const urgentByBooking: Record<number, UrgentBookingSummary> = {};
   urgentBookings.forEach((b) => {
@@ -976,6 +1305,44 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
       setAcknowledgingId(null);
     }
   }
+
+  return (
+    <UrgentBookingsPanel
+      bookings={urgentBookings}
+      loading={urgentLoading}
+      onAcknowledge={handleAcknowledge}
+      acknowledgingId={acknowledgingId}
+    />
+  );
+}
+
+export default function AdminBookingsList({ scope }: { scope: Scope }) {
+  // Decision 108: keyed by booking_id, populated from ONE bulk
+  // GET /bookings/urgent call -- the booking-rooted source of truth,
+  // replacing the old invoice-only urgentInvoicesByBooking. Now only
+  // used for the small inline per-row "⚠ Invoice" badge
+  // (renderStatusBadgeExtra) -- the full panel moved to its own nav
+  // destination, AdminNeedsAttentionView above.
+  const [urgentBookings, setUrgentBookings] = useState<UrgentBookingSummary[]>([]);
+  // Per-booking invoice cache -- undefined (key absent) means "not yet
+  // fetched", null means "fetched, none exists". Shared between
+  // renderHeaderActions (reads/seeds it) and onAfterClaim (writes it
+  // after auto-creating), which otherwise have no way to talk to each
+  // other since onAfterClaim is a plain callback, not a component.
+  const [invoicesByBooking, setInvoicesByBooking] = useState<Record<number, InvoiceInfo | null>>({});
+
+  useEffect(() => {
+    const token = localStorage.getItem("token") || "";
+    fetchJson<UrgentBookingSummary[]>("/finance-engine/bookings/urgent", token)
+      .then(setUrgentBookings)
+      .catch(() => setUrgentBookings([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope.type, scope.type === "agent" ? scope.agentId : null]);
+
+  const urgentByBooking: Record<number, UrgentBookingSummary> = {};
+  urgentBookings.forEach((b) => {
+    urgentByBooking[b.booking_id] = b;
+  });
 
   function setInvoiceFor(bookingId: number, inv: InvoiceInfo | null) {
     setInvoicesByBooking((prev) => ({ ...prev, [bookingId]: inv }));
@@ -1021,6 +1388,7 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
     renderCorrespondencePanel: (ctx) => <CorrespondencePanel ctx={ctx} />,
     renderReplyLogButton: (ctx) => <ReplyLogButton ctx={ctx} />,
     renderFinancialSummary: (ctx) => <FinancialSummaryBlock ctx={ctx} />,
+    renderListSummary: (bookings) => <ListSummaryBar bookings={bookings} />,
     onAfterClaim: (ctx) => {
       const bookingId = ctx.booking.id;
       // Decision 080: claiming auto-creates a Draft invoice as a
@@ -1040,13 +1408,13 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
 
   return (
     <div>
-      <UrgentBookingsPanel
-        bookings={urgentBookings}
-        loading={urgentLoading}
-        onAcknowledge={handleAcknowledge}
-        acknowledgingId={acknowledgingId}
+      <BookingsList
+        scope={scope}
+        permissions={FULL_ADMIN_PERMISSIONS}
+        adminExtensions={adminExtensions}
+        compactFilters
+        initialDateMode={{ view: "created" }}
       />
-      <BookingsList scope={scope} permissions={FULL_ADMIN_PERMISSIONS} adminExtensions={adminExtensions} />
     </div>
   );
 }

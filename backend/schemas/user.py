@@ -17,6 +17,7 @@ class UserResponse(BaseModel):
     is_first_login: bool
     last_login: Optional[datetime]  # ← ВАЖНО!
     created_at: Optional[datetime]
+    company_name: Optional[str] = None
 
     class Config:
         from_attributes = True

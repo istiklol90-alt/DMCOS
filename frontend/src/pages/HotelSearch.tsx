@@ -162,24 +162,6 @@ type MandatoryTax = {
   total: number;
 };
 
-// Minimal shapes — only the fields this page actually reads from
-// BookingResponse/GuestResponse, not the full Pydantic schemas.
-type BookingCreateResult = {
-  id: number;
-  booking_number: string;
-};
-
-type GuestFormValues = {
-  firstName: string;
-  lastName: string;
-  nationality: string;
-  dateOfBirth: string;
-  passportNumber: string;
-  passportExpiry: string;
-  arrivalFlightNumber: string;
-  departureFlightNumber: string;
-};
-
 // Stage 5 (multi-room booking applications) -- one room the agent has
 // added to an in-progress, not-yet-submitted "trip". Deliberately a
 // client-side-only concept: nothing is written to the backend until the
@@ -390,6 +372,26 @@ export function deriveOccupancy(
   return { adults: baseAdults + extraAdults, children, infants };
 }
 
+// "2 adults, 2 children (8, 8 years)" -- explicit words + real ages, never
+// a bare "2+2"/total count, so it's unambiguous this is one room's
+// occupancy. Reuses the same pluralized labels formatCartOccupancy (Stage
+// 5) already established, so the two summaries can never phrase the same
+// counts differently.
+function formatSearchOccupancy(
+  t: TFunction,
+  occupancy: { adults: number; children: number; infants: number },
+  childBucketAges: number[]
+): string {
+  const parts = [t("roomTypeCard.adultsLabel", { count: occupancy.adults })];
+  if (occupancy.children > 0) parts.push(t("roomTypeCard.childrenLabel", { count: occupancy.children }));
+  if (occupancy.infants > 0) parts.push(t("roomTypeCard.infantsLabel", { count: occupancy.infants }));
+  let text = parts.join(", ");
+  if (childBucketAges.length > 0) {
+    text += ` (${childBucketAges.join(", ")} ${t("page.yearsShort")})`;
+  }
+  return text;
+}
+
 // ---------------------------------------------------------------------------
 // Small fetch helper — attaches the real JWT, throws with the backend's
 // own error detail on failure (Hotel/Contract Engine's api.py maps
@@ -537,6 +539,7 @@ function MonthGrid({
   checkInDate,
   checkOutDate,
   onDayClick,
+  allowPast = false,
 }: {
   t: TFunction;
   lang: string;
@@ -545,6 +548,11 @@ function MonthGrid({
   checkInDate: Date | null;
   checkOutDate: Date | null;
   onDayClick: (day: Date) => void;
+  // Reservations.tsx's "By date" range (browsing past bookings) needs
+  // past days selectable -- every other caller (real hotel check-in
+  // search) keeps the default false, since a stay can't start in the
+  // past.
+  allowPast?: boolean;
 }) {
   const cells = buildMonthGrid(year, month);
   const locale = localeOf(lang);
@@ -565,7 +573,7 @@ function MonthGrid({
 
           const today = new Date();
           today.setHours(0, 0, 0, 0);
-          const isPast = day < today;
+          const isPast = !allowPast && day < today;
           const isCheckIn = checkInDate && isSameDate(day, checkInDate);
           const isCheckOut = checkOutDate && isSameDate(day, checkOutDate);
           const isEndpoint = Boolean(isCheckIn || isCheckOut);
@@ -583,9 +591,22 @@ function MonthGrid({
                 disabled={isPast}
                 onClick={() => onDayClick(day)}
                 className={[
-                  "mx-auto flex h-7 w-7 appearance-none items-center justify-center rounded-full border-0 bg-transparent transition-colors",
-                  isPast ? "cursor-not-allowed text-slate/20" : "text-ink hover:bg-sand",
-                  isEndpoint ? "bg-coral text-white hover:bg-coral" : "",
+                  "mx-auto flex h-7 w-7 appearance-none items-center justify-center rounded-full border-0 transition-colors",
+                  // isPast/isEndpoint/default each own their own
+                  // background+text pair outright, never combined with a
+                  // separately-listed bg-transparent/text-ink -- two
+                  // utilities targeting the same CSS property fight over
+                  // Tailwind's generated-stylesheet order, not the order
+                  // they appear in this string (same class of bug
+                  // Button.tsx's own VARIANT_CLASSES comment documents).
+                  // That's exactly what made a selected day render
+                  // white-on-white/invisible here: bg-transparent was
+                  // silently winning over bg-coral.
+                  isPast
+                    ? "cursor-not-allowed bg-transparent text-slate/20"
+                    : isEndpoint
+                      ? "bg-coral text-white hover:bg-coral"
+                      : "bg-transparent text-ink hover:bg-sand",
                 ].join(" ")}
               >
                 {day.getDate()}
@@ -604,6 +625,7 @@ export function DateRangePicker({
   onChange,
   forceLang,
   size = "sm",
+  allowPast = false,
 }: {
   checkIn: string;
   checkOut: string;
@@ -619,6 +641,11 @@ export function DateRangePicker({
   // (Reservations.tsx's date-change flow, PriceCalculator.tsx) visually
   // unchanged.
   size?: "sm" | "lg";
+  // Reservations.tsx's "By date" range (browsing past applications/
+  // bookings) needs past days selectable. Defaults false so every
+  // existing caller (real hotel check-in search, which can never start
+  // in the past) is byte-identical to before.
+  allowPast?: boolean;
 }) {
   const { t: ambientT, i18n: i18nInstance } = useTranslation("hotelSearch");
   const lang = forceLang ?? i18nInstance.language;
@@ -645,7 +672,7 @@ export function DateRangePicker({
   function handleDayClick(day: Date) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    if (day < today) return;
+    if (!allowPast && day < today) return;
 
     const hasCompleteRange = checkIn && checkOut;
     if (!checkIn || hasCompleteRange) {
@@ -732,6 +759,7 @@ export function DateRangePicker({
               checkInDate={checkInDate}
               checkOutDate={checkOutDate}
               onDayClick={handleDayClick}
+              allowPast={allowPast}
             />
             <MonthGrid
               t={t}
@@ -741,6 +769,7 @@ export function DateRangePicker({
               checkInDate={checkInDate}
               checkOutDate={checkOutDate}
               onDayClick={handleDayClick}
+              allowPast={allowPast}
             />
 
             <button
@@ -772,141 +801,6 @@ export function DateRangePicker({
         </div>
       )}
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Guest details form — collects the lead guest only (v1 scope). Shown once
-// a room type has both a meal plan and a transfer selected.
-// ---------------------------------------------------------------------------
-
-function GuestDetailsForm({
-  submitting,
-  error,
-  onCancel,
-  onSubmit,
-}: {
-  submitting: boolean;
-  error: string | null;
-  onCancel: () => void;
-  onSubmit: (values: GuestFormValues) => void;
-}) {
-  const { t } = useTranslation("hotelSearch");
-  const [values, setValues] = useState<GuestFormValues>({
-    firstName: "",
-    lastName: "",
-    nationality: "",
-    dateOfBirth: "",
-    passportNumber: "",
-    passportExpiry: "",
-    arrivalFlightNumber: "",
-    departureFlightNumber: "",
-  });
-
-  function set<K extends keyof GuestFormValues>(key: K, value: string) {
-    setValues((prev) => ({ ...prev, [key]: value }));
-  }
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!values.firstName.trim() || !values.lastName.trim()) return;
-    onSubmit(values);
-  }
-
-  const canSubmit = values.firstName.trim() !== "" && values.lastName.trim() !== "" && !submitting;
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-3 border-t border-ink/10 bg-sand/30 p-4">
-      <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
-        {t("guestDetailsForm.title")}
-      </p>
-
-      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-        <input
-          type="text"
-          placeholder={t("guestDetailsForm.firstNamePlaceholder")}
-          value={values.firstName}
-          onChange={(e) => set("firstName", e.target.value)}
-          required
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
-        />
-        <input
-          type="text"
-          placeholder={t("guestDetailsForm.lastNamePlaceholder")}
-          value={values.lastName}
-          onChange={(e) => set("lastName", e.target.value)}
-          required
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
-        />
-        <input
-          type="text"
-          placeholder={t("guestDetailsForm.nationalityPlaceholder")}
-          value={values.nationality}
-          onChange={(e) => set("nationality", e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
-        />
-        <input
-          type="date"
-          placeholder={t("guestDetailsForm.dateOfBirthPlaceholder")}
-          value={values.dateOfBirth}
-          onChange={(e) => set("dateOfBirth", e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
-        />
-        <input
-          type="text"
-          placeholder={t("guestDetailsForm.passportNumberPlaceholder")}
-          value={values.passportNumber}
-          onChange={(e) => set("passportNumber", e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
-        />
-        <input
-          type="date"
-          placeholder={t("guestDetailsForm.passportExpiryPlaceholder")}
-          value={values.passportExpiry}
-          onChange={(e) => set("passportExpiry", e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
-        />
-        <input
-          type="text"
-          placeholder={t("guestDetailsForm.arrivalFlightNumberPlaceholder")}
-          value={values.arrivalFlightNumber}
-          onChange={(e) => set("arrivalFlightNumber", e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
-        />
-        <input
-          type="text"
-          placeholder={t("guestDetailsForm.departureFlightNumberPlaceholder")}
-          value={values.departureFlightNumber}
-          onChange={(e) => set("departureFlightNumber", e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
-        />
-      </div>
-
-      {error && (
-        <div className="flex items-center gap-2 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">
-          <IconAlert className="w-3.5 h-3.5" />
-          {error}
-        </div>
-      )}
-
-      <div className="flex items-center gap-2">
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
-        >
-          {submitting ? t("guestDetailsForm.sending") : t("guestDetailsForm.confirmBooking")}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={submitting}
-          className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {t("guestDetailsForm.cancel")}
-        </button>
-      </div>
-    </form>
   );
 }
 
@@ -962,13 +856,6 @@ function RoomTypeCard({
   const lang = i18nInstance.language;
   const [selectedMealCode, setSelectedMealCode] = useState<string | null>(null);
   const [selectedTransferType, setSelectedTransferType] = useState<string | null>(null);
-  const [bookingFormOpen, setBookingFormOpen] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [bookingResult, setBookingResult] = useState<{
-    bookingNumber: string;
-    guestWarning: string | null;
-  } | null>(null);
 
   // Stage 5 (multi-room booking applications) -- "Добавить в поездку"
   // feedback, entirely local/transient: addedToTripAt just flips a
@@ -977,6 +864,19 @@ function RoomTypeCard({
   // check still runs server-side on submit).
   const [addedToTripAt, setAddedToTripAt] = useState<number | null>(null);
   const [addToTripError, setAddToTripError] = useState<string | null>(null);
+
+  // If a transfer is mandatory (transferRequired) and there's genuinely
+  // only one option to choose from, there's no real decision for the
+  // agent to make -- auto-select it instead of leaving a required radio
+  // unchecked. Guarded by transferOptions.length === 1 specifically (not
+  // "just pick the first one") so a real choice between multiple options
+  // is never silently made for the agent. Re-fires if the room type's
+  // own transfer options change (e.g. a different hotel/date search).
+  useEffect(() => {
+    if (transferRequired && transferOptions.length === 1 && !selectedTransferType) {
+      setSelectedTransferType(transferOptions[0].option.transfer_type);
+    }
+  }, [transferRequired, transferOptions, selectedTransferType]);
 
   // Decision 074: per-meal-plan-option nightly breakdown, lazy-loaded on
   // toggle -- keyed by mealCode since this component is already scoped to
@@ -1042,15 +942,22 @@ function RoomTypeCard({
       : null;
 
   // Stage 5: adds the currently-selected meal plan (+ transfer, if any) to
-  // the shared trip cart. Deliberately does NOT require a transfer
-  // selection even when transferRequired is true -- that validation only
-  // matters at real submit time (ApplicationCheckoutForm), same as how
-  // "Забронировать" itself only checks it inside handleBookingSubmit, not
-  // before. Mirrors handleBookingSubmit's own guard shape, just with no
-  // network call at all (the cart is 100% client-side until checkout).
+  // the shared trip cart. "Добавить в поездку" is the only way to book
+  // from this card (the old direct "Забронировать" single-room flow was
+  // removed) -- the cart is 100% client-side until checkout, no network
+  // call happens here. When a transfer is mandatory, a specific option
+  // must actually be selected first (real bug found live: the room was
+  // silently addable to cart with transferRequired=true and no radio
+  // checked, so the cart carried transferType=null with no way for the
+  // agent to tell which transfer, if any, would be booked) -- the single-
+  // option case never hits this block since it's auto-selected above.
   function handleAddToTrip() {
     setAddToTripError(null);
     if (!selectedMeal?.price) return;
+    if (transferRequired && !selectedTransferType) {
+      setAddToTripError(t("roomTypeCard.selectTransferFirst"));
+      return;
+    }
 
     const room: CartRoom = {
       key: `${hotelId}-${rt.id}-${selectedMealCode}-${Date.now()}`,
@@ -1081,78 +988,18 @@ function RoomTypeCard({
     }
   }
 
-  async function handleBookingSubmit(guest: GuestFormValues) {
-    const token = localStorage.getItem("token");
-    if (!token || !selectedMealCode) return;
-    if (transferRequired && transferOptions.length === 0) {
-      setSubmitError(t("roomTypeCard.transferRequiredError"));
-      return;
-    }
-    if (transferRequired && !selectedTransferType) return;
-
-    setSubmitting(true);
-    setSubmitError(null);
-    try {
-      const booking = await fetchJson<BookingCreateResult>("/booking-engine/bookings", token, {
-        method: "POST",
-        body: JSON.stringify({
-          agent_id: agentId,
-          hotel_id: rt.hotel_id,
-          room_type_id: rt.id,
-          meal_plan: selectedMealCode,
-          arrival_date: checkIn,
-          departure_date: checkOut,
-          adults,
-          children: childrenCount,
-          infants,
-          transfer_type: selectedTransferType,
-          arrival_flight_number: guest.arrivalFlightNumber || null,
-          departure_flight_number: guest.departureFlightNumber || null,
-        }),
-      });
-
-      let guestWarning: string | null = null;
-      try {
-        await fetchJson("/booking-engine/guests", token, {
-          method: "POST",
-          body: JSON.stringify({
-            booking_id: booking.id,
-            first_name: guest.firstName,
-            last_name: guest.lastName,
-            nationality: guest.nationality || null,
-            date_of_birth: guest.dateOfBirth || null,
-            passport_number: guest.passportNumber || null,
-            passport_expiry: guest.passportExpiry || null,
-            is_lead_guest: true,
-          }),
-        });
-      } catch (guestErr) {
-        // Booking Engine has no transactional link between a Booking and
-        // its Guest rows (same best-effort-not-transactional precedent as
-        // Decision 012) — the booking is real and already holds inventory,
-        // so we surface it as a success with a warning rather than trying
-        // to auto-cancel it.
-        guestWarning =
-          guestErr instanceof Error
-            ? guestErr.message
-            : t("roomTypeCard.guestSaveFailed");
-      }
-
-      setBookingResult({ bookingNumber: booking.booking_number, guestWarning });
-      setBookingFormOpen(false);
-    } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : t("roomTypeCard.bookingFailed"));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   return (
     <div className="overflow-hidden rounded-xl border border-ink/10 bg-white shadow-sm">
       <div className="flex items-center gap-4 p-4">
         <div className="min-w-0 flex-1">
           <h4 className="font-display text-base font-semibold text-ink">{rt.room_name}</h4>
           <p className="mt-0.5 text-xs text-slate/50">{t("roomTypeCard.maxGuests", { count: rt.max_occupancy })}</p>
+          {rt.bed_type && (
+            <p className="mt-0.5 text-xs text-slate/50">{rt.bed_type}</p>
+          )}
+          <p className="mt-0.5 text-xs font-medium text-coral">
+            {formatSearchOccupancy(t, { adults, children: childrenCount, infants }, childAges)}
+          </p>
         </div>
 
         <div className="flex shrink-0 items-center gap-3">
@@ -1395,49 +1242,20 @@ function RoomTypeCard({
                 </span>
               </div>
 
-              {bookingResult ? (
-                <div className="mt-3 rounded-lg bg-teal/10 px-3 py-2.5 text-sm text-teal">
-                  <p className="font-medium">{t("roomTypeCard.bookingCreated", { number: bookingResult.bookingNumber })}</p>
-                  {bookingResult.guestWarning && (
-                    <p className="mt-1 text-xs font-medium text-coral">
-                      {t("roomTypeCard.guestDataNotSaved", { error: bookingResult.guestWarning })}
-                    </p>
-                  )}
-                </div>
-              ) : bookingFormOpen ? (
-                <div className="mt-3">
-                  <GuestDetailsForm
-                    submitting={submitting}
-                    error={submitError}
-                    onCancel={() => {
-                      setBookingFormOpen(false);
-                      setSubmitError(null);
-                    }}
-                    onSubmit={handleBookingSubmit}
-                  />
-                </div>
-              ) : (
-                <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                  <button
-                    type="button"
-                    onClick={() => setBookingFormOpen(true)}
-                    className="flex-1 rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
-                  >
-                    {t("roomTypeCard.bookNow")}
-                  </button>
-                  {/* Stage 5 -- adds this exact selection to the shared
-                      multi-room trip cart instead of booking it
-                      immediately. Purely client-side until the whole cart
-                      is submitted at once from the cart panel. */}
-                  <button
-                    type="button"
-                    onClick={handleAddToTrip}
-                    className="flex-1 rounded-xl border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-sand"
-                  >
-                    {addedToTripAt ? t("roomTypeCard.addedToTrip") : t("roomTypeCard.addToTrip")}
-                  </button>
-                </div>
-              )}
+              {/* Booking only happens through the trip cart / "Оформить
+                  заявку" flow now -- the old direct "Забронировать"
+                  single-room booking button was removed (project owner's
+                  explicit instruction, 2026-07-27): having two separate
+                  ways to book was confusing, so only add-to-cart remains. */}
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={handleAddToTrip}
+                  className="w-full rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
+                >
+                  {addedToTripAt ? t("roomTypeCard.addedToTrip") : t("roomTypeCard.addToTrip")}
+                </button>
+              </div>
               {addToTripError && (
                 <p className="mt-2 text-xs font-medium text-coral">{addToTripError}</p>
               )}
@@ -1596,6 +1414,7 @@ function CartPanel({
                   <p className="truncate text-sm font-medium text-ink">{room.hotelName}</p>
                   <p className="text-xs text-slate/60">
                     {room.roomTypeName} · {room.mealPlanLabel}
+                    {room.transferName ? ` · ${room.transferName}` : ""}
                   </p>
                   <p className="text-xs text-slate/50">
                     {room.arrivalDate} – {room.departureDate}
@@ -1653,8 +1472,34 @@ function CartPanel({
 // still only becomes one Guest row -- buildGuestsPayload below dedupes
 // by exact name (+ date of birth for children) across rooms.
 type RoomGuestEntry = {
-  adults: { firstName: string; lastName: string }[];
-  children: { firstName: string; lastName: string; dateOfBirth: string }[];
+  adults: {
+    firstName: string;
+    lastName: string;
+    nationality: string;
+    passportNumber: string;
+    passportExpiry: string;
+  }[];
+  children: {
+    firstName: string;
+    lastName: string;
+    dateOfBirth: string;
+    nationality: string;
+    passportNumber: string;
+    passportExpiry: string;
+  }[];
+};
+
+// One flight leg's worth of trip-level detail -- entered once per
+// application (not per room), same shape as Booking's own
+// arrival_flight_number/date/time columns. Needed to actually arrange an
+// airport transfer, which cannot be scheduled from a room/rate alone.
+type FlightDetails = {
+  arrivalFlightNumber: string;
+  arrivalFlightDate: string;
+  arrivalFlightTime: string;
+  departureFlightNumber: string;
+  departureFlightDate: string;
+  departureFlightTime: string;
 };
 
 function ApplicationCheckoutForm({
@@ -1674,16 +1519,38 @@ function ApplicationCheckoutForm({
     const initial: Record<string, RoomGuestEntry> = {};
     for (const room of cart) {
       initial[room.key] = {
-        adults: Array.from({ length: room.adults }, () => ({ firstName: "", lastName: "" })),
+        adults: Array.from({ length: room.adults }, () => ({
+          firstName: "",
+          lastName: "",
+          nationality: "",
+          passportNumber: "",
+          passportExpiry: "",
+        })),
         children: Array.from({ length: room.children }, () => ({
           firstName: "",
           lastName: "",
           dateOfBirth: "",
+          nationality: "",
+          passportNumber: "",
+          passportExpiry: "",
         })),
       };
     }
     return initial;
   });
+
+  const [flight, setFlight] = useState<FlightDetails>({
+    arrivalFlightNumber: "",
+    arrivalFlightDate: "",
+    arrivalFlightTime: "",
+    departureFlightNumber: "",
+    departureFlightDate: "",
+    departureFlightTime: "",
+  });
+
+  function setFlightField<K extends keyof FlightDetails>(key: K, value: string) {
+    setFlight((prev) => ({ ...prev, [key]: value }));
+  }
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -1692,7 +1559,12 @@ function ApplicationCheckoutForm({
     rooms: { sequenceNumber: number; hotelName: string; status: string; rejectionReason: string | null }[];
   } | null>(null);
 
-  function updateAdult(roomKey: string, index: number, field: "firstName" | "lastName", value: string) {
+  function updateAdult(
+    roomKey: string,
+    index: number,
+    field: "firstName" | "lastName" | "nationality" | "passportNumber" | "passportExpiry",
+    value: string
+  ) {
     setRoomGuests((prev) => ({
       ...prev,
       [roomKey]: {
@@ -1705,7 +1577,7 @@ function ApplicationCheckoutForm({
   function updateChild(
     roomKey: string,
     index: number,
-    field: "firstName" | "lastName" | "dateOfBirth",
+    field: "firstName" | "lastName" | "dateOfBirth" | "nationality" | "passportNumber" | "passportExpiry",
     value: string
   ) {
     setRoomGuests((prev) => ({
@@ -1752,7 +1624,14 @@ function ApplicationCheckoutForm({
   // in more than one room becomes exactly one Guest row assigned to both,
   // never two duplicate rows.
   function buildGuestsPayload() {
-    type FlatGuest = { firstName: string; lastName: string; dateOfBirth?: string };
+    type FlatGuest = {
+      firstName: string;
+      lastName: string;
+      dateOfBirth?: string;
+      nationality?: string;
+      passportNumber?: string;
+      passportExpiry?: string;
+    };
     const flat: FlatGuest[] = [];
     const roomIndices: Record<string, number[]> = {};
 
@@ -1772,11 +1651,26 @@ function ApplicationCheckoutForm({
       const entry = roomGuests[room.key];
       const indices: number[] = [];
       for (const a of entry.adults) {
-        indices.push(findOrAdd({ firstName: a.firstName, lastName: a.lastName }));
+        indices.push(
+          findOrAdd({
+            firstName: a.firstName,
+            lastName: a.lastName,
+            nationality: a.nationality,
+            passportNumber: a.passportNumber,
+            passportExpiry: a.passportExpiry,
+          })
+        );
       }
       for (const c of entry.children) {
         indices.push(
-          findOrAdd({ firstName: c.firstName, lastName: c.lastName, dateOfBirth: c.dateOfBirth })
+          findOrAdd({
+            firstName: c.firstName,
+            lastName: c.lastName,
+            dateOfBirth: c.dateOfBirth,
+            nationality: c.nationality,
+            passportNumber: c.passportNumber,
+            passportExpiry: c.passportExpiry,
+          })
         );
       }
       roomIndices[room.key] = indices;
@@ -1807,6 +1701,9 @@ function ApplicationCheckoutForm({
             first_name: g.firstName,
             last_name: g.lastName,
             date_of_birth: g.dateOfBirth || null,
+            nationality: g.nationality || null,
+            passport_number: g.passportNumber || null,
+            passport_expiry: g.passportExpiry || null,
             is_lead_guest: i === 0,
           })),
           rooms: cart.map((room) => ({
@@ -1821,6 +1718,12 @@ function ApplicationCheckoutForm({
             transfer_type: room.transferType,
             guest_indices: roomIndices[room.key] ?? [],
           })),
+          arrival_flight_number: flight.arrivalFlightNumber || null,
+          arrival_flight_date: flight.arrivalFlightDate || null,
+          arrival_flight_time: flight.arrivalFlightTime || null,
+          departure_flight_number: flight.departureFlightNumber || null,
+          departure_flight_date: flight.departureFlightDate || null,
+          departure_flight_time: flight.departureFlightTime || null,
         }),
       });
 
@@ -1916,21 +1819,49 @@ function ApplicationCheckoutForm({
                         {t("cart.adultsHeading")}
                       </p>
                       {entry.adults.map((a, i) => (
-                        <div key={i} className="flex items-center gap-2">
-                          <input
-                            type="text"
-                            placeholder={t("guestDetailsForm.firstNamePlaceholder")}
-                            value={a.firstName}
-                            onChange={(e) => updateAdult(room.key, i, "firstName", e.target.value)}
-                            className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
-                          />
-                          <input
-                            type="text"
-                            placeholder={t("guestDetailsForm.lastNamePlaceholder")}
-                            value={a.lastName}
-                            onChange={(e) => updateAdult(room.key, i, "lastName", e.target.value)}
-                            className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
-                          />
+                        <div key={i} className="space-y-1.5">
+                          <p className="text-[11px] font-semibold text-slate/60">
+                            {t("cart.touristLabel", { number: i + 1 })}
+                          </p>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              placeholder={t("guestDetailsForm.firstNamePlaceholder")}
+                              value={a.firstName}
+                              onChange={(e) => updateAdult(room.key, i, "firstName", e.target.value)}
+                              className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                            />
+                            <input
+                              type="text"
+                              placeholder={t("guestDetailsForm.lastNamePlaceholder")}
+                              value={a.lastName}
+                              onChange={(e) => updateAdult(room.key, i, "lastName", e.target.value)}
+                              className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                            />
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              placeholder={t("guestDetailsForm.nationalityPlaceholder")}
+                              value={a.nationality}
+                              onChange={(e) => updateAdult(room.key, i, "nationality", e.target.value)}
+                              className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                            />
+                            <input
+                              type="text"
+                              placeholder={t("guestDetailsForm.passportNumberPlaceholder")}
+                              value={a.passportNumber}
+                              onChange={(e) => updateAdult(room.key, i, "passportNumber", e.target.value)}
+                              className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                            />
+                            <input
+                              type="date"
+                              placeholder={t("guestDetailsForm.passportExpiryPlaceholder")}
+                              value={a.passportExpiry}
+                              onChange={(e) => updateAdult(room.key, i, "passportExpiry", e.target.value)}
+                              className="w-36 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+                            />
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -1943,7 +1874,10 @@ function ApplicationCheckoutForm({
                         {entry.children.map((c, i) => {
                           const error = childAgeError(room, i, c.dateOfBirth);
                           return (
-                            <div key={i}>
+                            <div key={i} className="space-y-1.5">
+                              <p className="text-[11px] font-semibold text-slate/60">
+                                {t("cart.childLabel", { number: i + 1 })}
+                              </p>
                               <div className="flex items-center gap-2">
                                 <input
                                   type="text"
@@ -1968,10 +1902,33 @@ function ApplicationCheckoutForm({
                                   }`}
                                 />
                               </div>
-                              <p className="mt-1 text-[11px] text-slate/50">
+                              <p className="text-[11px] text-slate/50">
                                 {t("cart.expectedChildAge", { age: room.childAges[i] })}
                               </p>
                               {error && <p className="mt-0.5 text-xs font-medium text-coral">{error}</p>}
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  placeholder={t("guestDetailsForm.nationalityPlaceholder")}
+                                  value={c.nationality}
+                                  onChange={(e) => updateChild(room.key, i, "nationality", e.target.value)}
+                                  className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                                />
+                                <input
+                                  type="text"
+                                  placeholder={t("guestDetailsForm.passportNumberPlaceholder")}
+                                  value={c.passportNumber}
+                                  onChange={(e) => updateChild(room.key, i, "passportNumber", e.target.value)}
+                                  className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                                />
+                                <input
+                                  type="date"
+                                  placeholder={t("guestDetailsForm.passportExpiryPlaceholder")}
+                                  value={c.passportExpiry}
+                                  onChange={(e) => updateChild(room.key, i, "passportExpiry", e.target.value)}
+                                  className="w-36 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+                                />
+                              </div>
                             </div>
                           );
                         })}
@@ -1980,6 +1937,56 @@ function ApplicationCheckoutForm({
                   </div>
                 );
               })}
+            </div>
+
+            <div className="mt-4 rounded-xl border border-ink/10 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
+                {t("cart.flightHeading")}
+              </p>
+              <div className="mt-2 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                <input
+                  type="text"
+                  placeholder={t("guestDetailsForm.arrivalFlightNumberPlaceholder")}
+                  value={flight.arrivalFlightNumber}
+                  onChange={(e) => setFlightField("arrivalFlightNumber", e.target.value)}
+                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                />
+                <input
+                  type="date"
+                  placeholder={t("cart.arrivalFlightDatePlaceholder")}
+                  value={flight.arrivalFlightDate}
+                  onChange={(e) => setFlightField("arrivalFlightDate", e.target.value)}
+                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+                />
+                <input
+                  type="time"
+                  placeholder={t("cart.arrivalFlightTimePlaceholder")}
+                  value={flight.arrivalFlightTime}
+                  onChange={(e) => setFlightField("arrivalFlightTime", e.target.value)}
+                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+                />
+                <input
+                  type="text"
+                  placeholder={t("guestDetailsForm.departureFlightNumberPlaceholder")}
+                  value={flight.departureFlightNumber}
+                  onChange={(e) => setFlightField("departureFlightNumber", e.target.value)}
+                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                />
+                <input
+                  type="date"
+                  placeholder={t("cart.departureFlightDatePlaceholder")}
+                  value={flight.departureFlightDate}
+                  onChange={(e) => setFlightField("departureFlightDate", e.target.value)}
+                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+                />
+                <input
+                  type="time"
+                  placeholder={t("cart.departureFlightTimePlaceholder")}
+                  value={flight.departureFlightTime}
+                  onChange={(e) => setFlightField("departureFlightTime", e.target.value)}
+                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+                />
+              </div>
             </div>
 
             {submitError && (

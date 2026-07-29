@@ -274,3 +274,39 @@ class HotelCashbackFulfillmentCreate(BaseModel):
     amount: float
     cumulative_sales_volume_at_time: Optional[float] = None
     notes: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# BookingCommercialLine -- per-room, per-category cost/price ledger with a
+# manual adjustment mechanism. See the model's own docstring for the full
+# rationale.
+# ---------------------------------------------------------------------------
+
+class BookingCommercialLineResponse(BaseModel):
+    id: int
+    booking_room_id: int
+    category: str
+    base_cost: Optional[float] = None
+    base_price: Optional[float] = None
+    adjustment_cost: float
+    adjustment_price: float
+    adjustment_note: Optional[str] = None
+    adjusted_by: Optional[int] = None
+    adjusted_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class BookingCommercialLineUpsert(BaseModel):
+    """All fields optional -- an upsert PUT only changes what it's
+    given, same convention as service.upsert_commercial_line. A caller
+    recording a discount only needs to send adjustment_cost/
+    adjustment_price/note, not re-send the base figures."""
+    base_cost: Optional[float] = None
+    base_price: Optional[float] = None
+    adjustment_cost: Optional[float] = None
+    adjustment_price: Optional[float] = None
+    note: Optional[str] = None

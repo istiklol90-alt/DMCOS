@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { I18nextProvider } from "react-i18next";
 import adminI18n from "../i18n/i18nAdmin";
 import { API_URL } from "../config";
-import AdminBookingsList from "./AdminBookingFinance";
+import AdminBookingsList, { AdminNeedsAttentionView } from "./AdminBookingFinance";
 import { TransfersView, ArrivalView, DepartureView } from "./BookingsSubViews";
 import Contracts from "./Contracts";
 import ContractsAI from "./ContractsAI";
@@ -12,11 +12,25 @@ import Invoices from "./Invoices";
 import Balance from "./Balance";
 import Cashback from "./Cashback";
 import AdminNav from "./AdminNav";
+import Card from "../components/ui/Card";
+import Badge, { type BadgeTone } from "../components/ui/Badge";
+import Button from "../components/ui/Button";
+import Input from "../components/ui/Input";
+import { SkeletonText } from "../components/ui/Skeleton";
+import {
+  TableShell,
+  TableHeadRow,
+  TableHeadCell,
+  TableRow,
+  TableCell,
+  TableEmptyState,
+} from "../components/ui/Table";
 
 type StatKey = "all" | "agent" | "admin" | "active" | "never_logged" | "inactive";
 type RegStatus = "pending" | "approved" | "rejected";
 type AdminTab =
   | "users"
+  | "bookings-needs-attention"
   | "reservations"
   | "bookings-transfers"
   | "bookings-arrival"
@@ -29,10 +43,10 @@ type AdminTab =
   | "balance"
   | "cashback";
 
-const statusBadgeClasses: Record<RegStatus, string> = {
-  pending: "bg-coral/15 text-coral",
-  approved: "bg-teal/15 text-teal",
-  rejected: "bg-slate/10 text-slate",
+const statusBadgeTones: Record<RegStatus, BadgeTone> = {
+  pending: "warning",
+  approved: "success",
+  rejected: "neutral",
 };
 
 const statusBadgeLabels: Record<RegStatus, string> = {
@@ -104,11 +118,7 @@ const AdminPanel = () => {
 
   const getStatusBadge = (status: string) => {
     const key = status as RegStatus;
-    return (
-      <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${statusBadgeClasses[key] ?? "bg-slate/10 text-slate"}`}>
-        {statusBadgeLabels[key] ?? status}
-      </span>
-    );
+    return <Badge tone={statusBadgeTones[key] ?? "neutral"}>{statusBadgeLabels[key] ?? status}</Badge>;
   };
 
   const handleApprove = async (id: number) => {
@@ -166,7 +176,7 @@ const AdminPanel = () => {
     return (
       <div className="min-h-screen bg-sand px-5 py-4 font-sans text-slate">
         <div className="mx-auto max-w-[1400px]">
-          <p className="text-center text-sm text-slate/60">Loading...</p>
+          <SkeletonText width="120px" />
         </div>
       </div>
     );
@@ -178,13 +188,9 @@ const AdminPanel = () => {
       <div className="mx-auto max-w-[1400px]">
         <div className="flex items-center justify-between gap-4 border-b border-ink/10">
           <AdminNav activeTab={activeTab} onSelect={(key) => setActiveTab(key as AdminTab)} />
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="shrink-0 appearance-none rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-slate/70 transition-colors hover:bg-sand/60 hover:text-ink"
-          >
+          <Button variant="secondary" size="sm" onClick={handleLogout} className="shrink-0">
             Log out
-          </button>
+          </Button>
         </div>
 
         {activeTab === "counteragents" && <Counteragents />}
@@ -194,6 +200,8 @@ const AdminPanel = () => {
         {activeTab === "balance" && <Balance />}
 
         {activeTab === "cashback" && <Cashback />}
+
+        {activeTab === "bookings-needs-attention" && <AdminNeedsAttentionView />}
 
         {activeTab === "reservations" && <AdminBookingsList scope={{ type: "all" }} />}
 
@@ -211,14 +219,22 @@ const AdminPanel = () => {
 
         {activeTab === "users" && (
         <>
+        {/* ===== PAGE HEADER ===== */}
+        <div className="mt-6">
+          <h2 className="font-display text-2xl font-semibold text-ink">Users</h2>
+          <p className="mt-1 text-sm text-slate/60">Manage agent and admin accounts, review registration applications.</p>
+        </div>
+
         {/* ===== STATS ===== */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
           {statCards.map((card) => (
-            <div
+            <Card
               key={card.key}
+              padding="sm"
+              shadow="card"
               onClick={() => handleFilter(card.key)}
-              className={`relative cursor-pointer rounded-2xl border bg-white px-4 py-3 transition-colors ${
-                filterType === card.key ? "border-coral bg-coral/5" : "border-ink/10 hover:border-coral/30"
+              className={`relative cursor-pointer transition-colors ${
+                filterType === card.key ? "border-coral bg-coral/5" : "hover:border-coral/30"
               }`}
             >
               {filterType === card.key && (
@@ -228,21 +244,26 @@ const AdminPanel = () => {
               )}
               <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{card.label}</p>
               <p className="mt-1 font-display text-2xl font-semibold text-ink">{card.value}</p>
-            </div>
+            </Card>
           ))}
-          <div className="rounded-2xl border border-ink/10 bg-white px-4 py-3">
+          <Card padding="sm" shadow="card" className={stats.pending > 0 ? "border-coral/30 bg-coral/5" : ""}>
             <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Applications</p>
-            <p className="mt-1 font-display text-2xl font-semibold text-ink">{stats.pending}</p>
-          </div>
+            <p className={`mt-1 font-display text-2xl font-semibold ${stats.pending > 0 ? "text-coral" : "text-ink"}`}>
+              {stats.pending}
+            </p>
+          </Card>
         </div>
 
         {/* ===== APPLICATIONS ===== */}
         {pendingRegs.length > 0 && (
-          <div className="mt-6">
-            <h3 className="mb-3 font-display text-lg font-semibold text-ink">Registration applications</h3>
+          <div className="mt-8">
+            <h3 className="mb-3 flex items-center gap-2 font-display text-lg font-semibold text-ink">
+              Registration applications
+              <Badge tone="coral">{pendingRegs.length}</Badge>
+            </h3>
             <div className="space-y-3">
               {pendingRegs.map((reg: any) => (
-                <div key={reg.id} className="rounded-2xl border border-ink/10 bg-white p-5">
+                <Card key={reg.id} padding="lg" shadow="card">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-baseline gap-3">
                       <span className="font-display text-lg font-semibold text-ink">{reg.full_name || reg.company_name}</span>
@@ -257,114 +278,99 @@ const AdminPanel = () => {
                     <span>Company: {reg.company_name}</span>
                   </div>
                   <div className="mt-4 flex gap-2.5">
-                    <button
-                      onClick={() => handleApprove(reg.id)}
-                      className="appearance-none rounded-lg border-0 bg-teal px-5 py-2 text-sm font-medium text-white transition-transform hover:-translate-y-0.5"
-                    >
+                    <Button variant="dark" onClick={() => handleApprove(reg.id)}>
                       Approve
-                    </button>
-                    <button
-                      onClick={() => handleReject(reg.id)}
-                      className="appearance-none rounded-lg border border-coral/40 bg-transparent px-5 py-2 text-sm font-medium text-coral transition-colors hover:bg-coral/10"
-                    >
+                    </Button>
+                    <Button variant="danger" onClick={() => handleReject(reg.id)}>
                       Reject
-                    </button>
+                    </Button>
                   </div>
-                </div>
+                </Card>
               ))}
             </div>
           </div>
         )}
 
         {/* ===== USERS ===== */}
-        <div className="mt-6 flex flex-wrap items-center gap-2.5">
-          <input
-            type="text"
-            placeholder="Search by name or email..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="min-w-[220px] flex-1 appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-          />
-          {filterType !== "all" && (
-            <button
-              onClick={() => handleFilter("all")}
-              className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-xs font-medium text-slate/70 transition-colors hover:bg-sand/60"
-            >
-              Reset filter
-            </button>
-          )}
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery("")}
-              className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2 text-xs font-medium text-slate/70 transition-colors hover:bg-sand/60"
-            >
-              Clear search
-            </button>
-          )}
+        <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
+          <h3 className="font-display text-lg font-semibold text-ink">All users</h3>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <Input
+              type="text"
+              placeholder="Search by name or email..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="min-w-[220px]"
+            />
+            {filterType !== "all" && (
+              <Button variant="secondary" size="sm" onClick={() => handleFilter("all")}>
+                Reset filter
+              </Button>
+            )}
+            {searchQuery && (
+              <Button variant="secondary" size="sm" onClick={() => setSearchQuery("")}>
+                Clear search
+              </Button>
+            )}
+          </div>
         </div>
 
-        <div className="mt-4 overflow-x-auto rounded-2xl border border-ink/10 bg-white">
-          <table className="w-full min-w-[820px] border-collapse text-left text-sm">
-            <thead>
-              <tr className="border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50">
-                <th className="px-5 py-3 font-medium">#</th>
-                <th className="px-5 py-3 font-medium">Name</th>
-                <th className="px-5 py-3 font-medium">Email / Login</th>
-                <th className="px-5 py-3 font-medium">Password</th>
-                <th className="px-5 py-3 font-medium">Role</th>
-                <th className="px-5 py-3 font-medium">Status</th>
-                <th className="px-5 py-3 font-medium">Last login</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredUsers.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-5 py-10 text-center text-sm text-slate/50">
-                    No users found
-                  </td>
-                </tr>
-              ) : (
-                filteredUsers.map((user: any, index: number) => {
-                  const isAdmin = user.role?.toLowerCase() === "admin";
-                  const statusLabel = !user.is_active
-                    ? "Inactive"
-                    : !user.last_login
-                      ? "Never logged in"
-                      : "Active";
-                  const statusClasses = !user.is_active
-                    ? "bg-slate/10 text-slate"
-                    : !user.last_login
-                      ? "bg-coral/15 text-coral"
-                      : "bg-teal/15 text-teal";
-                  return (
-                    <tr key={user.id} className="border-b border-ink/5 last:border-b-0">
-                      <td className="px-5 py-3.5 text-slate/60">{index + 1}</td>
-                      <td className="px-5 py-3.5 font-medium text-ink">{user.name || "—"}</td>
-                      <td className="px-5 py-3.5 text-slate/80">{user.email || "—"}</td>
-                      <td className="px-5 py-3.5 font-mono text-slate/40">••••••••</td>
-                      <td className="px-5 py-3.5">
+        <div className="overflow-hidden rounded-2xl shadow-card">
+        <TableShell minWidth="820px">
+          <TableHeadRow>
+            <TableHeadCell>#</TableHeadCell>
+            <TableHeadCell>Name</TableHeadCell>
+            <TableHeadCell>Email / Login</TableHeadCell>
+            <TableHeadCell>Password</TableHeadCell>
+            <TableHeadCell>Role</TableHeadCell>
+            <TableHeadCell>Status</TableHeadCell>
+            <TableHeadCell>Last login</TableHeadCell>
+          </TableHeadRow>
+          <tbody>
+            {filteredUsers.length === 0 ? (
+              <TableEmptyState colSpan={7}>No users found</TableEmptyState>
+            ) : (
+              filteredUsers.map((user: any, index: number) => {
+                const isAdmin = user.role?.toLowerCase() === "admin";
+                const statusLabel = !user.is_active
+                  ? "Inactive"
+                  : !user.last_login
+                    ? "Never logged in"
+                    : "Active";
+                const statusTone: BadgeTone = !user.is_active ? "neutral" : !user.last_login ? "warning" : "success";
+                const initial = (user.name || user.email || "?").trim().charAt(0).toUpperCase();
+                return (
+                  <TableRow key={user.id} className="hover:bg-sand/40 transition-colors">
+                    <TableCell className="text-slate/60">{index + 1}</TableCell>
+                    <TableCell className="font-medium text-ink">
+                      <div className="flex items-center gap-2.5">
                         <span
-                          className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
-                            isAdmin ? "bg-ink/10 text-ink" : "bg-teal/15 text-teal"
+                          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white ${
+                            isAdmin ? "bg-ink" : "bg-teal"
                           }`}
                         >
-                          {user.role || "agent"}
+                          {initial}
                         </span>
-                      </td>
-                      <td className="px-5 py-3.5">
-                        <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${statusClasses}`}>
-                          {statusLabel}
-                        </span>
-                      </td>
-                      <td className="whitespace-nowrap px-5 py-3.5 text-slate/70">
-                        {user.last_login ? new Date(user.last_login).toLocaleString() : "—"}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+                        {user.name || "—"}
+                      </div>
+                    </TableCell>
+                    <TableCell>{user.email || "—"}</TableCell>
+                    <TableCell className="font-mono text-slate/40">••••••••</TableCell>
+                    <TableCell>
+                      <Badge tone={isAdmin ? "ink" : "success"}>{user.role || "agent"}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge tone={statusTone}>{statusLabel}</Badge>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      {user.last_login ? new Date(user.last_login).toLocaleString() : "—"}
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </tbody>
+        </TableShell>
         </div>
 
         <div className="mt-4 flex flex-wrap gap-5 text-sm text-slate/60">

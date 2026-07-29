@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from typing import Optional
 import uuid
 
@@ -53,9 +53,41 @@ def get_booking_by_number(db: Session, booking_number: str) -> Optional[Booking]
     return db.query(Booking).filter(Booking.booking_number == booking_number).first()
 
 
-def list_bookings(db: Session, skip: int = 0, limit: int = 100) -> list[Booking]:
-    """Return a page of bookings across all agents/hotels, for admin listing screens."""
-    return db.query(Booking).order_by(Booking.id).offset(skip).limit(limit).all()
+def list_bookings(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    created_from: date | None = None,
+    created_to: date | None = None,
+    search: str | None = None,
+) -> list[Booking]:
+    """Return a page of bookings across all agents/hotels, for admin listing screens.
+
+    created_from/created_to filter on Booking.created_at (a full
+    datetime) -- created_to is treated as inclusive of that whole day,
+    matching the "which applications came in on day X" question the
+    admin Bookings screen's "By date"/"created" view asks. Ordered
+    newest-first (Booking.id.desc()): if `limit` is ever actually hit,
+    the most recent rows must win, not the oldest -- previously this
+    was ascending, meaning once total bookings exceeded `limit`, brand
+    new applications would silently stop appearing in an unscoped
+    fetch at all (a real, found bug, not hypothetical).
+
+    search is an optional case-insensitive partial match on
+    booking_number -- same .ilike() pattern api/routes.py's own
+    GET /users?search= already established (Decision 087). Deliberately
+    combinable with created_from/created_to at the query-builder level
+    (both are just additional .filter() calls), even though the admin
+    Bookings screen's own frontend wiring chooses to only ever send one
+    or the other at a time -- see Reservations.tsx's fetch effect."""
+    query = db.query(Booking)
+    if created_from is not None:
+        query = query.filter(Booking.created_at >= datetime.combine(created_from, time.min))
+    if created_to is not None:
+        query = query.filter(Booking.created_at < datetime.combine(created_to, time.min) + timedelta(days=1))
+    if search:
+        query = query.filter(Booking.booking_number.ilike(f"%{search}%"))
+    return query.order_by(Booking.id.desc()).offset(skip).limit(limit).all()
 
 
 def list_bookings_by_agent(db: Session, agent_id: int) -> list[Booking]:

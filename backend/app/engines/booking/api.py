@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
@@ -231,10 +233,26 @@ def create_booking(
 def list_bookings(
     skip: int = 0,
     limit: int = 100,
+    created_from: date | None = None,
+    created_to: date | None = None,
+    search: str | None = None,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    return _run(lambda: service.list_bookings(db, skip=skip, limit=limit))
+    """created_from/created_to/search are all optional -- omitting them
+    preserves the original unscoped-but-capped behavior (now newest-
+    first, see repository.list_bookings). The admin Bookings screen
+    passes created_from/created_to when its "By date" (created) filter
+    is active, so payload size stays bounded by daily volume instead of
+    total historical volume; it passes search instead (never both) when
+    the booking-number search box is active, so a search can find a
+    booking outside the currently-selected date window -- a real gap
+    found live after created_from/created_to shipped."""
+    return _run(
+        lambda: service.list_bookings(
+            db, skip=skip, limit=limit, created_from=created_from, created_to=created_to, search=search
+        )
+    )
 
 
 @router.get("/bookings/{booking_id}", response_model=BookingResponse)

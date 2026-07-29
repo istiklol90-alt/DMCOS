@@ -17,18 +17,13 @@
     "done": "Готово"
   },
   "guestDetailsForm": {
-    "title": "Данные ведущего гостя",
     "firstNamePlaceholder": "Имя *",
     "lastNamePlaceholder": "Фамилия *",
     "nationalityPlaceholder": "Гражданство",
-    "dateOfBirthPlaceholder": "Дата рождения",
     "passportNumberPlaceholder": "Номер паспорта",
     "passportExpiryPlaceholder": "Срок действия паспорта",
     "arrivalFlightNumberPlaceholder": "Номер рейса прилёта",
-    "departureFlightNumberPlaceholder": "Номер рейса вылета",
-    "sending": "Отправка...",
-    "confirmBooking": "Подтвердить бронирование",
-    "cancel": "Отмена"
+    "departureFlightNumberPlaceholder": "Номер рейса вылета"
   },
   "roomTypeCard": {
     "maxGuests": "До {{count}} гостей",
@@ -52,13 +47,8 @@
     "nightsMultiplier": "× {{count}} ноч.",
     "grandTotalLabel": "Итого (проживание + трансфер{{taxSuffix}})",
     "taxSuffix": " + налог",
-    "bookingCreated": "Бронирование создано: № {{number}}",
-    "guestDataNotSaved": "Данные гостя не сохранены: {{error}}. Пожалуйста, добавьте гостя вручную.",
-    "bookNow": "Забронировать",
-    "transferRequiredError": "Контракт требует трансфер, но ни один вариант трансфера не настроен — обратитесь к администратору контракта.",
-    "guestSaveFailed": "Не удалось сохранить данные гостя",
-    "bookingFailed": "Не удалось создать бронирование",
     "nightlyLoadFailed": "Не удалось загрузить цены по ночам",
+    "selectTransferFirst": "Сначала выберите вариант трансфера",
     "adultsLabel_one": "{{count}} взрослый",
     "adultsLabel_few": "{{count}} взрослых",
     "adultsLabel_many": "{{count}} взрослых",
@@ -92,6 +82,8 @@
     "roomNumber": "Номер {{number}}",
     "adultsHeading": "Взрослые",
     "childrenHeading": "Дети",
+    "touristLabel": "Турист {{number}}",
+    "childLabel": "Ребёнок {{number}}",
     "expectedChildAge": "Должно соответствовать возрасту, указанному при поиске: {{age}}",
     "childAgeMismatch": "По этой дате рождения возраст получается {{actual}}, а номер искали/считали по возрасту {{expected}} — укажите реальную дату рождения именно этого ребёнка.",
     "destinationMismatch": "Все номера в одной заявке должны быть в одном направлении — уже есть {{existing}}, попытка добавить {{attempted}}.",
@@ -102,7 +94,12 @@
     "applicationCreated": "Заявка создана: № {{number}}",
     "statusRejected": "Нет мест",
     "statusPending": "В ожидании",
-    "done": "Готово"
+    "done": "Готово",
+    "flightHeading": "Данные рейса (для организации трансфера)",
+    "arrivalFlightDatePlaceholder": "Дата рейса прилёта",
+    "arrivalFlightTimePlaceholder": "Время рейса прилёта",
+    "departureFlightDatePlaceholder": "Дата рейса вылета",
+    "departureFlightTimePlaceholder": "Время рейса вылета"
   },
   "page": {
     "accessDenied": "⛔ Доступ запрещен! Только для агентов.",
@@ -128,6 +125,7 @@
     "searching": "Ищем...",
     "searchButton": "Найти отели",
     "searchErrorPrefix": "Не удалось загрузить данные:",
-    "noHotelsFound": "Отели не найдены."
+    "noHotelsFound": "Отели не найдены.",
+    "yearsShort": "лет"
   }
 }
