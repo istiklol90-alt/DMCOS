@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useLocation } from "react-router-dom";
 import type { TFunction } from "i18next";
 import i18n from "../i18n/i18n";
 import { API_URL } from "../config";
@@ -1676,20 +1677,69 @@ function ApplicationCheckoutForm({
     return null;
   }
 
+  // UX pass (2026-07-29, item 4 -- Apple HIG's "verify values as soon as
+  // people enter them, provide feedback immediately" principle,
+  // researched this session): passport expiry was never validated at
+  // all before this -- an already-expired passport (relative to the
+  // room's own arrival date, not just "today") would silently pass
+  // straight through to submission. Same shape/precedent as
+  // childAgeError above (compute an inline message, null = no error),
+  // deliberately not a hard requirement -- passport is still optional
+  // overall, this only fires once a date is actually entered.
+  function passportExpiryError(room: CartRoom, expiry: string): string | null {
+    if (!expiry) return null;
+    if (expiry < room.arrivalDate) {
+      return t("cart.passportExpired");
+    }
+    return null;
+  }
+
   // Shared by canSubmit (whole cart) and the stepped form's per-room
   // "Next" gating below -- one room's guest fields are complete/valid.
   function roomIsValid(room: CartRoom): boolean {
     const entry = roomGuests[room.key];
     if (!entry) return false;
-    const adultsOk = entry.adults.every((a) => a.firstName.trim() && a.lastName.trim());
+    const adultsOk = entry.adults.every(
+      (a) => a.firstName.trim() && a.lastName.trim() && !passportExpiryError(room, a.passportExpiry)
+    );
     const childrenOk = entry.children.every(
       (c, i) =>
         c.firstName.trim() &&
         c.lastName.trim() &&
         c.dateOfBirth &&
-        !childAgeError(room, i, c.dateOfBirth)
+        !childAgeError(room, i, c.dateOfBirth) &&
+        !passportExpiryError(room, c.passportExpiry)
     );
     return adultsOk && childrenOk;
+  }
+
+  // Immediate, human-readable reason the current room isn't valid yet --
+  // shown right next to "Next"/"Submit" instead of leaving an agent to
+  // guess why the button is greyed out (same principle as above: give
+  // feedback as soon as it's knowable, not just a silent disabled state).
+  // Returns the FIRST real problem found, not an exhaustive list --
+  // fixing one at a time and re-checking matches how the per-field
+  // inline errors already guide the agent through the same room.
+  function roomValidationMessage(room: CartRoom): string | null {
+    const entry = roomGuests[room.key];
+    if (!entry) return null;
+    if (entry.adults.some((a) => !a.firstName.trim() || !a.lastName.trim())) {
+      return t("cart.missingGuestNames");
+    }
+    if (entry.children.some((c) => !c.firstName.trim() || !c.lastName.trim())) {
+      return t("cart.missingGuestNames");
+    }
+    if (entry.children.some((c) => !c.dateOfBirth)) {
+      return t("cart.missingChildDateOfBirth");
+    }
+    for (const a of entry.adults) {
+      if (passportExpiryError(room, a.passportExpiry)) return t("cart.passportExpired");
+    }
+    for (let i = 0; i < entry.children.length; i++) {
+      if (childAgeError(room, i, entry.children[i].dateOfBirth)) return t("cart.fixChildAge");
+      if (passportExpiryError(room, entry.children[i].passportExpiry)) return t("cart.passportExpired");
+    }
+    return null;
   }
 
   const canSubmit = cart.every(roomIsValid);
@@ -2030,9 +2080,16 @@ function ApplicationCheckoutForm({
                               placeholder={t("guestDetailsForm.passportExpiryPlaceholder")}
                               value={a.passportExpiry}
                               onChange={(e) => updateAdult(room.key, i, "passportExpiry", e.target.value)}
-                              className="w-36 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+                              className={`w-36 rounded-lg border bg-white px-3 py-2 text-sm text-slate focus:outline-none ${
+                                passportExpiryError(room, a.passportExpiry)
+                                  ? "border-coral"
+                                  : "border-ink/15 focus:border-coral"
+                              }`}
                             />
                           </div>
+                          {passportExpiryError(room, a.passportExpiry) && (
+                            <p className="text-xs font-medium text-coral">{passportExpiryError(room, a.passportExpiry)}</p>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -2100,9 +2157,16 @@ function ApplicationCheckoutForm({
                                   placeholder={t("guestDetailsForm.passportExpiryPlaceholder")}
                                   value={c.passportExpiry}
                                   onChange={(e) => updateChild(room.key, i, "passportExpiry", e.target.value)}
-                                  className="w-36 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+                                  className={`w-36 rounded-lg border bg-white px-3 py-2 text-sm text-slate focus:outline-none ${
+                                    passportExpiryError(room, c.passportExpiry)
+                                      ? "border-coral"
+                                      : "border-ink/15 focus:border-coral"
+                                  }`}
                                 />
                               </div>
+                              {passportExpiryError(room, c.passportExpiry) && (
+                                <p className="text-xs font-medium text-coral">{passportExpiryError(room, c.passportExpiry)}</p>
+                              )}
                             </div>
                           );
                         })}
@@ -2172,6 +2236,15 @@ function ApplicationCheckoutForm({
               </div>
             )}
 
+            {/* UX pass, item 4: an immediate, human-readable reason
+                "Next" is greyed out -- a plain hint, not styled as an
+                error (that's what the red inline field messages above
+                are for), since this shows before any mistake was
+                actually made, just what's still needed. */}
+            {!isFlightStep && currentRoom && roomValidationMessage(currentRoom) && (
+              <p className="mt-3 text-xs text-slate/50">{roomValidationMessage(currentRoom)}</p>
+            )}
+
             <div className="mt-5 flex items-center gap-2">
               {currentStep > 0 && (
                 <button
@@ -2233,40 +2306,26 @@ export interface InitialSearch {
   adults?: number;
 }
 
-type HotelSearchProps = {
-  onBack?: () => void;
-  initialSearch?: InitialSearch;
-};
-
-function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
+function HotelSearch() {
   const { t } = useTranslation("hotelSearch");
+  const location = useLocation();
+  // Routing fix (2026-07-29): the destination hint AgentDashboard_v2.tsx's
+  // featured-hotel cards used to pass as a prop now arrives as router
+  // state (navigate("/hotel-search", { state: { destination } })) --
+  // same InitialSearch shape, just carried by the router instead of a
+  // prop threaded down from App.tsx's page-state render.
+  const initialSearch = (location.state as InitialSearch | null) ?? undefined;
   const [user, setUser] = useState<SessionUser | null>(null);
-  const [checkingAuth, setCheckingAuth] = useState(true);
 
+  // Routing fix (2026-07-29): the token/role guard that used to live here
+  // (identical to AgentDashboard_v2.tsx's own copy) is now RequireAuth's
+  // job, applied once in router.tsx -- this component is simply never
+  // mounted unless that guard already passed. Only the user-data read stays.
   useEffect(() => {
-    // Same auth guard pattern as AgentDashboard_v2.tsx: check token first,
-    // clear stale localStorage before redirecting so App's mount effect
-    // doesn't read a leftover "role" and route straight back here.
-    const token = localStorage.getItem("token");
-    const role = localStorage.getItem("role");
-
-    if (!token) {
-      localStorage.clear();
-      window.location.href = "/login";
-      return;
-    }
-
-    if (role !== "Agent" && role !== "agent") {
-      alert(t("page.accessDenied"));
-      window.location.href = "/";
-      return;
-    }
-
     const userData = localStorage.getItem("user");
     if (userData) {
       setUser(JSON.parse(userData));
     }
-    setCheckingAuth(false);
   }, []);
 
   const [destination, setDestination] = useState(initialSearch?.destination ?? "");
@@ -2576,7 +2635,7 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
     }
   }
 
-  if (checkingAuth || !user) {
+  if (!user) {
     return <div className="min-h-screen bg-sand" />;
   }
 
@@ -2586,12 +2645,7 @@ function HotelSearch({ onBack, initialSearch }: HotelSearchProps) {
           previously-separate top bar, and the generic Header.tsx App.tsx
           used to render above it (removed there; see App.tsx's own
           comment). Same component AgentDashboard_v2.tsx now uses. */}
-      <AgentTopNav
-        user={user}
-        active="search"
-        onNavigateSearch={() => {}}
-        onNavigateDashboard={() => (onBack ? onBack() : (window.location.href = "/agent-dashboard"))}
-      />
+      <AgentTopNav user={user} active="search" />
 
       {/* Hero band -- reuses the existing ink/coral/teal gradient already
           used elsewhere in this file (HotelCard's own image-placeholder

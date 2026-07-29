@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 
 const ManagerDashboard = () => {
+  const navigate = useNavigate();
   const [user, setUser] = useState<any>(null);
 
   useEffect(() => {
@@ -12,7 +14,7 @@ const ManagerDashboard = () => {
 
   const handleLogout = () => {
     localStorage.clear();
-    window.location.href = "/";
+    navigate("/");
   };
 
   return (

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 import {
   IconCalendar,
   IconCheck,
@@ -73,18 +74,33 @@ function getRoleLabel(role: string, t: (key: string) => string): string {
 interface AgentTopNavProps {
   user: SessionUser;
   active: "search" | "dashboard";
-  onNavigateSearch: () => void;
-  onNavigateDashboard: () => void;
 }
 
-export default function AgentTopNav({ user, active, onNavigateSearch, onNavigateDashboard }: AgentTopNavProps) {
+// Routing fix (2026-07-29): navigation is now internal -- both consumers
+// (AgentDashboard_v2.tsx, HotelSearch.tsx) used to thread
+// onNavigateSearch/onNavigateDashboard callbacks through as props, one of
+// which (AgentDashboard_v2's onNavigateDashboard) was a real, live no-op
+// (`() => {}`) -- clicking "Bookings" while already on the dashboard did
+// nothing, a genuine bug this fixes as a side effect. Both destinations
+// are fixed, real routes now, so there's nothing left for a caller to
+// parametrize.
+export default function AgentTopNav({ user, active }: AgentTopNavProps) {
   const { t, i18n } = useTranslation("agentDashboard");
+  const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   function handleLogout() {
     localStorage.clear();
-    window.location.href = "/";
+    navigate("/");
+  }
+
+  function onNavigateSearch() {
+    navigate("/hotel-search");
+  }
+
+  function onNavigateDashboard() {
+    navigate("/agent-dashboard");
   }
 
   const navItemClass = (isActive: boolean) =>

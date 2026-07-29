@@ -1,12 +1,10 @@
 import { useTranslation } from "react-i18next";
-import Button from "../ui/Button";
+import { useNavigate } from "react-router-dom";
 
-type HeaderProps = {
-  onHome: () => void;
-};
-
-function Header({ onHome }: HeaderProps) {
+function Header() {
   const { i18n } = useTranslation();
+  const navigate = useNavigate();
+  const onHome = () => navigate("/");
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-white/10 bg-ink">

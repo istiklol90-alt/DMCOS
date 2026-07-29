@@ -1,14 +1,12 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { API_URL } from "../config";
 import Card from "../components/ui/Card";
 import Input from "../components/ui/Input";
 import Button from "../components/ui/Button";
 
-type LoginProps = {
-  onLoginSuccess: (role?: string, isFirstLogin?: boolean) => void;
-};
-
-function Login({ onLoginSuccess }: LoginProps) {
+function Login() {
+  const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -39,9 +37,19 @@ function Login({ onLoginSuccess }: LoginProps) {
 
         console.log("✅ Роль получена:", data.role);
         console.log("✅ Первый вход:", data.is_first_login);
-        console.log("📌 Переход на:", data.role === "Admin" ? "admin-panel" : "dashboard");
 
-        onLoginSuccess(data.role, data.is_first_login);
+        // Routing fix (2026-07-29): same role-based destination logic
+        // App.tsx's own handleLoginSuccess used to own, relocated here
+        // now that App is a thin layout with no page state to set.
+        if (data.is_first_login) {
+          navigate("/change-password");
+        } else if (data.role === "Admin" || data.role === "admin") {
+          navigate("/admin-panel");
+        } else if (data.role === "Manager" || data.role === "manager") {
+          navigate("/manager-dashboard");
+        } else {
+          navigate("/agent-dashboard");
+        }
       } else {
         setError(data.message || "Invalid email or password");
       }

@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
 import { API_URL } from "../config";
+import Card from "../components/ui/Card";
+import Button from "../components/ui/Button";
+import Input from "../components/ui/Input";
+import Modal from "../components/ui/Modal";
+import { TableShell, TableHeadRow, TableHeadCell, TableRow, TableCell, TableEmptyState } from "../components/ui/Table";
 
 // ---------------------------------------------------------------------------
 // Admin-only screen for Pricing Engine's agent-category management (Decision
@@ -167,35 +172,31 @@ const Counteragents = () => {
   return (
     <div className="pb-10">
       {/* ===== Global markup setting ===== */}
-      <div className="mt-6 rounded-2xl border border-ink/10 bg-white p-5">
+      <Card padding="md" className="mt-6">
         <h3 className="font-display text-lg font-semibold text-ink">Global markup</h3>
         <p className="mt-1 text-sm text-slate/60">
           A flat per-night amount added to the room price (Net from Contract Engine) for all agents.
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2.5">
-          <input
+          <Input
             type="number"
             min={0}
             step="0.01"
             value={markupInput}
             onChange={(e) => setMarkupInput(e.target.value)}
-            className="w-40 appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+            scale="lg"
+            className="w-40"
           />
           <span className="text-sm text-slate/60">{settings?.currency ?? "USD"} / night</span>
-          <button
-            type="button"
-            onClick={handleSaveSettings}
-            disabled={savingSettings}
-            className="appearance-none rounded-lg border-0 bg-coral px-5 py-2.5 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-          >
+          <Button onClick={handleSaveSettings} disabled={savingSettings}>
             {savingSettings ? "Saving..." : "Save"}
-          </button>
+          </Button>
         </div>
         {settingsError && <p className="mt-2 text-sm text-red-600">{settingsError}</p>}
         {settings?.updated_at && (
           <p className="mt-2 text-xs text-slate/50">Updated: {new Date(settings.updated_at).toLocaleString()}</p>
         )}
-      </div>
+      </Card>
 
       {/* ===== Sub-tabs ===== */}
       <div className="mt-6 flex gap-2 border-b border-ink/10">
@@ -223,137 +224,107 @@ const Counteragents = () => {
       {listError && <p className="mt-10 text-center text-sm text-red-600">Error: {listError}</p>}
 
       {!loading && !listError && subTab === "standard" && (
-        <div className="mt-4 overflow-x-auto rounded-2xl border border-ink/10 bg-white">
-          <table className="w-full min-w-[600px] border-collapse text-left text-sm">
-            <thead>
-              <tr className="border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50">
-                <th className="px-5 py-3 font-medium">Name</th>
-                <th className="px-5 py-3 font-medium">Email</th>
-              </tr>
-            </thead>
-            <tbody>
-              {standardAgents.length === 0 ? (
-                <tr>
-                  <td colSpan={2} className="px-5 py-10 text-center text-sm text-slate/50">
-                    No standard agents found
-                  </td>
-                </tr>
-              ) : (
-                standardAgents.map((a) => (
-                  <tr key={a.user_id} className="border-b border-ink/5 last:border-b-0">
-                    <td className="px-5 py-3.5 font-medium text-ink">{a.name}</td>
-                    <td className="px-5 py-3.5 text-slate/80">{a.email}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+        <TableShell minWidth="600px">
+          <TableHeadRow>
+            <TableHeadCell>Name</TableHeadCell>
+            <TableHeadCell>Email</TableHeadCell>
+          </TableHeadRow>
+          <tbody>
+            {standardAgents.length === 0 ? (
+              <TableEmptyState colSpan={2}>No standard agents found</TableEmptyState>
+            ) : (
+              standardAgents.map((a) => (
+                <TableRow key={a.user_id}>
+                  <TableCell className="font-medium text-ink">{a.name}</TableCell>
+                  <TableCell>{a.email}</TableCell>
+                </TableRow>
+              ))
+            )}
+          </tbody>
+        </TableShell>
       )}
 
       {!loading && !listError && subTab === "exclusive" && (
         <>
           <div className="mt-4 flex justify-end">
-            <button
-              type="button"
-              onClick={() => setShowAddModal(true)}
-              className="appearance-none rounded-lg border-0 bg-teal px-5 py-2.5 text-sm font-medium text-white transition-transform hover:-translate-y-0.5"
-            >
+            <Button variant="dark" onClick={() => setShowAddModal(true)}>
               Add
-            </button>
+            </Button>
           </div>
-          <div className="mt-3 overflow-x-auto rounded-2xl border border-ink/10 bg-white">
-            <table className="w-full min-w-[700px] border-collapse text-left text-sm">
-              <thead>
-                <tr className="border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50">
-                  <th className="px-5 py-3 font-medium">Name</th>
-                  <th className="px-5 py-3 font-medium">Email</th>
-                  <th className="px-5 py-3 font-medium">Added</th>
-                  <th className="px-5 py-3 font-medium"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {exclusiveAgents.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="px-5 py-10 text-center text-sm text-slate/50">
-                      No exclusive agents yet
-                    </td>
-                  </tr>
-                ) : (
-                  exclusiveAgents.map((a) => (
-                    <tr key={a.id} className="border-b border-ink/5 last:border-b-0">
-                      <td className="px-5 py-3.5 font-medium text-ink">{a.name}</td>
-                      <td className="px-5 py-3.5 text-slate/80">{a.email}</td>
-                      <td className="whitespace-nowrap px-5 py-3.5 text-slate/70">{formatDate(a.assigned_at)}</td>
-                      <td className="px-5 py-3.5 text-right">
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveExclusive(a.user_id)}
-                          disabled={removingUserId === a.user_id}
-                          className="appearance-none rounded-lg border border-coral/40 bg-transparent px-3.5 py-1.5 text-xs font-medium text-coral transition-colors hover:bg-coral/10 disabled:opacity-50"
-                        >
-                          {removingUserId === a.user_id ? "..." : "Return to standard"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <TableShell minWidth="700px">
+            <TableHeadRow>
+              <TableHeadCell>Name</TableHeadCell>
+              <TableHeadCell>Email</TableHeadCell>
+              <TableHeadCell>Added</TableHeadCell>
+              <TableHeadCell>{null}</TableHeadCell>
+            </TableHeadRow>
+            <tbody>
+              {exclusiveAgents.length === 0 ? (
+                <TableEmptyState colSpan={4}>No exclusive agents yet</TableEmptyState>
+              ) : (
+                exclusiveAgents.map((a) => (
+                  <TableRow key={a.id}>
+                    <TableCell className="font-medium text-ink">{a.name}</TableCell>
+                    <TableCell>{a.email}</TableCell>
+                    <TableCell className="whitespace-nowrap">{formatDate(a.assigned_at)}</TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={() => handleRemoveExclusive(a.user_id)}
+                        disabled={removingUserId === a.user_id}
+                      >
+                        {removingUserId === a.user_id ? "..." : "Return to standard"}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </tbody>
+          </TableShell>
         </>
       )}
 
       {/* ===== Add to exclusive modal ===== */}
-      {showAddModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4"
-          onClick={() => setShowAddModal(false)}
-        >
-          <div
-            className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="font-display text-lg font-semibold text-ink">Add to exclusive</h3>
-            <input
-              type="text"
-              autoFocus
-              placeholder="Search by name or email..."
-              value={addSearch}
-              onChange={(e) => setAddSearch(e.target.value)}
-              className="mt-3 w-full appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-            />
-            <div className="mt-3 max-h-72 overflow-y-auto rounded-lg border border-ink/10">
-              {filteredAddCandidates.length === 0 ? (
-                <p className="px-4 py-6 text-center text-sm text-slate/50">No agents found</p>
-              ) : (
-                filteredAddCandidates.map((a) => (
-                  <button
-                    key={a.user_id}
-                    type="button"
-                    onClick={() => handleAddExclusive(a.user_id)}
-                    disabled={addingUserId === a.user_id}
-                    className="flex w-full appearance-none items-center justify-between border-0 border-b border-ink/5 bg-white px-4 py-3 text-left text-sm last:border-b-0 hover:bg-sand/40 disabled:opacity-50"
-                  >
-                    <span>
-                      <span className="font-medium text-ink">{a.name}</span>
-                      <span className="ml-2 text-slate/60">{a.email}</span>
-                    </span>
-                    {addingUserId === a.user_id && <span className="text-xs text-slate/50">...</span>}
-                  </button>
-                ))
-              )}
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowAddModal(false)}
-              className="mt-3 w-full appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm font-medium text-slate/70 transition-colors hover:bg-sand/60"
-            >
-              Cancel
-            </button>
-          </div>
+      <Modal open={showAddModal} onClose={() => setShowAddModal(false)}>
+        <h3 className="font-display text-lg font-semibold text-ink">Add to exclusive</h3>
+        <Input
+          type="text"
+          autoFocus
+          placeholder="Search by name or email..."
+          value={addSearch}
+          onChange={(e) => setAddSearch(e.target.value)}
+          scale="lg"
+          className="mt-3 w-full"
+        />
+        <div className="mt-3 max-h-72 overflow-y-auto rounded-lg border border-ink/10">
+          {filteredAddCandidates.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-slate/50">No agents found</p>
+          ) : (
+            filteredAddCandidates.map((a) => (
+              // A list row acting as a click target, not a form action button --
+              // deliberately left hand-styled rather than forced into Button's
+              // CTA shape (no rounded/padding/variant fit here).
+              <button
+                key={a.user_id}
+                type="button"
+                onClick={() => handleAddExclusive(a.user_id)}
+                disabled={addingUserId === a.user_id}
+                className="flex w-full appearance-none items-center justify-between border-0 border-b border-ink/5 bg-white px-4 py-3 text-left text-sm last:border-b-0 hover:bg-sand/40 disabled:opacity-50"
+              >
+                <span>
+                  <span className="font-medium text-ink">{a.name}</span>
+                  <span className="ml-2 text-slate/60">{a.email}</span>
+                </span>
+                {addingUserId === a.user_id && <span className="text-xs text-slate/50">...</span>}
+              </button>
+            ))
+          )}
         </div>
-      )}
+        <Button variant="secondary" onClick={() => setShowAddModal(false)} className="mt-3 w-full">
+          Cancel
+        </Button>
+      </Modal>
     </div>
   );
 };

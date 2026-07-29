@@ -1,164 +1,47 @@
 // 📁 frontend/src/App.tsx
 
-import { useState, useEffect } from "react";
+import { Outlet, useLocation } from "react-router-dom";
 import "./App.css";
 
 import Header from "./components/layout/Header";
-import Home from "./pages/Home";
-import Register from "./pages/Register";
-import Login from "./pages/Login";
-import ChangePassword from "./pages/ChangePassword";
-import Dashboard from "./pages/Dashboard";
-import AdminPanel from "./pages/AdminPanel";
-import AgentDashboard_v2 from "./pages/AgentDashboard_v2";
-import ManagerDashboard from "./pages/ManagerDashboard";
-import HotelSearch from "./pages/HotelSearch";
-import type { InitialSearch } from "./pages/HotelSearch";
 
-export type Page =
-  | "home"
-  | "register"
-  | "login"
-  | "change-password"
-  | "dashboard"
-  | "admin-panel"
-  | "agent-dashboard"
-  | "manager-dashboard"
-  | "hotel-search";
+// ---------------------------------------------------------------------------
+// Routing fix (2026-07-29): this used to own an entire `useState<Page>`
+// page-switcher, manually rendering one of ~9 page components and never
+// delegating to react-router-dom's own `<Outlet/>` -- meaning router.tsx's
+// nested routes were matched by the router but never actually mounted, so
+// direct URLs/bookmarks/refreshes never worked (documented, known issue).
+// App is now a thin layout shell: it renders the real matched child route
+// via <Outlet/>, and only decides whether to show the generic marketing
+// Header (AgentTopNav replaces it on the three agent/admin pages that have
+// their own richer top nav -- same three pages the old `page !== "..."`
+// check excluded, just driven by URL path instead of local state now).
+//
+// Where did the old mount-effect ("stale role in localStorage -> auto-jump
+// to that dashboard") and the 8 goTo*/handleLoginSuccess functions go?
+// Relocated to where they're actually needed now that there's no shared
+// page state to own them centrally: Home.tsx does its own "already logged
+// in" redirect on mount; Login.tsx picks its own post-login destination;
+// every other page/component that used to receive a navigation callback
+// prop now calls useNavigate() directly (Home, Login, Header,
+// ChangePassword, AgentDashboard_v2, HotelSearch, AgentTopNav, AdminPanel,
+// ManagerDashboard). Auth guarding (token/role checks that used to be
+// duplicated in AgentDashboard_v2.tsx/HotelSearch.tsx, and were entirely
+// MISSING in AdminPanel.tsx/ManagerDashboard.tsx -- a real gap found
+// during this refactor) is now router.tsx's RequireAuth, applied once per
+// protected route instead of scattered/inconsistent per-page checks.
+// ---------------------------------------------------------------------------
+
+const HEADER_HIDDEN_ON = ["/admin-panel", "/agent-dashboard", "/hotel-search"];
 
 function App() {
-  const [page, setPage] = useState<Page>("home");
-  const [userRole, setUserRole] = useState<string | null>(null);
-  const [forceUpdate, setForceUpdate] = useState(0);
-  // Carries a destination hint (e.g. clicking a featured hotel on
-  // AgentDashboard_v2.tsx) over to HotelSearch.tsx's own form -- pre-fills
-  // only, see HotelSearch.tsx's InitialSearch docstring. The dashboard no
-  // longer has its own search form (search lives only on this page), but a
-  // hint can still be passed alongside the CTA navigation.
-  const [pendingSearch, setPendingSearch] = useState<InitialSearch | undefined>(undefined);
-
-  console.log('🔄 Текущая страница:', page);
-
-  useEffect(() => {
-    const role = localStorage.getItem("role");
-    console.log('🔄 useEffect: роль из localStorage:', role);
-    
-    if (role === "Admin" || role === "admin") {
-      console.log('✅ Автоматический вход как Админ');
-      setUserRole("admin");
-      setPage("admin-panel");
-    } else if (role === "Manager" || role === "manager") {
-      console.log('✅ Автоматический вход как Менеджер');
-      setUserRole("manager");
-      setPage("manager-dashboard");
-    } else if (role === "Agent" || role === "agent") {
-      console.log('✅ Автоматический вход как Агент');
-      setUserRole("agent");
-      setPage("agent-dashboard");
-    }
-  }, []);
-
-  const handleLoginSuccess = (role?: string, isFirstLogin?: boolean) => {
-    console.log('📌 App: получена роль:', role);
-    console.log('📌 Первый вход:', isFirstLogin);
-    
-    // Если первый вход → смена пароля
-    if (isFirstLogin) {
-      console.log('🔄 Первый вход, перенаправление на смену пароля');
-      setPage("change-password");
-      return;
-    }
-    
-    if (role === "Admin" || role === "admin") {
-      console.log('✅ Админ, переход на admin-panel');
-      setUserRole("admin");
-      setPage("admin-panel");
-      setForceUpdate(prev => prev + 1);
-    } else if (role === "Manager" || role === "manager") {
-      console.log('✅ Менеджер, переход на manager-dashboard');
-      setUserRole("manager");
-      setPage("manager-dashboard");
-      setForceUpdate(prev => prev + 1);
-    } else {
-      console.log('✅ Агент, переход на agent-dashboard');
-      setUserRole("agent");
-      setPage("agent-dashboard");
-      setForceUpdate(prev => prev + 1);
-    }
-  };
-
-  const goToHome = () => {
-    console.log('📌 Переход на Home');
-    setPage("home");
-  };
-
-  const goToRegister = () => {
-    console.log('📌 Переход на Register');
-    setPage("register");
-  };
-
-  const goToLogin = () => {
-    console.log('📌 Переход на Login');
-    setPage("login");
-  };
-
-  const goToAdminPanel = () => {
-    console.log('📌 Переход на Admin Panel');
-    setPage("admin-panel");
-  };
-
-  const goToAgentDashboard = () => {
-    console.log('📌 Переход на Agent Dashboard');
-    setPage("agent-dashboard");
-  };
-
-  const goToManagerDashboard = () => {
-    console.log('📌 Переход на Manager Dashboard');
-    setPage("manager-dashboard");
-  };
-
-  const goToHotelSearch = (initial?: InitialSearch) => {
-    console.log('📌 Переход на Hotel Search');
-    setPendingSearch(initial);
-    setPage("hotel-search");
-  };
+  const location = useLocation();
+  const showHeader = !HEADER_HIDDEN_ON.includes(location.pathname);
 
   return (
     <div className="page">
-      {/* AgentTopNav (Phase 1 design system) is now this generic Header's
-          replacement on agent-dashboard/hotel-search -- rendering both would
-          stack two nav bars, confirmed as the actual pre-redesign behavior. */}
-      {page !== "admin-panel" && page !== "agent-dashboard" && page !== "hotel-search" && (
-        <Header onHome={goToHome} />
-      )}
-
-      {page === "home" && (
-        <Home
-          onRegister={goToRegister}
-          onAgentLogin={goToLogin}
-          onAdminLogin={goToLogin}
-        />
-      )}
-
-      {page === "register" && <Register />}
-      
-      {page === "login" && <Login onLoginSuccess={handleLoginSuccess} />}
-      
-      {page === "change-password" && <ChangePassword />}
-      
-      {page === "admin-panel" && <AdminPanel />}
-      
-      {page === "agent-dashboard" && (
-        <AgentDashboard_v2 onNavigateToHotelSearch={goToHotelSearch} />
-      )}
-
-      {page === "manager-dashboard" && <ManagerDashboard />}
-
-      {page === "dashboard" && <Dashboard />}
-
-      {page === "hotel-search" && (
-        <HotelSearch onBack={goToAgentDashboard} initialSearch={pendingSearch} />
-      )}
+      {showHeader && <Header />}
+      <Outlet />
     </div>
   );
 }

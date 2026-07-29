@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
 import { fetchJson, formatMoney, formatDate, StatusBadge } from "./financeShared";
+import Card from "../components/ui/Card";
+import Button from "../components/ui/Button";
+import Input from "../components/ui/Input";
+import Select from "../components/ui/Select";
+import Modal from "../components/ui/Modal";
 
 // ---------------------------------------------------------------------------
 // "Cashback" -- Decision 088 restructure: promoted to its own top-level tab
@@ -115,28 +120,27 @@ const Cashback = () => {
     <div className="pb-10">
       <div className="mt-6">
         <div className="flex flex-wrap items-center gap-2.5">
-          <select
+          <Select
             value={selectedHotelId ?? ""}
             onChange={(e) => setSelectedHotelId(Number(e.target.value))}
-            className="min-w-[240px] appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+            scale="lg"
+            className="min-w-[240px]"
           >
             {hotels.map((h) => (
               <option key={h.id} value={h.id}>
                 {h.hotel_name}
               </option>
             ))}
-          </select>
-          <button
-            type="button"
+          </Select>
+          <Button
             onClick={() => {
               setShowAddArrangement(true);
               setAddError(null);
             }}
             disabled={selectedHotelId === null}
-            className="appearance-none rounded-lg border-0 bg-teal px-5 py-2.5 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
           >
             Add arrangement
-          </button>
+          </Button>
         </div>
 
         {arrangementsLoading && <p className="mt-6 text-center text-sm text-slate/60">Loading...</p>}
@@ -145,12 +149,12 @@ const Cashback = () => {
         {!arrangementsLoading && !arrangementsError && (
           <div className="mt-4 space-y-3">
             {arrangements.length === 0 ? (
-              <p className="rounded-2xl border border-ink/10 bg-white px-5 py-10 text-center text-sm text-slate/50">
+              <Card padding="none" className="px-5 py-10 text-center text-sm text-slate/50">
                 No cashback arrangements for this hotel yet
-              </p>
+              </Card>
             ) : (
               arrangements.map((a) => (
-                <div key={a.id} className="rounded-2xl border border-ink/10 bg-white p-5">
+                <Card key={a.id} padding="md">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-sm text-ink">{a.terms}</p>
                     <StatusBadge status={a.status} />
@@ -165,87 +169,78 @@ const Cashback = () => {
                       {a.end_date ? ` to ${formatDate(a.end_date)}` : ""}
                     </span>
                   </div>
-                </div>
+                </Card>
               ))
             )}
           </div>
         )}
       </div>
 
-      {showAddArrangement && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4"
-          onClick={() => setShowAddArrangement(false)}
-        >
-          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-display text-lg font-semibold text-ink">New cashback arrangement</h3>
-            <div className="mt-3 space-y-3">
-              <textarea
-                placeholder="Terms (e.g.: 5% rebate at $1M turnover)"
-                value={termsInput}
-                onChange={(e) => setTermsInput(e.target.value)}
-                rows={3}
-                className="w-full appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-              />
-              <div className="flex gap-2.5">
-                <input
-                  type="number"
-                  placeholder="Rate %"
-                  value={rebateInput}
-                  onChange={(e) => setRebateInput(e.target.value)}
-                  className="w-1/2 appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-                />
-                <input
-                  type="number"
-                  placeholder="Turnover threshold"
-                  value={thresholdInput}
-                  onChange={(e) => setThresholdInput(e.target.value)}
-                  className="w-1/2 appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-                />
-              </div>
-              <div className="flex gap-2.5">
-                <input
-                  type="text"
-                  placeholder="Currency"
-                  value={currencyInput}
-                  onChange={(e) => setCurrencyInput(e.target.value)}
-                  className="w-1/3 appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-                />
-                <input
-                  type="date"
-                  value={startDateInput}
-                  onChange={(e) => setStartDateInput(e.target.value)}
-                  className="w-1/3 appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-                />
-                <input
-                  type="date"
-                  value={endDateInput}
-                  onChange={(e) => setEndDateInput(e.target.value)}
-                  className="w-1/3 appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-                />
-              </div>
-            </div>
-            {addError && <p className="mt-2 text-sm text-red-600">{addError}</p>}
-            <div className="mt-4 flex gap-2.5">
-              <button
-                type="button"
-                onClick={handleAddArrangement}
-                disabled={savingArrangement}
-                className="flex-1 appearance-none rounded-lg border-0 bg-coral px-5 py-2.5 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-              >
-                {savingArrangement ? "Saving..." : "Save"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowAddArrangement(false)}
-                className="appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm font-medium text-slate/70 transition-colors hover:bg-sand/60"
-              >
-                Cancel
-              </button>
-            </div>
+      <Modal open={showAddArrangement} onClose={() => setShowAddArrangement(false)}>
+        <h3 className="font-display text-lg font-semibold text-ink">New cashback arrangement</h3>
+        <div className="mt-3 space-y-3">
+          {/* Input.tsx has no textarea variant -- left hand-styled,
+              matching Input's own visual language exactly. */}
+          <textarea
+            placeholder="Terms (e.g.: 5% rebate at $1M turnover)"
+            value={termsInput}
+            onChange={(e) => setTermsInput(e.target.value)}
+            rows={3}
+            className="w-full appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+          />
+          <div className="flex gap-2.5">
+            <Input
+              type="number"
+              placeholder="Rate %"
+              value={rebateInput}
+              onChange={(e) => setRebateInput(e.target.value)}
+              scale="lg"
+              className="w-1/2"
+            />
+            <Input
+              type="number"
+              placeholder="Turnover threshold"
+              value={thresholdInput}
+              onChange={(e) => setThresholdInput(e.target.value)}
+              scale="lg"
+              className="w-1/2"
+            />
+          </div>
+          <div className="flex gap-2.5">
+            <Input
+              type="text"
+              placeholder="Currency"
+              value={currencyInput}
+              onChange={(e) => setCurrencyInput(e.target.value)}
+              scale="lg"
+              className="w-1/3"
+            />
+            <Input
+              type="date"
+              value={startDateInput}
+              onChange={(e) => setStartDateInput(e.target.value)}
+              scale="lg"
+              className="w-1/3"
+            />
+            <Input
+              type="date"
+              value={endDateInput}
+              onChange={(e) => setEndDateInput(e.target.value)}
+              scale="lg"
+              className="w-1/3"
+            />
           </div>
         </div>
-      )}
+        {addError && <p className="mt-2 text-sm text-red-600">{addError}</p>}
+        <div className="mt-4 flex gap-2.5">
+          <Button onClick={handleAddArrangement} disabled={savingArrangement} className="flex-1">
+            {savingArrangement ? "Saving..." : "Save"}
+          </Button>
+          <Button variant="secondary" onClick={() => setShowAddArrangement(false)}>
+            Cancel
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 };

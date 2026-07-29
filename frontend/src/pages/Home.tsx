@@ -1,10 +1,5 @@
 import { useEffect, useState } from "react";
-
-type HomeProps = {
-  onRegister: () => void;
-  onAgentLogin: () => void;
-  onAdminLogin: () => void;
-};
+import { useNavigate } from "react-router-dom";
 
 type PromoSlide = {
   id: string;
@@ -84,10 +79,24 @@ function PromoCarousel() {
   );
 }
 
-function Home({ onRegister, onAgentLogin, onAdminLogin }: HomeProps) {
-  console.log('🏠 Home рендерится');
-  console.log('📌 onAgentLogin:', onAgentLogin);
-  console.log('📌 onAdminLogin:', onAdminLogin);
+function Home() {
+  const navigate = useNavigate();
+
+  // Routing fix (2026-07-29): App.tsx used to do this same check in its
+  // own mount effect (reading a stale `role` from localStorage and
+  // auto-selecting a page state) -- relocated here, the only place it's
+  // actually needed now that App is a thin layout with no page state of
+  // its own. Someone with a valid session landing on "/" (a bookmark, a
+  // browser reopening to its last tab) still lands on their real
+  // dashboard instead of the marketing home page.
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    const role = (localStorage.getItem("role") || "").toLowerCase();
+    if (!token || !role) return;
+    if (role === "admin") navigate("/admin-panel", { replace: true });
+    else if (role === "manager") navigate("/manager-dashboard", { replace: true });
+    else if (role === "agent") navigate("/agent-dashboard", { replace: true });
+  }, [navigate]);
 
   return (
     <div className="mx-auto max-w-6xl bg-sand px-5 py-10 font-sans text-slate">
@@ -102,28 +111,19 @@ function Home({ onRegister, onAgentLogin, onAdminLogin }: HomeProps) {
 
         <div className="mt-8 flex flex-wrap justify-center gap-4">
           <button
-            onClick={() => {
-              console.log('🔘 Нажата кнопка Регистрация');
-              onRegister();
-            }}
+            onClick={() => navigate("/register")}
             className="appearance-none rounded-xl border-0 bg-coral px-8 py-3.5 text-sm font-semibold text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
           >
             Регистрация
           </button>
           <button
-            onClick={() => {
-              console.log('🔘 Нажата кнопка Вход для агентов');
-              onAgentLogin();
-            }}
+            onClick={() => navigate("/login")}
             className="appearance-none rounded-xl border-0 bg-teal px-8 py-3.5 text-sm font-semibold text-white shadow-sm shadow-teal/30 transition-transform hover:-translate-y-0.5"
           >
             Вход для агентов
           </button>
           <button
-            onClick={() => {
-              console.log('🔘 Нажата кнопка Админ');
-              onAdminLogin();
-            }}
+            onClick={() => navigate("/login")}
             className="appearance-none rounded-xl border border-white/25 bg-transparent px-8 py-3.5 text-sm font-semibold text-white transition-colors hover:bg-white/10"
           >
             Админ

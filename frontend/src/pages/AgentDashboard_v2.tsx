@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 import BookingsList from "./Reservations";
-import type { InitialSearch } from "./HotelSearch";
 import AgentTopNav from "../components/layout/AgentTopNav";
 import type { SessionUser } from "../components/layout/AgentTopNav";
 import { API_URL } from "../config";
@@ -25,8 +25,10 @@ import { API_URL } from "../config";
 // must live in exactly ONE place (the "Search" nav item/page) -- the
 // embedded form here was a real duplicate of that, not just a visual
 // echo, so it's been replaced with a single CTA button that navigates to
-// the real search page (still via onNavigateToHotelSearch/InitialSearch,
-// just with no criteria to pre-fill since there's no longer a local form to
+// the real search page (via useNavigate("/hotel-search"), optionally with
+// a destination hint passed as router state -- see the featured-hotel
+// cards below), just with no criteria to pre-fill since there's no
+// longer a local form to
 // source them from).
 // ---------------------------------------------------------------------------
 
@@ -48,39 +50,20 @@ function getFirstName(name: string): string {
   return name.trim().split(/\s+/)[0] || name;
 }
 
-type AgentDashboard_v2Props = {
-  onNavigateToHotelSearch?: (initial?: InitialSearch) => void;
-};
-
-function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) {
+function AgentDashboard_v2() {
   const { t } = useTranslation("agentDashboard");
+  const navigate = useNavigate();
   const [user, setUser] = useState<SessionUser | null>(null);
-  const [checkingAuth, setCheckingAuth] = useState(true);
 
+  // Routing fix (2026-07-29): the token/role guard that used to live here
+  // (identical to HotelSearch.tsx's own copy) is now RequireAuth's job,
+  // applied once in router.tsx -- this component is simply never mounted
+  // unless that guard already passed. Only the user-data read stays.
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    const role = localStorage.getItem("role");
-
-    if (!token) {
-      // Clear any stale role/user data too, not just check the token — otherwise
-      // App's mount effect reads the leftover "role" on the next load, routes
-      // straight back here, and this guard redirects again: an infinite loop.
-      localStorage.clear();
-      window.location.href = "/login";
-      return;
-    }
-
-    if (role !== "Agent" && role !== "agent") {
-      alert(t("accessDenied"));
-      window.location.href = "/";
-      return;
-    }
-
     const userData = localStorage.getItem("user");
     if (userData) {
       setUser(JSON.parse(userData));
     }
-    setCheckingAuth(false);
   }, []);
 
   // Real hotel catalog (name/location/star rating only, no pricing calls) --
@@ -104,18 +87,13 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
     bookingsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  if (checkingAuth || !user) {
+  if (!user) {
     return <div className="min-h-screen bg-sand" />;
   }
 
   return (
     <div className="min-h-screen bg-sand font-sans text-slate">
-      <AgentTopNav
-        user={user}
-        active="dashboard"
-        onNavigateSearch={() => onNavigateToHotelSearch?.()}
-        onNavigateDashboard={() => {}}
-      />
+      <AgentTopNav user={user} active="dashboard" />
 
       {/* Hero -- same ink/coral gradient HotelSearch.tsx's own hero band
           uses, for visual consistency between the two pages (no stock-photo
@@ -136,7 +114,7 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
         <div className="-mt-8 flex justify-center rounded-2xl border border-ink/10 bg-white p-6 shadow-card sm:-mt-10">
           <button
             type="button"
-            onClick={() => onNavigateToHotelSearch?.()}
+            onClick={() => navigate("/hotel-search")}
             className="w-full appearance-none rounded-lg border-0 bg-coral px-8 py-3.5 text-base font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 sm:w-auto"
           >
             {t("search.searchButton")}
@@ -159,7 +137,7 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
             <div className="mt-3 space-y-2">
               <button
                 type="button"
-                onClick={() => onNavigateToHotelSearch?.()}
+                onClick={() => navigate("/hotel-search")}
                 className="flex w-full appearance-none items-center justify-between rounded-lg border-0 bg-sand/60 px-4 py-3 text-left text-sm font-medium text-ink transition-colors hover:bg-sand"
               >
                 {t("quickActions.createBooking")}
@@ -217,7 +195,7 @@ function AgentDashboard_v2({ onNavigateToHotelSearch }: AgentDashboard_v2Props) 
                   <button
                     key={hotel.id}
                     type="button"
-                    onClick={() => onNavigateToHotelSearch?.({ destination: hotel.hotel_name })}
+                    onClick={() => navigate("/hotel-search", { state: { destination: hotel.hotel_name } })}
                     className={`overflow-hidden rounded-xl border-0 bg-gradient-to-br p-4 text-left transition-transform hover:-translate-y-0.5 ${
                       i % 2 === 0 ? "from-ink to-teal" : "from-coral to-ink"
                     }`}

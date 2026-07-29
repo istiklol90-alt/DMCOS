@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { I18nextProvider } from "react-i18next";
 import adminI18n from "../i18n/i18nAdmin";
 import { API_URL } from "../config";
@@ -56,6 +57,7 @@ const statusBadgeLabels: Record<RegStatus, string> = {
 };
 
 const AdminPanel = () => {
+  const navigate = useNavigate();
   const [users, setUsers] = useState<any[]>([]);
   const [registrations, setRegistrations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -160,7 +162,7 @@ const AdminPanel = () => {
 
   const handleLogout = () => {
     localStorage.clear();
-    window.location.href = "/";
+    navigate("/");
   };
 
   const statCards: { key: StatKey; label: string; value: number }[] = [

@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { API_URL } from "../config";
 import type { Invoice, AgentOption } from "./financeShared";
 import { fetchJson, formatMoney, AgentSearchSelect, invoiceProfit } from "./financeShared";
+import Card from "../components/ui/Card";
+import Button from "../components/ui/Button";
+import Input from "../components/ui/Input";
 
 // ---------------------------------------------------------------------------
 // "Balance" -- Decision 088 restructure. Search-first agent + date-range
@@ -94,44 +97,33 @@ const Balance = () => {
 
   return (
     <div className="pb-10">
-      <div className="mt-6 rounded-2xl border border-ink/10 bg-white p-4">
+      <Card padding="sm" className="mt-6">
         <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Agent balance for period</p>
         <div className="mt-2.5 flex flex-wrap items-end gap-2.5">
           <AgentSearchSelect selected={selectedAgent} onSelect={setSelectedAgent} />
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            className="appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-          />
+          <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} scale="lg" />
           <span className="text-sm text-slate/50">—</span>
-          <input
-            type="date"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-            className="appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
-          />
-          <button
-            type="button"
-            onClick={handleExportXlsx}
-            disabled={exporting || !selectedAgent || !startDate || !endDate}
-            className="appearance-none rounded-lg border-0 bg-coral px-5 py-2.5 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-          >
+          <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} scale="lg" />
+          <Button onClick={handleExportXlsx} disabled={exporting || !selectedAgent || !startDate || !endDate}>
             {exporting ? "Downloading..." : "Download Excel"}
-          </button>
+          </Button>
         </div>
         {exportError && <p className="mt-2 text-sm text-red-600">{exportError}</p>}
-      </div>
+      </Card>
 
+      {/* padding="none" -- Card's own padding utility and this custom
+          px-5/py-10 both target the padding property; combining them
+          would fight over Tailwind's generated-stylesheet order, not
+          string order (the same class of bug fixed in Decision 124). */}
       {!selectedAgent && (
-        <p className="mt-6 rounded-2xl border border-ink/10 bg-white px-5 py-10 text-center text-sm text-slate/50">
+        <Card padding="none" className="mt-6 px-5 py-10 text-center text-sm text-slate/50">
           Search for an agent and specify a period to see the balance
-        </p>
+        </Card>
       )}
       {selectedAgent && (!startDate || !endDate) && (
-        <p className="mt-6 rounded-2xl border border-ink/10 bg-white px-5 py-10 text-center text-sm text-slate/50">
+        <Card padding="none" className="mt-6 px-5 py-10 text-center text-sm text-slate/50">
           Specify a period (invoice issue dates)
-        </p>
+        </Card>
       )}
       {selectedAgent && startDate && endDate && loading && (
         <p className="mt-6 text-center text-sm text-slate/60">Loading...</p>
@@ -141,27 +133,27 @@ const Balance = () => {
       )}
       {selectedAgent && startDate && endDate && !loading && !error && (
         <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div className="rounded-2xl border border-ink/10 bg-white px-4 py-3">
+          <Card padding="none" className="px-4 py-3">
             <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Invoices</p>
             <p className="mt-1 font-display text-2xl font-semibold text-ink">{invoices.length}</p>
-          </div>
-          <div className="rounded-2xl border border-ink/10 bg-white px-4 py-3">
+          </Card>
+          <Card padding="none" className="px-4 py-3">
             <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Amount</p>
             <p className="mt-1 font-display text-2xl font-semibold text-ink">
               {invoices.length > 0 ? formatMoney(totalAmount, currency) : "—"}
             </p>
-          </div>
-          <div className="rounded-2xl border border-ink/10 bg-white px-4 py-3">
+          </Card>
+          <Card padding="none" className="px-4 py-3">
             <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Profit</p>
             <p className="mt-1 font-display text-2xl font-semibold text-ink">
               {invoices.length > 0 ? formatMoney(totalProfit, currency) : "—"}
             </p>
-          </div>
+          </Card>
           {Object.entries(byStatus).map(([status, count]) => (
-            <div key={status} className="rounded-2xl border border-ink/10 bg-white px-4 py-3">
+            <Card key={status} padding="none" className="px-4 py-3">
               <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{status}</p>
               <p className="mt-1 font-display text-2xl font-semibold text-ink">{count}</p>
-            </div>
+            </Card>
           ))}
         </div>
       )}

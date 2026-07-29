@@ -1,8 +1,10 @@
 import { useState } from "react";
 import axios from "axios";
+import { useNavigate } from "react-router-dom";
 import { API_URL } from "../config";
 
 const ChangePassword = () => {
+  const navigate = useNavigate();
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -62,8 +64,13 @@ const ChangePassword = () => {
             localStorage.setItem("user", JSON.stringify(loginResponse.data.user));
             localStorage.setItem("is_first_login", "false");
 
+            // Routing fix (2026-07-29): a soft navigate works fine here now --
+            // token/role are already set above, so Home.tsx's own mount-time
+            // auto-redirect (the relocated version of App.tsx's old mount
+            // effect) sends this straight to the right dashboard. A hard
+            // reload isn't needed for a clean reset once real routing exists.
             setTimeout(() => {
-              window.location.href = "/";
+              navigate("/");
             }, 1500);
           }
         }
