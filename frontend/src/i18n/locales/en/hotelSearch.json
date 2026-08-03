@@ -64,7 +64,10 @@
   },
   "hotelCard": {
     "noActiveContract": "No active contract",
-    "noRoomTypes": "No room types available."
+    "noRoomTypes": "No room types available.",
+    "roomOptions_one": "{{count}} room type",
+    "roomOptions_other": "{{count}} room types",
+    "transferAvailable": "Transfer available"
   },
   "cart": {
     "title_one": "Trip: {{count}} room",
@@ -73,6 +76,7 @@
     "show": "Show",
     "remove": "Remove",
     "checkout": "Create application",
+    "empty": "No rooms added yet — pick a room and select \"Add to trip\".",
     "checkoutTitle": "Guest details",
     "close": "Cancel",
     "roomNumber": "Room {{number}}",

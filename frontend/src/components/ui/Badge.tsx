@@ -13,7 +13,12 @@ import type { ReactNode } from "react";
 // success tokens instead of each page's own raw red-500/amber-500 picks.
 // ---------------------------------------------------------------------------
 
-export type BadgeTone = "neutral" | "success" | "warning" | "danger" | "coral" | "ink";
+// Design System v1.0: "cancelled" is new -- a dedicated tone for
+// Cancelled statuses, deliberately not reusing "danger" (Rejected's own
+// tone). See tailwind.css's --color-cancelled comment for the full
+// reasoning: Cancelled/Rejected are different facts a manager needs to
+// tell apart at a glance, so they can never share one tone.
+export type BadgeTone = "neutral" | "success" | "warning" | "danger" | "cancelled" | "coral" | "ink";
 
 interface BadgeProps {
   children: ReactNode;
@@ -26,6 +31,7 @@ const TONE_CLASSES: Record<BadgeTone, string> = {
   success: "bg-success/15 text-success",
   warning: "bg-warning/15 text-warning",
   danger: "bg-danger/15 text-danger",
+  cancelled: "bg-cancelled/15 text-cancelled",
   coral: "bg-coral/15 text-coral",
   ink: "bg-ink/10 text-ink",
 };

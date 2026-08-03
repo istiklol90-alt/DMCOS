@@ -19,7 +19,13 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 // inventing a new one.
 // ---------------------------------------------------------------------------
 
-export type ButtonVariant = "primary" | "dark" | "secondary" | "danger" | "ghost";
+// Design System v1.0: the brief specifies exactly 4 button types --
+// Primary/Secondary/Outline/Danger. "outline" is new here to satisfy
+// that; "dark"/"ghost" stay for backward compatibility (dozens of
+// existing call sites across already-migrated pages) rather than being
+// ripped out mid-foundation-pass -- a later cleanup once every page is
+// migrated onto v1.0, not attempted now.
+export type ButtonVariant = "primary" | "secondary" | "outline" | "dark" | "danger" | "ghost";
 export type ButtonSize = "sm" | "md" | "lg";
 
 interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className"> {
@@ -34,10 +40,16 @@ interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "cla
 // the same className string target the same CSS property, and which one
 // wins depends on generated-stylesheet order, not string order, so they
 // must never both be handed to the same button.
+// Design System v1.0: primary is now navy (was coral) -- the brief names
+// navy as the основной/primary color, gold is the sparingly-used акцент
+// (sidebar active state, key highlights), never the default CTA fill.
+// primary/dark now render identically (both solid navy) -- disclosed,
+// not accidental; see the ButtonVariant comment above.
 const VARIANT_CLASSES: Record<ButtonVariant, string> = {
-  primary: "border-0 bg-coral text-white shadow-sm shadow-coral/30 hover:-translate-y-0.5",
+  primary: "border-0 bg-ink text-white shadow-sm shadow-ink/30 hover:-translate-y-0.5",
+  secondary: "border-0 bg-ink/8 text-ink hover:bg-ink/12",
+  outline: "border border-ink/25 bg-transparent text-ink hover:bg-ink/5",
   dark: "border-0 bg-ink text-white hover:bg-ink/90",
-  secondary: "border border-ink/15 bg-white text-ink hover:bg-sand",
   danger: "border-0 bg-danger text-white hover:bg-danger/90",
   ghost: "border-0 bg-transparent p-0 text-slate/60 hover:text-ink hover:underline",
 };

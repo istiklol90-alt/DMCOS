@@ -19,7 +19,13 @@ body {
         Arial,
         sans-serif;
 
-    background: #f5f7fb;
+    /* Design System v1.0: was #f5f7fb, a cool blue-grey that silently
+       contradicted tailwind.css's own --color-sand ("тёплый светлый
+       фон" per the brief) -- global.css is unlayered/highest-priority
+       (see tailwind.css's own top comment), so that stock hex was
+       winning over the token everywhere, even on already-migrated
+       pages. Matches --color-sand's real value exactly. */
+    background: #f3eee4;
     color: #1f2937;
 }
 

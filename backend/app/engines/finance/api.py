@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -32,6 +32,7 @@ from app.engines.finance.schemas import (
     VoucherResponse,
     BookingCommercialLineResponse,
     BookingCommercialLineUpsert,
+    BookingListFinancialsResponse,
 )
 
 router = APIRouter(prefix="/finance-engine", tags=["Finance Engine"])
@@ -145,6 +146,26 @@ def get_urgent_bookings(db: Session = Depends(get_db), current_user=Depends(get_
     Decision 107's own classification."""
     _require_admin(current_user)
     return service.list_urgent_bookings(db)
+
+
+@router.get("/bookings/financials", response_model=list[BookingListFinancialsResponse])
+def get_bookings_list_financials(
+    ids: str = Query(..., description="Comma-separated booking ids, e.g. '61,62,66'"),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Bulk, list-level Net/Sale/Profit (commercial-line-aware where a
+    manual correction exists) for the exact set of bookings a Bookings
+    list page currently has visible. MUST stay declared before
+    /bookings/{booking_id}/invoice below, same route-ordering discipline
+    as /bookings/urgent above (Decision 087's class of bug) -- though
+    "financials" as a literal 3rd-from-last segment never actually
+    collides with any /bookings/{booking_id}/... route today, this keeps
+    every literal-path GET grouped before the parametrized ones on sight."""
+    _require_admin(current_user)
+    booking_ids = [int(x) for x in ids.split(",") if x.strip()]
+    result = service.compute_bookings_list_financials(db, booking_ids)
+    return list(result.values())
 
 
 @router.get("/bookings/{booking_id}/invoice", response_model=InvoiceResponse)

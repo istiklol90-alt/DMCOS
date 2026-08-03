@@ -5,6 +5,8 @@
   "statusBadge": {
     "draft": "Черновик",
     "pending": "В ожидании",
+    "waitingHotel": "Ждём отель",
+    "partiallyConfirmed": "Частично подтверждено",
     "confirmed": "Подтверждено",
     "cancellationRequested": "Запрос на отмену",
     "cancelled": "Отменено",
@@ -133,6 +135,7 @@
     "specialRequestsLabel": "Пожелания:",
     "total": "Итого",
     "hotelConfirmationTitle": "Подтверждение отеля",
+    "confirmationPerRoomHint": "указывается отдельно для каждого номера ниже",
     "cancellationConfirmationTitle": "Подтверждение отмены",
     "cancellationSectionTitle": "Отмена",
     "reasonLabel": "Причина:",
@@ -181,6 +184,7 @@
     "columnSalePrice": "Цена продажи",
     "noBookingsFound": "Бронирования не найдены",
     "needsAttention": "Требует внимания",
+    "inReview": "В работе",
     "totalLabel": "Всего:",
     "totalCount": "{{count}} бронирований"
   }

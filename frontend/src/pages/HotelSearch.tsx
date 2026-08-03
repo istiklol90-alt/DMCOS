@@ -264,11 +264,11 @@ type HotelResult = Hotel & {
 };
 
 const CARD_GRADIENTS = [
-  "from-teal to-ink",
-  "from-coral to-ink",
-  "from-ink to-teal",
-  "from-teal to-coral",
-  "from-coral to-teal",
+  "from-ink to-gold",
+  "from-ink via-ink to-gold/70",
+  "from-gold to-ink",
+  "from-ink to-gold/60",
+  "from-gold/80 to-ink",
 ];
 
 function cheapestOption(rt: RoomTypeResult): MealPlanOption | null {
@@ -283,6 +283,25 @@ function cheapestOption(rt: RoomTypeResult): MealPlanOption | null {
 
 function cheapestOptionPrice(rt: RoomTypeResult): number | null {
   return cheapestOption(rt)?.agentPrice?.agent_room_total ?? null;
+}
+
+// Hotel-card summary strip ("from $X / night") -- the lowest per-night
+// price across every room type, using the exact same
+// agent_room_total/nights division RoomTypeCard's own header already
+// does per room type (see cheapestPerNight there), just aggregated
+// across room types for the card-level summary. No new pricing formula.
+function cheapestPerNightForHotel(hotel: HotelResult): { amount: number; currency: string } | null {
+  let best: { amount: number; currency: string } | null = null;
+  for (const rt of hotel.roomTypes) {
+    const opt = cheapestOption(rt);
+    if (opt?.agentPrice && opt.price) {
+      const perNight = opt.agentPrice.agent_room_total / opt.price.nights;
+      if (best === null || perNight < best.amount) {
+        best = { amount: perNight, currency: opt.price.currency };
+      }
+    }
+  }
+  return best;
 }
 
 function sortRoomTypesByPrice(roomTypes: RoomTypeResult[]): RoomTypeResult[] {
@@ -561,14 +580,19 @@ function MonthGrid({
   const weekdayLabels = t("dateRangePicker.weekdays", { returnObjects: true }) as string[];
 
   return (
-    <div className="w-56">
-      <p className="text-center text-base font-semibold capitalize text-ink">{monthLabel}</p>
-      <div className="mt-3 grid grid-cols-7 text-center text-xs font-medium text-slate/40">
+    <div className="w-72">
+      <p className="text-center text-lg font-semibold capitalize text-ink">{monthLabel}</p>
+      <div className="mt-4 grid grid-cols-7 text-center text-[11px] font-semibold uppercase tracking-wide text-slate/40">
         {weekdayLabels.map((w) => (
           <span key={w}>{w}</span>
         ))}
       </div>
-      <div className="mt-1 grid grid-cols-7 gap-y-0.5 text-center text-xs">
+      {/* Design System v1.0: bigger cells (h-7/w-7 -> h-10/w-10), more
+          vertical breathing room (gap-y-0.5 -> gap-y-1.5), larger date
+          numerals (text-xs -> text-sm) -- "больше, удобнее, крупнее
+          даты" from the brief. buildMonthGrid/handleDayClick/every prop
+          on this component are untouched, this is styling only. */}
+      <div className="mt-2 grid grid-cols-7 gap-y-1.5 text-center text-sm">
         {cells.map((day, i) => {
           if (!day) return <span key={i} />;
 
@@ -586,13 +610,13 @@ function MonthGrid({
           const isInRangeInclusive = Boolean(checkInDate && checkOutDate && day >= checkInDate && day <= checkOutDate);
 
           return (
-            <div key={i} className={isInRangeInclusive ? "bg-coral/10" : ""}>
+            <div key={i} className={isInRangeInclusive ? "bg-gold/10" : ""}>
               <button
                 type="button"
                 disabled={isPast}
                 onClick={() => onDayClick(day)}
                 className={[
-                  "mx-auto flex h-7 w-7 appearance-none items-center justify-center rounded-full border-0 transition-colors",
+                  "mx-auto flex h-10 w-10 appearance-none items-center justify-center rounded-full border-0 font-medium transition-colors",
                   // isPast/isEndpoint/default each own their own
                   // background+text pair outright, never combined with a
                   // separately-listed bg-transparent/text-ink -- two
@@ -602,11 +626,11 @@ function MonthGrid({
                   // Button.tsx's own VARIANT_CLASSES comment documents).
                   // That's exactly what made a selected day render
                   // white-on-white/invisible here: bg-transparent was
-                  // silently winning over bg-coral.
+                  // silently winning over the endpoint's own bg-ink.
                   isPast
                     ? "cursor-not-allowed bg-transparent text-slate/20"
                     : isEndpoint
-                      ? "bg-coral text-white hover:bg-coral"
+                      ? "bg-ink text-white hover:bg-ink"
                       : "bg-transparent text-ink hover:bg-sand",
                 ].join(" ")}
               >
@@ -717,7 +741,7 @@ export function DateRangePicker({
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-20 mt-2 w-fit rounded-2xl border border-ink/10 bg-white p-3 shadow-lg">
+        <div className="absolute left-0 top-full z-20 mt-2 w-fit rounded-2xl border border-ink/10 bg-white p-5 shadow-lg">
           {/* Marriott-style segmented control: a light gray track with the
               active tab rendered as a raised white pill, not a solid-filled
               tab against a transparent track. */}
@@ -742,7 +766,7 @@ export function DateRangePicker({
             </button>
           </div>
 
-          <div className="flex items-start gap-1.5">
+          <div className="flex items-start gap-3">
             <button
               type="button"
               onClick={() => setViewDate(new Date(year, month - 1, 1))}
@@ -998,7 +1022,7 @@ function RoomTypeCard({
           {rt.bed_type && (
             <p className="mt-0.5 text-xs text-slate/50">{rt.bed_type}</p>
           )}
-          <p className="mt-0.5 text-xs font-medium text-coral">
+          <p className="mt-0.5 text-xs font-medium text-gold-deep">
             {formatSearchOccupancy(t, { adults, children: childrenCount, infants }, childAges)}
           </p>
         </div>
@@ -1043,7 +1067,7 @@ function RoomTypeCard({
                 <div key={opt.mealCode} className="py-2.5">
                   <div
                     className={`flex flex-wrap items-center justify-between gap-3 ${
-                      isSelected ? "rounded-lg bg-coral/5 px-2 py-1" : ""
+                      isSelected ? "rounded-lg bg-gold/10 px-2 py-1" : ""
                     }`}
                   >
                     <span className="text-sm font-medium text-ink">{opt.mealName ?? opt.mealCode}</span>
@@ -1071,7 +1095,7 @@ function RoomTypeCard({
                         disabled={!opt.price}
                         onClick={() => setSelectedMealCode(opt.mealCode)}
                         className={`rounded-lg px-3.5 py-2 text-xs font-medium transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 ${
-                          isSelected ? "bg-coral text-white" : "bg-ink text-white"
+                          isSelected ? "bg-gold text-white" : "bg-ink text-white"
                         }`}
                       >
                         {isSelected ? t("roomTypeCard.selected") : t("roomTypeCard.select")}
@@ -1084,7 +1108,7 @@ function RoomTypeCard({
                       <button
                         type="button"
                         onClick={() => toggleNightly(opt)}
-                        className="appearance-none border-0 bg-transparent p-0 text-xs font-medium text-teal underline decoration-dotted hover:text-teal/70"
+                        className="appearance-none border-0 bg-transparent p-0 text-xs font-medium text-gold-deep underline decoration-dotted hover:text-gold-deep/70"
                       >
                         {isNightlyOpen ? t("roomTypeCard.hideNightlyPrices") : t("roomTypeCard.showNightlyPrices")}
                       </button>
@@ -1095,7 +1119,7 @@ function RoomTypeCard({
                             <p className="text-xs text-slate/50">{t("roomTypeCard.loading")}</p>
                           )}
                           {nightlyError[opt.mealCode] && (
-                            <p className="text-xs text-red-600">{nightlyError[opt.mealCode]}</p>
+                            <p className="text-xs text-danger">{nightlyError[opt.mealCode]}</p>
                           )}
                           {nightlyData[opt.mealCode] && (
                             <div className="space-y-0.5">
@@ -1107,7 +1131,7 @@ function RoomTypeCard({
                                   <span>
                                     {new Date(n.date).toLocaleDateString(localeOf(lang))}
                                     {n.discount_applied && (
-                                      <span className="ml-1.5 inline-flex items-center rounded-full bg-teal/15 px-1.5 py-0.5 text-[10px] font-medium text-teal">
+                                      <span className="ml-1.5 inline-flex items-center rounded-full bg-success/15 px-1.5 py-0.5 text-[10px] font-medium text-success">
                                         -{n.discount_percent}%
                                       </span>
                                     )}
@@ -1134,7 +1158,7 @@ function RoomTypeCard({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-medium text-slate/50">{t("roomTypeCard.transfer")}</span>
                 {transferRequired && (
-                  <span className="rounded-full bg-coral/10 px-2 py-0.5 text-[11px] font-medium text-coral">
+                  <span className="rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
                     {t("roomTypeCard.mandatoryChoice")}
                   </span>
                 )}
@@ -1163,7 +1187,7 @@ function RoomTypeCard({
                             disabled={!opt.price}
                             checked={selectedTransferType === opt.option.transfer_type}
                             onChange={() => setSelectedTransferType(opt.option.transfer_type)}
-                            className="h-4 w-4 accent-coral disabled:cursor-not-allowed"
+                            className="h-4 w-4 accent-gold disabled:cursor-not-allowed"
                           />
                           <span className="text-ink">{opt.option.transfer_name ?? opt.option.transfer_type}</span>
                         </span>
@@ -1175,7 +1199,7 @@ function RoomTypeCard({
                             // confused with the priceError branch below, so it gets
                             // its own explicit "included free" badge instead of a
                             // bare "USD 0" that's easy to misread as a glitch.
-                            <span className="rounded-full bg-coral/10 px-2 py-0.5 text-[11px] font-medium text-coral">
+                            <span className="rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success">
                               {t("roomTypeCard.includedFree")}
                             </span>
                           ) : (
@@ -1252,13 +1276,13 @@ function RoomTypeCard({
                 <button
                   type="button"
                   onClick={handleAddToTrip}
-                  className="w-full rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
+                  className="w-full rounded-xl bg-ink px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5"
                 >
                   {addedToTripAt ? t("roomTypeCard.addedToTrip") : t("roomTypeCard.addToTrip")}
                 </button>
               </div>
               {addToTripError && (
-                <p className="mt-2 text-xs font-medium text-coral">{addToTripError}</p>
+                <p className="mt-2 text-xs font-medium text-danger">{addToTripError}</p>
               )}
             </div>
           )}
@@ -1295,6 +1319,17 @@ function HotelCard({
   const { t } = useTranslation("hotelSearch");
   const [expandedRoomTypes, setExpandedRoomTypes] = useState<Set<number>>(new Set());
   const location = [hotel.island, hotel.city, hotel.country].filter(Boolean).join(", ");
+  const perNight = cheapestPerNightForHotel(hotel);
+  // Distinct meal-plan codes across every room type -- already-fetched
+  // data (rt.options), never a new fetch. Order-preserving dedupe (not a
+  // Set spread) so the badge row always lists a room type's first-seen
+  // meal codes in the same order the room types themselves sort in.
+  const mealCodes: string[] = [];
+  for (const rt of hotel.roomTypes) {
+    for (const opt of rt.options) {
+      if (!mealCodes.includes(opt.mealCode)) mealCodes.push(opt.mealCode);
+    }
+  }
 
   function toggleRoomType(id: number) {
     setExpandedRoomTypes((prev) => {
@@ -1306,9 +1341,23 @@ function HotelCard({
   }
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-ink/10 bg-white">
-      <div className="flex flex-col sm:flex-row">
-        <div className={`relative h-36 shrink-0 bg-gradient-to-br sm:h-auto sm:w-56 ${gradient}`}>
+    <div className="overflow-hidden rounded-2xl border border-ink/10 bg-white shadow-sm">
+      {/* Requested live: the gradient placeholder used to stretch (sm:h-auto
+          under the row's default align-items:stretch) to match the FULL
+          card height, including every room type listed below -- a huge
+          dark block running the whole card. Fixed height + sm:items-start
+          on the row keeps it sized to roughly the header (name/location/
+          summary) area only, not the room list underneath. */}
+      <div className="flex flex-col sm:flex-row sm:items-start">
+        {/* Requested live: the image block used to sit flush against the
+            card's own edges, so the card's `overflow-hidden rounded-2xl`
+            clipped exactly ONE of its corners (top-left) round while the
+            other three stayed square -- three corners matching, one not.
+            Inset by the same 24px the content column's own p-6 uses and
+            given its own uniform rounded-2xl, so all four corners are
+            genuinely identical instead of depending on which card edge
+            each one happens to touch. */}
+        <div className={`relative m-6 mb-0 h-40 shrink-0 overflow-hidden rounded-2xl bg-gradient-to-br sm:mr-0 sm:h-48 sm:w-64 ${gradient}`}>
           {hotel.star_rating != null && (
             <span className="absolute left-3 top-3 inline-flex items-center rounded-full bg-white/90 px-2.5 py-1 text-xs font-semibold text-ink">
               {"★".repeat(hotel.star_rating)} {hotel.star_rating}
@@ -1316,18 +1365,54 @@ function HotelCard({
           )}
         </div>
 
-        <div className="min-w-0 flex-1 p-5">
-          <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-1 p-6">
+          <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <h3 className="truncate font-display text-xl font-semibold text-ink">{hotel.hotel_name}</h3>
-              <p className="mt-0.5 truncate text-sm text-slate/60">{location || "—"}</p>
+              <p className="mt-1 flex items-center gap-1 truncate text-sm text-slate/60">
+                <IconPin className="h-3.5 w-3.5 shrink-0 text-slate/40" />
+                {location || "—"}
+              </p>
             </div>
-            {!hotel.contractId && (
+            {!hotel.contractId ? (
               <span className="shrink-0 rounded-full bg-slate/10 px-2.5 py-1 text-xs font-medium text-slate/60">
                 {t("hotelCard.noActiveContract")}
               </span>
+            ) : (
+              perNight && (
+                <div className="shrink-0 text-right">
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-slate/40">
+                    {t("roomTypeCard.from")}
+                  </p>
+                  <p className="font-mono text-2xl font-semibold text-ink">
+                    {perNight.currency}{" "}
+                    {perNight.amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                  </p>
+                  <p className="text-[11px] text-slate/40">{t("roomTypeCard.perNight")}</p>
+                </div>
+              )
             )}
           </div>
+
+          {hotel.contractId && (hotel.roomTypes.length > 0 || hotel.transferOptions.length > 0) && (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              {hotel.roomTypes.length > 0 && (
+                <span className="rounded-full bg-ink/5 px-2.5 py-1 text-xs font-medium text-slate/70">
+                  {t("hotelCard.roomOptions", { count: hotel.roomTypes.length })}
+                </span>
+              )}
+              {mealCodes.map((code) => (
+                <span key={code} className="rounded-full bg-ink/5 px-2.5 py-1 text-xs font-medium text-slate/70">
+                  {code}
+                </span>
+              ))}
+              {hotel.transferOptions.length > 0 && (
+                <span className="rounded-full bg-gold/10 px-2.5 py-1 text-xs font-medium text-gold-deep">
+                  {t("hotelCard.transferAvailable")}
+                </span>
+              )}
+            </div>
+          )}
 
           {hotel.roomTypes.length === 0 ? (
             <p className="mt-4 text-sm text-slate/50">{t("hotelCard.noRoomTypes")}</p>
@@ -1387,17 +1472,33 @@ function CartPanel({
   cart,
   onRemove,
   onCheckout,
+  variant = "floating",
 }: {
   cart: CartRoom[];
   onRemove: (key: string) => void;
   onCheckout: () => void;
+  // "pinned" -- the new persistent right-column presentation on large
+  // screens (requested live): always expanded (no show/hide toggle,
+  // there's nothing to collapse when the whole point is "always
+  // visible"), and rendered as a normal static block instead of a fixed
+  // bottom-right overlay, so the caller's own grid/sticky positioning
+  // controls where it sits. "floating" (default) is the exact original
+  // behavior, byte-identical, used below the lg breakpoint. The actual
+  // list/remove/checkout logic is shared, untouched either way.
+  variant?: "floating" | "pinned";
 }) {
   const { t } = useTranslation("hotelSearch");
   const [open, setOpen] = useState(false);
+  const pinned = variant === "pinned";
+  const showList = pinned || open;
 
-  return (
-    <div className="fixed bottom-4 right-4 z-30 w-[calc(100%-2rem)] max-w-sm sm:right-6 sm:bottom-6">
-      <div className="overflow-hidden rounded-2xl border border-ink/10 bg-white shadow-xl">
+  const panel = (
+    <div className="overflow-hidden rounded-2xl border border-ink/10 bg-white shadow-xl">
+      {pinned ? (
+        <div className="border-0 bg-ink px-5 py-3.5 text-white">
+          <span className="text-sm font-medium">{t("cart.title", { count: cart.length })}</span>
+        </div>
+      ) : (
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
@@ -1406,9 +1507,30 @@ function CartPanel({
           <span className="text-sm font-medium">{t("cart.title", { count: cart.length })}</span>
           <span className="text-xs text-white/70">{open ? t("cart.hide") : t("cart.show")}</span>
         </button>
+      )}
 
-        {open && (
-          <div className="max-h-72 overflow-y-auto divide-y divide-ink/5">
+      {/* Requested live: the checkout action sits directly under the
+          header, ABOVE the room list -- with a real multi-room trip the
+          list grows tall enough to push a bottom-anchored button out of
+          view, so the one action that finishes the flow was the first
+          thing to disappear. Same button/handler/disabled guard as
+          before, only its position in the panel changed. */}
+      <div className={showList ? "border-b border-ink/10 p-3" : "p-3"}>
+        <button
+          type="button"
+          onClick={onCheckout}
+          disabled={cart.length === 0}
+          className="w-full rounded-xl bg-ink px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0"
+        >
+          {t("cart.checkout")}
+        </button>
+      </div>
+
+      {showList &&
+        (cart.length === 0 ? (
+          <p className="px-4 py-8 text-center text-sm text-slate/50">{t("cart.empty")}</p>
+        ) : (
+          <div className={pinned ? "divide-y divide-ink/5" : "max-h-72 overflow-y-auto divide-y divide-ink/5"}>
             {cart.map((room) => (
               <div key={room.key} className="flex items-start justify-between gap-3 px-4 py-3">
                 <div className="min-w-0">
@@ -1431,26 +1553,21 @@ function CartPanel({
                   type="button"
                   onClick={() => onRemove(room.key)}
                   aria-label={t("cart.remove")}
-                  className="shrink-0 appearance-none rounded-md border-0 bg-transparent p-1 text-slate/40 transition-colors hover:bg-sand hover:text-coral"
+                  className="shrink-0 appearance-none rounded-md border-0 bg-transparent p-1 text-slate/40 transition-colors hover:bg-sand hover:text-danger"
                 >
                   <IconMinus className="h-3.5 w-3.5" />
                 </button>
               </div>
             ))}
           </div>
-        )}
-
-        <div className="border-t border-ink/10 p-3">
-          <button
-            type="button"
-            onClick={onCheckout}
-            className="w-full rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
-          >
-            {t("cart.checkout")}
-          </button>
-        </div>
-      </div>
+        ))}
     </div>
+  );
+
+  if (pinned) return panel;
+
+  return (
+    <div className="fixed bottom-4 right-4 z-30 w-[calc(100%-2rem)] max-w-sm sm:right-6 sm:bottom-6">{panel}</div>
   );
 }
 
@@ -1651,7 +1768,7 @@ function ApplicationCheckoutForm({
             if (opt.nationality) updateChild(roomKey, idx, "nationality", opt.nationality);
           }
         }}
-        className="rounded-md border border-ink/15 bg-white px-1.5 py-0.5 text-[11px] text-slate/70 focus:border-coral focus:outline-none"
+        className="rounded-md border border-ink/15 bg-white px-1.5 py-0.5 text-[11px] text-slate/70 focus:border-gold focus:outline-none"
       >
         <option value="">{t("cart.copyFromPlaceholder")}</option>
         {options.map((o) => (
@@ -1950,11 +2067,11 @@ function ApplicationCheckoutForm({
                 >
                   <div>
                     <p className="text-sm font-medium text-ink">{r.hotelName}</p>
-                    {r.rejectionReason && <p className="text-xs text-coral">{r.rejectionReason}</p>}
+                    {r.rejectionReason && <p className="text-xs text-danger">{r.rejectionReason}</p>}
                   </div>
                   <span
                     className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                      r.status === "Rejected" ? "bg-coral/10 text-coral" : "bg-teal/10 text-teal"
+                      r.status === "Rejected" ? "bg-danger/10 text-danger" : "bg-success/10 text-success"
                     }`}
                   >
                     {r.status === "Rejected" ? t("cart.statusRejected") : t("cart.statusPending")}
@@ -1965,7 +2082,7 @@ function ApplicationCheckoutForm({
             <button
               type="button"
               onClick={onSuccess}
-              className="mt-5 w-full rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
+              className="mt-5 w-full rounded-xl bg-ink px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5"
             >
               {t("cart.done")}
             </button>
@@ -1997,7 +2114,7 @@ function ApplicationCheckoutForm({
                   onClick={() => goToStep(() => i)}
                   aria-label={i < cart.length ? t("cart.stepRoom", { number: i + 1 }) : t("cart.stepFlights")}
                   className={`h-1.5 flex-1 rounded-full transition-colors ${
-                    i <= currentStep ? "bg-coral" : "bg-ink/10 hover:bg-ink/20"
+                    i <= currentStep ? "bg-gold" : "bg-ink/10 hover:bg-ink/20"
                   }`}
                 />
               ))}
@@ -2015,7 +2132,7 @@ function ApplicationCheckoutForm({
                 const entry = roomGuests[room.key];
                 return (
                   <div key={room.key} className="rounded-xl border border-ink/10 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-coral">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gold-deep">
                       {t("cart.roomNumber", { number: roomIndex + 1 })}
                     </p>
                     <p className="mt-1 text-sm font-medium text-ink">{room.hotelName}</p>
@@ -2050,14 +2167,14 @@ function ApplicationCheckoutForm({
                               placeholder={t("guestDetailsForm.firstNamePlaceholder")}
                               value={a.firstName}
                               onChange={(e) => updateAdult(room.key, i, "firstName", e.target.value)}
-                              className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                              className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
                             />
                             <input
                               type="text"
                               placeholder={t("guestDetailsForm.lastNamePlaceholder")}
                               value={a.lastName}
                               onChange={(e) => updateAdult(room.key, i, "lastName", e.target.value)}
-                              className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                              className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
                             />
                           </div>
                           <div className="flex items-center gap-2">
@@ -2066,14 +2183,14 @@ function ApplicationCheckoutForm({
                               placeholder={t("guestDetailsForm.nationalityPlaceholder")}
                               value={a.nationality}
                               onChange={(e) => updateAdult(room.key, i, "nationality", e.target.value)}
-                              className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                              className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
                             />
                             <input
                               type="text"
                               placeholder={t("guestDetailsForm.passportNumberPlaceholder")}
                               value={a.passportNumber}
                               onChange={(e) => updateAdult(room.key, i, "passportNumber", e.target.value)}
-                              className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                              className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
                             />
                             <input
                               type="date"
@@ -2082,13 +2199,13 @@ function ApplicationCheckoutForm({
                               onChange={(e) => updateAdult(room.key, i, "passportExpiry", e.target.value)}
                               className={`w-36 rounded-lg border bg-white px-3 py-2 text-sm text-slate focus:outline-none ${
                                 passportExpiryError(room, a.passportExpiry)
-                                  ? "border-coral"
-                                  : "border-ink/15 focus:border-coral"
+                                  ? "border-danger"
+                                  : "border-ink/15 focus:border-gold"
                               }`}
                             />
                           </div>
                           {passportExpiryError(room, a.passportExpiry) && (
-                            <p className="text-xs font-medium text-coral">{passportExpiryError(room, a.passportExpiry)}</p>
+                            <p className="text-xs font-medium text-danger">{passportExpiryError(room, a.passportExpiry)}</p>
                           )}
                         </div>
                       ))}
@@ -2115,42 +2232,42 @@ function ApplicationCheckoutForm({
                                   placeholder={t("guestDetailsForm.firstNamePlaceholder")}
                                   value={c.firstName}
                                   onChange={(e) => updateChild(room.key, i, "firstName", e.target.value)}
-                                  className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                                  className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
                                 />
                                 <input
                                   type="text"
                                   placeholder={t("guestDetailsForm.lastNamePlaceholder")}
                                   value={c.lastName}
                                   onChange={(e) => updateChild(room.key, i, "lastName", e.target.value)}
-                                  className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                                  className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
                                 />
                                 <input
                                   type="date"
                                   value={c.dateOfBirth}
                                   onChange={(e) => updateChild(room.key, i, "dateOfBirth", e.target.value)}
                                   className={`w-36 rounded-lg border bg-white px-3 py-2 text-sm text-slate focus:outline-none ${
-                                    error ? "border-coral" : "border-ink/15 focus:border-coral"
+                                    error ? "border-danger" : "border-ink/15 focus:border-gold"
                                   }`}
                                 />
                               </div>
                               <p className="text-[11px] text-slate/50">
                                 {t("cart.expectedChildAge", { age: room.childAges[i] })}
                               </p>
-                              {error && <p className="mt-0.5 text-xs font-medium text-coral">{error}</p>}
+                              {error && <p className="mt-0.5 text-xs font-medium text-danger">{error}</p>}
                               <div className="flex items-center gap-2">
                                 <input
                                   type="text"
                                   placeholder={t("guestDetailsForm.nationalityPlaceholder")}
                                   value={c.nationality}
                                   onChange={(e) => updateChild(room.key, i, "nationality", e.target.value)}
-                                  className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                                  className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
                                 />
                                 <input
                                   type="text"
                                   placeholder={t("guestDetailsForm.passportNumberPlaceholder")}
                                   value={c.passportNumber}
                                   onChange={(e) => updateChild(room.key, i, "passportNumber", e.target.value)}
-                                  className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                                  className="flex-1 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
                                 />
                                 <input
                                   type="date"
@@ -2159,13 +2276,13 @@ function ApplicationCheckoutForm({
                                   onChange={(e) => updateChild(room.key, i, "passportExpiry", e.target.value)}
                                   className={`w-36 rounded-lg border bg-white px-3 py-2 text-sm text-slate focus:outline-none ${
                                     passportExpiryError(room, c.passportExpiry)
-                                      ? "border-coral"
-                                      : "border-ink/15 focus:border-coral"
+                                      ? "border-danger"
+                                      : "border-ink/15 focus:border-gold"
                                   }`}
                                 />
                               </div>
                               {passportExpiryError(room, c.passportExpiry) && (
-                                <p className="text-xs font-medium text-coral">{passportExpiryError(room, c.passportExpiry)}</p>
+                                <p className="text-xs font-medium text-danger">{passportExpiryError(room, c.passportExpiry)}</p>
                               )}
                             </div>
                           );
@@ -2187,42 +2304,42 @@ function ApplicationCheckoutForm({
                   placeholder={t("guestDetailsForm.arrivalFlightNumberPlaceholder")}
                   value={flight.arrivalFlightNumber}
                   onChange={(e) => setFlightField("arrivalFlightNumber", e.target.value)}
-                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
                 />
                 <input
                   type="date"
                   placeholder={t("cart.arrivalFlightDatePlaceholder")}
                   value={flight.arrivalFlightDate}
                   onChange={(e) => setFlightField("arrivalFlightDate", e.target.value)}
-                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-gold focus:outline-none"
                 />
                 <input
                   type="time"
                   placeholder={t("cart.arrivalFlightTimePlaceholder")}
                   value={flight.arrivalFlightTime}
                   onChange={(e) => setFlightField("arrivalFlightTime", e.target.value)}
-                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-gold focus:outline-none"
                 />
                 <input
                   type="text"
                   placeholder={t("guestDetailsForm.departureFlightNumberPlaceholder")}
                   value={flight.departureFlightNumber}
                   onChange={(e) => setFlightField("departureFlightNumber", e.target.value)}
-                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
                 />
                 <input
                   type="date"
                   placeholder={t("cart.departureFlightDatePlaceholder")}
                   value={flight.departureFlightDate}
                   onChange={(e) => setFlightField("departureFlightDate", e.target.value)}
-                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-gold focus:outline-none"
                 />
                 <input
                   type="time"
                   placeholder={t("cart.departureFlightTimePlaceholder")}
                   value={flight.departureFlightTime}
                   onChange={(e) => setFlightField("departureFlightTime", e.target.value)}
-                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-gold focus:outline-none"
                 />
               </div>
               </div>
@@ -2230,7 +2347,7 @@ function ApplicationCheckoutForm({
             </div>
 
             {submitError && (
-              <div className="mt-4 flex items-center gap-2 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">
+              <div className="mt-4 flex items-center gap-2 rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">
                 <IconAlert className="w-3.5 h-3.5" />
                 {submitError}
               </div>
@@ -2261,7 +2378,7 @@ function ApplicationCheckoutForm({
                   type="button"
                   onClick={() => goToStep((s) => s + 1)}
                   disabled={!currentRoom || !roomIsValid(currentRoom) || navCooldown}
-                  className="rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                  className="rounded-xl bg-ink px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
                 >
                   {t("cart.next")}
                 </button>
@@ -2269,7 +2386,7 @@ function ApplicationCheckoutForm({
                 <button
                   type="submit"
                   disabled={!canSubmit || submitting || navCooldown}
-                  className="rounded-xl bg-coral px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                  className="rounded-xl bg-ink px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
                 >
                   {submitting ? t("cart.submitting") : t("cart.submit")}
                 </button>
@@ -2639,6 +2756,13 @@ function HotelSearch() {
     return <div className="min-h-screen bg-sand" />;
   }
 
+  // Pinned right-column cart only makes sense once there are real results
+  // to sit alongside, and never while the checkout form has replaced this
+  // whole view -- same guard the floating cart already implicitly had via
+  // its own cart.length>0/!checkoutOpen conditions, just evaluated once
+  // and shared by both the grid wrapper and the results column below.
+  const showPinnedCart = hasSearched && results.length > 0 && !checkoutOpen;
+
   return (
     <div className="min-h-screen bg-sand font-sans text-slate">
       {/* Shared top nav (Phase 1 design system) -- replaces this page's own
@@ -2647,19 +2771,38 @@ function HotelSearch() {
           comment). Same component AgentDashboard_v2.tsx now uses. */}
       <AgentTopNav user={user} active="search" />
 
-      {/* Hero band -- reuses the existing ink/coral/teal gradient already
-          used elsewhere in this file (HotelCard's own image-placeholder
+      {/* Hero band -- reuses the existing ink/gold gradient already used
+          elsewhere in this file (HotelCard's own image-placeholder
           gradients), standing in for a photo since this project has no
           photo-asset pipeline anywhere. The search card below overlaps
           its bottom edge via negative margin, matching the reference
           layout's prominence. */}
-      <div className="bg-gradient-to-br from-ink via-ink to-coral/40 px-4 py-14 text-center sm:px-8 sm:py-20">
-        <p className="text-xs font-semibold tracking-widest text-coral">{t("page.heroTag")}</p>
+      <div className="bg-gradient-to-br from-ink via-ink to-gold/30 px-4 py-16 text-center sm:px-8 sm:py-24">
+        <p className="text-xs font-semibold tracking-widest text-gold">{t("page.heroTag")}</p>
         <h1 className="mt-2 font-display text-3xl font-semibold text-white sm:text-5xl">{t("page.heroTitle")}</h1>
         <p className="mx-auto mt-3 max-w-xl text-sm text-white/70 sm:text-base">{t("page.heroSubtitle")}</p>
       </div>
 
-      <main className="mx-auto max-w-6xl px-4 pb-8 sm:px-8">
+      {/* Requested live: the search + results area used to cap at
+          max-w-6xl (1152px), leaving roughly a third of a normal 1920
+          screen as dead margin on either side. Widened to 96rem
+          (1536px) so both the search panel and the hotel cards actually
+          use the screen. Tailwind v4 dropped max-w-screen-2xl, hence the
+          explicit rem value rather than the old named utility. */}
+      <main className="mx-auto max-w-[96rem] px-4 pb-8 sm:px-8">
+        {/* Requested live: the cart used to start its own row below the
+            search form, only alongside the results -- now it shares one
+            grid with the ENTIRE left column (search form + errors +
+            results), pinned from the very top, so the search bar reads as
+            a clean, evenly-aligned block next to the cart rather than
+            floating above it with the cart trailing in lower down. */}
+        {/* At xl the container is wide enough that a 1/3-width cart column
+            would be far wider than its own content needs -- switching to
+            4 columns there gives the extra width to the results instead,
+            keeping the cart at a sane ~360px. Below xl the original 3/2+1
+            split is unchanged. */}
+        <div className={showPinnedCart ? "lg:grid lg:grid-cols-3 lg:items-start lg:gap-6 xl:grid-cols-4 xl:gap-8" : ""}>
+        <div className={showPinnedCart ? "lg:col-span-2 xl:col-span-3" : ""}>
         <form
           onSubmit={handleSearch}
           className="-mt-10 rounded-2xl border border-ink/10 bg-white shadow-xl sm:-mt-12 sm:rounded-[2.5rem]"
@@ -2679,9 +2822,9 @@ function HotelSearch() {
               spacing as the primary separator -- the outer panel's own
               border/shadow (on the form element itself) is untouched. */}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch sm:gap-0">
-            <div className="relative flex flex-1 flex-col gap-2 px-7 py-5 sm:py-7">
+            <div className="relative flex flex-1 flex-col gap-2.5 px-8 py-6 sm:py-8">
               <label className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate/50">
-                <IconPin className="h-3.5 w-3.5 text-coral" />
+                <IconPin className="h-3.5 w-3.5 text-gold-deep" />
                 {t("page.destinationLabel")}
               </label>
               <input
@@ -2733,8 +2876,8 @@ function HotelSearch() {
 
             <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />
 
-            <div className="flex flex-col gap-2 pt-5 sm:w-72 sm:shrink-0 sm:py-7">
-              <label className="px-7 text-xs font-medium uppercase tracking-wide text-slate/50">{t("page.datesLabel")}</label>
+            <div className="flex flex-col gap-2.5 pt-6 sm:w-72 sm:shrink-0 sm:py-8">
+              <label className="px-8 text-xs font-medium uppercase tracking-wide text-slate/50">{t("page.datesLabel")}</label>
               <DateRangePicker
                 checkIn={checkIn}
                 checkOut={checkOut}
@@ -2748,7 +2891,7 @@ function HotelSearch() {
 
             <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />
 
-            <div className="flex flex-col gap-2 px-7 py-5 sm:w-64 sm:shrink-0 sm:py-7">
+            <div className="flex flex-col gap-2.5 px-8 py-6 sm:w-64 sm:shrink-0 sm:py-8">
               <label className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("page.guestsLabel")}</label>
               <div className="flex flex-col gap-2">
                 <Counter label={t("page.adultsLabel")} value={adults} min={1} onChange={setAdults} />
@@ -2764,7 +2907,7 @@ function HotelSearch() {
                           max={17}
                           value={age}
                           onChange={(e) => updateChildAge(i, Number(e.target.value))}
-                          className="w-14 rounded-md border border-ink/15 bg-white px-2 py-1 text-center text-sm text-ink focus:border-coral focus:outline-none"
+                          className="w-14 rounded-md border border-ink/15 bg-white px-2 py-1 text-center text-sm text-ink focus:border-gold focus:outline-none"
                         />
                       </div>
                     ))}
@@ -2779,7 +2922,7 @@ function HotelSearch() {
               <button
                 type="submit"
                 disabled={searching}
-                className="flex w-full items-center justify-center gap-2 rounded-full bg-coral px-8 py-3.5 text-base font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 sm:w-auto"
+                className="flex w-full items-center justify-center gap-2 rounded-full bg-ink px-8 py-3.5 text-base font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 sm:w-auto"
               >
                 <IconSearch className="h-4 w-4" />
                 {searching ? t("page.searching") : t("page.searchButton")}
@@ -2788,7 +2931,7 @@ function HotelSearch() {
           </div>
 
           {formError && (
-            <div className="mx-4 mb-4 flex items-center gap-2 rounded-lg bg-coral/10 px-4 py-2.5 text-sm font-medium text-coral">
+            <div className="mx-4 mb-4 flex items-center gap-2 rounded-lg bg-danger/10 px-4 py-2.5 text-sm font-medium text-danger">
               <IconAlert />
               {formError}
             </div>
@@ -2796,14 +2939,14 @@ function HotelSearch() {
         </form>
 
         {searchError && (
-          <div className="mt-6 flex items-center gap-2 rounded-xl bg-coral/10 px-5 py-4 text-sm font-medium text-coral">
+          <div className="mt-6 flex items-center gap-2 rounded-xl bg-danger/10 px-5 py-4 text-sm font-medium text-danger">
             <IconAlert />
             {t("page.searchErrorPrefix")} {searchError}
           </div>
         )}
 
         {!searching && hasSearched && !searchError && results.length === 0 && (
-          <div className="mt-6 flex items-center gap-2 rounded-xl bg-coral/10 px-5 py-4 text-sm font-medium text-coral">
+          <div className="mt-6 flex items-center gap-2 rounded-xl bg-warning/10 px-5 py-4 text-sm font-medium text-warning">
             <IconAlert />
             {t("page.noHotelsFound")}
           </div>
@@ -2826,12 +2969,35 @@ function HotelSearch() {
             />
           ))}
         </div>
+        </div>
 
-        {/* Stage 5 -- floating trip-cart summary, only visible once at
-            least one room has been added. Fully separate from the
-            single-room "Забронировать" flow above. */}
+        {/* Requested live: the cart should be permanently visible, not just
+            a floating bubble that only appears once something's in it, and
+            should sit at the TOP of the right column (aligned with the
+            search form above), sticky, rather than starting further down.
+            Below lg, or before/without a completed search, the original
+            single-column layout + floating cart (unchanged) still
+            applies -- CartPanel's own list/remove/checkout logic is
+            identical either way, only the outer positioning differs. */}
+        {showPinnedCart && (
+          <div className="hidden lg:sticky lg:top-4 lg:col-span-1 lg:block">
+            <CartPanel
+              cart={cart}
+              onRemove={removeFromCart}
+              onCheckout={() => setCheckoutOpen(true)}
+              variant="pinned"
+            />
+          </div>
+        )}
+        </div>
+
+        {/* Floating trip-cart summary -- below lg only now (the lg+ case
+            is the pinned column above), same original "only once
+            something's in it" gating. */}
         {cart.length > 0 && !checkoutOpen && (
-          <CartPanel cart={cart} onRemove={removeFromCart} onCheckout={() => setCheckoutOpen(true)} />
+          <div className="lg:hidden">
+            <CartPanel cart={cart} onRemove={removeFromCart} onCheckout={() => setCheckoutOpen(true)} />
+          </div>
         )}
 
         {checkoutOpen && (

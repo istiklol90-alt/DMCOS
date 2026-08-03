@@ -64,7 +64,7 @@ function Login() {
   return (
     <main className="flex min-h-[calc(100vh-78px)] items-center justify-center bg-sand px-6 py-12 font-sans text-slate">
       <Card padding="none" shadow="card" className="w-full max-w-lg p-10 sm:p-12">
-        <p className="text-xs font-semibold uppercase tracking-widest text-coral">DMC Operating System</p>
+        <p className="text-xs font-semibold uppercase tracking-widest text-gold-deep">DMC Operating System</p>
         <h1 className="mt-2 font-display text-3xl font-semibold text-ink">Welcome Back</h1>
         <p className="mt-2 text-sm text-slate/70">Login to access your DMC OS account.</p>
 
@@ -105,7 +105,7 @@ function Login() {
 
           <div className="flex items-center justify-between text-sm">
             <label className="flex items-center gap-2 text-slate/70">
-              <input type="checkbox" className="accent-coral" />
+              <input type="checkbox" className="accent-gold" />
               Remember me
             </label>
             <Button type="button" variant="ghost">

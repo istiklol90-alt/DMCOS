@@ -1456,3 +1456,105 @@ def compute_booking_room_commercial_totals(lines: list[BookingCommercialLine]) -
         "sale_total": sale_total,
         "profit": sale_total - net_total,
     }
+
+
+def compute_bookings_list_financials(db: Session, booking_ids: list[int]) -> dict[int, dict]:
+    """
+    Bulk, read-only equivalent of what BookingDetail's own header already
+    shows per room -- "live, commercial-line-aware if a manual correction
+    exists there, otherwise the frozen Pricing-Engine snapshot"
+    (compute_booking_room_commercial_totals's own docstring). Built
+    because the Bookings LIST's Net/Profit column and its "Total profit"
+    summary strip were both still calling compute_booking_financials
+    directly and had no way to know a room's commercial-line ledger had
+    ever been edited -- a real, reported bug: editing a room's cost in
+    BookingDetail (BK-000066) showed correctly there, but the list kept
+    showing the original, pre-edit profit, since upsert_commercial_line
+    only ever writes BookingCommercialLine, never Booking/BookingRoom's
+    own frozen total_amount columns.
+
+    Exactly two bulk queries total regardless of list size (rooms, then
+    their commercial lines) -- never one query per booking or per room.
+    Deliberately reads existing commercial-line rows only
+    (repository.list_commercial_lines_bulk), never
+    get_or_seed_commercial_lines' auto-seeding GET -- rendering a list
+    must never have the side effect of writing seed rows for rooms
+    nobody has actually opened.
+
+    Returns one entry per booking_id that has at least one BookingRoom
+    row (true for every booking created since Stage 2's migration). A
+    booking_id absent from the result has no BookingRoom rows at all;
+    the caller falls back to its own already-loaded Booking object with
+    compute_booking_financials, exactly the pre-existing behavior.
+    """
+    if not booking_ids:
+        return {}
+
+    rooms = booking_service.list_booking_rooms_bulk(db, booking_ids)
+    rooms_by_booking: dict[int, list] = {}
+    for room in rooms:
+        rooms_by_booking.setdefault(room.booking_id, []).append(room)
+
+    room_ids = [r.id for r in rooms]
+    lines = repository.list_commercial_lines_bulk(db, room_ids)
+    lines_by_room: dict[int, list[BookingCommercialLine]] = {}
+    for line in lines:
+        lines_by_room.setdefault(line.booking_room_id, []).append(line)
+
+    result: dict[int, dict] = {}
+    for booking_id, booking_rooms in rooms_by_booking.items():
+        billable = [r for r in booking_rooms if r.status not in _NON_BILLABLE_ROOM_STATUSES]
+        if not billable:
+            # Every room was rejected/cancelled -- same "nothing owed"
+            # convention compute_application_financials already uses.
+            result[booking_id] = {
+                "booking_id": booking_id,
+                "currency": booking_rooms[0].currency,
+                "net_total": 0.0,
+                "sale_total": 0.0,
+                "profit": 0.0,
+                "has_manual_adjustment": False,
+            }
+            continue
+
+        net_total = 0.0
+        sale_total = 0.0
+        profit_sum = 0.0
+        profit_known = True
+        has_manual_adjustment = False
+
+        for room in billable:
+            room_lines = lines_by_room.get(room.id, [])
+            if room_lines:
+                totals = compute_booking_room_commercial_totals(room_lines)
+                net_total += totals["net_total"]
+                sale_total += totals["sale_total"]
+                profit_sum += totals["profit"]
+                # adjusted_by is the universal "this line was manually
+                # touched" signal (upsert_commercial_line stamps it on ANY
+                # field change, whether correcting base_cost/base_price
+                # directly or recording an adjustment_cost/adjustment_price
+                # delta on top) -- checking only the adjustment_* columns
+                # would miss a direct base-figure correction like the one
+                # that surfaced this whole bug on BK-000066.
+                if any(line.adjusted_by is not None for line in room_lines):
+                    has_manual_adjustment = True
+            else:
+                fin = compute_booking_financials(room)
+                net_total += fin["net_total"]
+                sale_total += fin["sale_total"]
+                if fin["profit"] is None:
+                    profit_known = False
+                else:
+                    profit_sum += fin["profit"]
+
+        result[booking_id] = {
+            "booking_id": booking_id,
+            "currency": billable[0].currency,
+            "net_total": net_total,
+            "sale_total": sale_total,
+            "profit": profit_sum if profit_known else None,
+            "has_manual_adjustment": has_manual_adjustment,
+        }
+
+    return result

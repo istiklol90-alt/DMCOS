@@ -39,7 +39,7 @@ export default function Input({ tone = "white", scale = "sm", className = "", ..
     <input
       className={[
         "appearance-none rounded-lg border border-ink/15 text-sm text-slate",
-        "placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30",
+        "placeholder:text-slate/40 focus:border-gold focus:outline-none focus:ring-2 focus:ring-gold/30",
         TONE_CLASSES[tone],
         SCALE_CLASSES[scale],
         className,

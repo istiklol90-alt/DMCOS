@@ -425,6 +425,21 @@ def list_commercial_lines(db: Session, booking_room_id: int) -> list[BookingComm
     )
 
 
+def list_commercial_lines_bulk(db: Session, booking_room_ids: list[int]) -> list[BookingCommercialLine]:
+    """Bulk variant of list_commercial_lines for many rooms in one query --
+    deliberately read-only (unlike GET /booking-rooms/{id}/commercial-lines,
+    which auto-seeds on first call via get_or_seed_commercial_lines): a
+    whole Bookings list rendering should never have the side effect of
+    writing seed rows for every room nobody has actually opened yet."""
+    if not booking_room_ids:
+        return []
+    return (
+        db.query(BookingCommercialLine)
+        .filter(BookingCommercialLine.booking_room_id.in_(booking_room_ids))
+        .all()
+    )
+
+
 def get_commercial_line(db: Session, booking_room_id: int, category: str) -> Optional[BookingCommercialLine]:
     return (
         db.query(BookingCommercialLine)

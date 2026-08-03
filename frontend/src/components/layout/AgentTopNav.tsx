@@ -144,7 +144,7 @@ export default function AgentTopNav({ user, active }: AgentTopNavProps) {
           onClick={onNavigateDashboard}
           className="flex shrink-0 cursor-pointer items-center gap-2.5"
         >
-          <span className="h-8 w-8 rounded-lg bg-gradient-to-br from-coral to-teal" />
+          <span className="h-8 w-8 rounded-lg bg-gradient-to-br from-gold to-gold-deep" />
           <span className="font-display text-lg font-semibold text-white">DMC OS</span>
         </div>
 
@@ -195,7 +195,7 @@ export default function AgentTopNav({ user, active }: AgentTopNavProps) {
               onClick={() => setMenuOpen((o) => !o)}
               className="flex appearance-none items-center gap-2 rounded-full border-0 bg-transparent p-1 pr-2 transition-colors hover:bg-white/5"
             >
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-coral to-teal font-display text-xs font-semibold text-white">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-gold to-gold-deep font-display text-xs font-semibold text-white">
                 {getInitials(user.name)}
               </span>
               <span className="hidden text-left sm:block">

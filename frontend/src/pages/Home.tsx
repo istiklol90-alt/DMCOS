@@ -14,21 +14,21 @@ const promoSlides: PromoSlide[] = [
     id: "soneva-fushi",
     hotel: "Soneva Fushi",
     location: "Baa Atoll, Мальдивы",
-    gradient: "from-teal to-ink",
+    gradient: "from-ink to-gold",
     headline: "Скидка 20% на виллы этим летом",
   },
   {
     id: "rixos-belek",
     hotel: "Rixos Premium Belek",
     location: "Анталия, Турция",
-    gradient: "from-coral to-ink",
+    gradient: "from-gold to-ink",
     headline: "Всё включено + перелёт в подарок",
   },
   {
     id: "velaa-private-island",
     hotel: "Velaa Private Island",
     location: "Noonu Atoll, Мальдивы",
-    gradient: "from-ink to-teal",
+    gradient: "from-ink to-gold/70",
     headline: "Раннее бронирование: −15% до конца месяца",
   },
 ];
@@ -50,12 +50,12 @@ function PromoCarousel() {
       <div className="flex flex-col sm:flex-row">
         <div className={`h-40 w-full shrink-0 bg-gradient-to-br sm:h-auto sm:w-64 ${slide.gradient}`} />
         <div className="flex flex-1 flex-col justify-center gap-2 px-6 py-6">
-          <p className="text-xs font-semibold uppercase tracking-widest text-coral">{slide.location}</p>
+          <p className="text-xs font-semibold uppercase tracking-widest text-gold-deep">{slide.location}</p>
           <h3 className="font-display text-2xl font-semibold text-ink">{slide.hotel}</h3>
           <p className="text-sm text-slate/70">{slide.headline}</p>
           <button
             type="button"
-            className="mt-2 w-fit appearance-none rounded-lg border-0 bg-coral px-4 py-2 text-xs font-semibold text-white transition-transform hover:-translate-y-0.5"
+            className="mt-2 w-fit appearance-none rounded-lg border-0 bg-ink px-4 py-2 text-xs font-semibold text-white transition-transform hover:-translate-y-0.5"
           >
             Подробнее
           </button>
@@ -70,7 +70,7 @@ function PromoCarousel() {
             onClick={() => setActive(i)}
             aria-label={`Слайд ${i + 1}: ${s.hotel}`}
             className={`h-2 appearance-none rounded-full border-0 transition-all ${
-              i === active ? "w-5 bg-coral" : "w-2 bg-ink/15 hover:bg-ink/30"
+              i === active ? "w-5 bg-gold" : "w-2 bg-ink/15 hover:bg-ink/30"
             }`}
           />
         ))}
@@ -101,7 +101,7 @@ function Home() {
   return (
     <div className="mx-auto max-w-6xl bg-sand px-5 py-10 font-sans text-slate">
       <div className="rounded-2xl bg-ink px-5 py-16 text-center">
-        <p className="text-xs font-semibold uppercase tracking-widest text-coral">
+        <p className="text-xs font-semibold uppercase tracking-widest text-gold">
           B2B платформа для туристических агентств
         </p>
         <h1 className="mt-3 font-display text-5xl font-semibold text-white">DMC OS</h1>
@@ -112,13 +112,13 @@ function Home() {
         <div className="mt-8 flex flex-wrap justify-center gap-4">
           <button
             onClick={() => navigate("/register")}
-            className="appearance-none rounded-xl border-0 bg-coral px-8 py-3.5 text-sm font-semibold text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
+            className="appearance-none rounded-xl border-0 bg-gold px-8 py-3.5 text-sm font-semibold text-white shadow-sm shadow-gold/30 transition-transform hover:-translate-y-0.5"
           >
             Регистрация
           </button>
           <button
             onClick={() => navigate("/login")}
-            className="appearance-none rounded-xl border-0 bg-teal px-8 py-3.5 text-sm font-semibold text-white shadow-sm shadow-teal/30 transition-transform hover:-translate-y-0.5"
+            className="appearance-none rounded-xl border border-white/30 bg-transparent px-8 py-3.5 text-sm font-semibold text-white transition-colors hover:bg-white/10"
           >
             Вход для агентов
           </button>

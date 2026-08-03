@@ -15,10 +15,10 @@ const COUNTRIES = [
 ];
 
 const baseInputClass =
-  "w-full appearance-none rounded-lg border bg-sand/40 px-4 py-3 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30";
+  "w-full appearance-none rounded-lg border bg-sand/40 px-4 py-3 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none focus:ring-2 focus:ring-gold/30";
 
 const inputClass = (hasError?: string) =>
-  `${baseInputClass} ${hasError ? "border-coral" : "border-ink/15"}`;
+  `${baseInputClass} ${hasError ? "border-danger" : "border-ink/15"}`;
 
 function CheckIcon({ className = "w-6 h-6" }: { className?: string }) {
   return (
@@ -182,7 +182,7 @@ const Register = () => {
     return (
       <div className="flex min-h-[calc(100vh-78px)] items-center justify-center bg-sand px-5 py-12 font-sans text-slate">
         <div className="w-full max-w-lg rounded-2xl border border-ink/10 bg-white p-10 text-center">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-teal/15 text-teal">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-success/15 text-success">
             <CheckIcon />
           </div>
           <h1 className="mt-4 font-display text-2xl font-semibold text-ink">Регистрация успешна!</h1>
@@ -196,7 +196,7 @@ const Register = () => {
           </p>
           <button
             onClick={() => window.location.href = '/'}
-            className="mt-6 appearance-none rounded-xl border-0 bg-coral px-6 py-3 text-sm font-semibold text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5"
+            className="mt-6 appearance-none rounded-xl border-0 bg-ink px-6 py-3 text-sm font-semibold text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5"
           >
             На главную
           </button>
@@ -226,7 +226,7 @@ const Register = () => {
                 className={inputClass(fieldErrors.full_name)}
                 required
               />
-              {fieldErrors.full_name && <span className="text-xs text-coral">{fieldErrors.full_name}</span>}
+              {fieldErrors.full_name && <span className="text-xs text-danger">{fieldErrors.full_name}</span>}
             </div>
             <div className="flex flex-col gap-1.5">
               <label className="text-sm font-medium text-ink">Email *</label>
@@ -239,7 +239,7 @@ const Register = () => {
                 className={inputClass(fieldErrors.email)}
                 required
               />
-              {fieldErrors.email && <span className="text-xs text-coral">{fieldErrors.email}</span>}
+              {fieldErrors.email && <span className="text-xs text-danger">{fieldErrors.email}</span>}
             </div>
           </div>
         </div>
@@ -263,7 +263,7 @@ const Register = () => {
                   </option>
                 ))}
               </select>
-              {fieldErrors.country && <span className="text-xs text-coral">{fieldErrors.country}</span>}
+              {fieldErrors.country && <span className="text-xs text-danger">{fieldErrors.country}</span>}
             </div>
             <div className="flex flex-col gap-1.5">
               <label className="text-sm font-medium text-ink">Город *</label>
@@ -276,7 +276,7 @@ const Register = () => {
                 className={inputClass(fieldErrors.city)}
                 required
               />
-              {fieldErrors.city && <span className="text-xs text-coral">{fieldErrors.city}</span>}
+              {fieldErrors.city && <span className="text-xs text-danger">{fieldErrors.city}</span>}
             </div>
           </div>
           <div className="flex flex-col gap-1.5">
@@ -290,7 +290,7 @@ const Register = () => {
               className={inputClass(fieldErrors.address)}
               required
             />
-            {fieldErrors.address && <span className="text-xs text-coral">{fieldErrors.address}</span>}
+            {fieldErrors.address && <span className="text-xs text-danger">{fieldErrors.address}</span>}
           </div>
         </div>
 
@@ -309,9 +309,9 @@ const Register = () => {
                 className={inputClass(fieldErrors.phone)}
                 required
               />
-              {fieldErrors.phone && <span className="text-xs text-coral">{fieldErrors.phone}</span>}
+              {fieldErrors.phone && <span className="text-xs text-danger">{fieldErrors.phone}</span>}
               {!fieldErrors.phone && formData.phone && (
-                <span className="text-xs text-teal">Номер принят</span>
+                <span className="text-xs text-success">Номер принят</span>
               )}
               <span className="text-xs text-slate/50">Пример: +992901234567 (минимум 10 цифр)</span>
             </div>
@@ -325,7 +325,7 @@ const Register = () => {
                 placeholder="+992901234567"
                 className={inputClass(fieldErrors.whatsapp)}
               />
-              {fieldErrors.whatsapp && <span className="text-xs text-coral">{fieldErrors.whatsapp}</span>}
+              {fieldErrors.whatsapp && <span className="text-xs text-danger">{fieldErrors.whatsapp}</span>}
             </div>
           </div>
           <div className="mb-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
@@ -340,7 +340,7 @@ const Register = () => {
                 className={inputClass(fieldErrors.contact_person)}
                 required
               />
-              {fieldErrors.contact_person && <span className="text-xs text-coral">{fieldErrors.contact_person}</span>}
+              {fieldErrors.contact_person && <span className="text-xs text-danger">{fieldErrors.contact_person}</span>}
             </div>
             <div className="flex flex-col gap-1.5">
               <label className="text-sm font-medium text-ink">Предпочитаемая валюта</label>
@@ -403,7 +403,7 @@ const Register = () => {
                 className={inputClass(fieldErrors.company_name)}
                 required
               />
-              {fieldErrors.company_name && <span className="text-xs text-coral">{fieldErrors.company_name}</span>}
+              {fieldErrors.company_name && <span className="text-xs text-danger">{fieldErrors.company_name}</span>}
             </div>
             <div className="flex flex-col gap-1.5">
               <label className="text-sm font-medium text-ink">Юридическое название *</label>
@@ -416,7 +416,7 @@ const Register = () => {
                 className={inputClass(fieldErrors.legal_company_name)}
                 required
               />
-              {fieldErrors.legal_company_name && <span className="text-xs text-coral">{fieldErrors.legal_company_name}</span>}
+              {fieldErrors.legal_company_name && <span className="text-xs text-danger">{fieldErrors.legal_company_name}</span>}
             </div>
           </div>
           <div className="mb-4 grid grid-cols-1 gap-5 sm:grid-cols-2">
@@ -466,16 +466,16 @@ const Register = () => {
               name="terms_accepted"
               checked={formData.terms_accepted}
               onChange={handleChange}
-              className="accent-coral"
+              className="accent-gold"
               required
             />
             Я принимаю условия использования *
           </label>
-          {fieldErrors.terms_accepted && <span className="text-xs text-coral">{fieldErrors.terms_accepted}</span>}
+          {fieldErrors.terms_accepted && <span className="text-xs text-danger">{fieldErrors.terms_accepted}</span>}
         </div>
 
         {error && (
-          <div className="my-4 rounded-lg bg-coral/10 px-4 py-3 text-sm font-medium text-coral">
+          <div className="my-4 rounded-lg bg-danger/10 px-4 py-3 text-sm font-medium text-danger">
             {error}
           </div>
         )}
@@ -483,7 +483,7 @@ const Register = () => {
         <button
           type="submit"
           disabled={status === 'loading'}
-          className="mt-6 w-full appearance-none rounded-xl border-0 bg-coral py-4 text-base font-semibold text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+          className="mt-6 w-full appearance-none rounded-xl border-0 bg-ink py-4 text-base font-semibold text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
         >
           {status === 'loading' ? 'Отправка...' : 'Зарегистрироваться'}
         </button>

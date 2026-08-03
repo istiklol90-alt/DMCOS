@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { InvoiceReviewNote, BookingCommercialLine, CommercialLineCategory } from "./financeShared";
+import type { InvoiceReviewNote, BookingCommercialLine, CommercialLineCategory, BookingListFinancials } from "./financeShared";
 import {
   computeBookingFinancials,
   computeCommercialLineTotals,
@@ -10,7 +10,7 @@ import {
   hasDateSnapshot,
 } from "./financeShared";
 import BookingsList from "./Reservations";
-import type { Booking, Permissions, Scope, AdminBookingExtensions, DetailCtx, BookingCorrespondenceRow } from "./Reservations";
+import type { Booking, BookingRoom, Permissions, Scope, AdminBookingExtensions, DetailCtx, BookingCorrespondenceRow } from "./Reservations";
 import Badge from "../components/ui/Badge";
 import Button from "../components/ui/Button";
 import Input from "../components/ui/Input";
@@ -337,8 +337,38 @@ function useOwnMealPlan(booking: Booking) {
   return mealPlanInfo;
 }
 
+// Real bug fix, reported live: a 2+-room application's LPO used to be
+// built entirely from `booking`'s own "representative" (first-room)
+// fields, so the hotel confirmation-request email silently described
+// only ONE of the rooms, and the only way to cover every room was to
+// compose/send the panel's editable text manually, multiple times, into
+// separate emails -- exactly the "sends separately" behavior reported.
+// There is deliberately still only ONE correspondence endpoint/thread
+// per booking (no room-scoped correspondence exists, or should exist --
+// it's one hotel relationship, one thread), so the fix is entirely about
+// what goes INTO that one email, not about adding more send actions.
+// Single-room applications (the common case) keep the exact original
+// code path untouched below -- zero behavior change, zero added
+// requests -- and only a genuinely multi-room, multi-billable-room
+// application takes the new combined-email path.
+const NON_BILLABLE_ROOM_STATUSES = new Set(["Rejected", "Cancelled", "Cancellation Requested"]);
+
 function CorrespondencePanel({ ctx }: { ctx: DetailCtx }) {
-  const { booking, onBookingUpdated } = ctx;
+  const { booking, onBookingUpdated, rooms } = ctx;
+  const billableRooms = (rooms ?? []).filter((r) => !NON_BILLABLE_ROOM_STATUSES.has(r.status));
+  if (billableRooms.length > 1) {
+    return <MultiRoomCorrespondencePanel booking={booking} rooms={billableRooms} onBookingUpdated={onBookingUpdated} />;
+  }
+  return <SingleRoomCorrespondencePanel booking={booking} onBookingUpdated={onBookingUpdated} />;
+}
+
+function SingleRoomCorrespondencePanel({
+  booking,
+  onBookingUpdated,
+}: {
+  booking: Booking;
+  onBookingUpdated: (b: Booking) => void;
+}) {
   const [guests, setGuests] = useState<GuestRef[] | null>(null);
   const [hotelName, setHotelName] = useState("");
   const [roomTypeName, setRoomTypeName] = useState("");
@@ -535,6 +565,459 @@ function CorrespondencePanel({ ctx }: { ctx: DetailCtx }) {
       ) : (
         <p className="text-xs text-slate/50">
           {breakdownLoading ? "Calculating price..." : "Could not generate the email — check the price calculation above."}
+        </p>
+      )}
+      {sendError && (
+        <div className="mt-2 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{sendError}</div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Multi-room LPO -- one combined email covering every billable room.
+// ---------------------------------------------------------------------------
+
+interface RoomLpoData {
+  room: BookingRoom;
+  hotelName: string;
+  roomTypeName: string;
+  mealPlanInfo: MealPlanRef | undefined;
+  guests: GuestRef[];
+  roomBreakdown: RoomPriceBreakdown | null;
+  transferBreakdown: TransferPriceBreakdown | null;
+  mandatoryTaxBreakdown: MandatoryTaxBreakdown | null;
+  promotionNames: string[];
+  specialOfferName: string | null;
+}
+
+// Same per-room table shape buildLpoEmailText's rows use, minus the
+// flight rows (those are booking-level, not per-room -- shown once at
+// the end of the combined email instead of repeated for every room).
+function buildLpoRoomRows(data: RoomLpoData): { rows: [string, string][]; totalAmount: number } | null {
+  const { room, roomTypeName, mealPlanInfo, guests, roomBreakdown, transferBreakdown, mandatoryTaxBreakdown } = data;
+  if (!roomBreakdown || !mandatoryTaxBreakdown) return null;
+
+  const currency = room.currency ?? "USD";
+  const guestNames =
+    guests.map((g) => `${g.first_name} ${g.last_name}${g.is_lead_guest ? " (Lead Guest)" : ""}`).join(", ") || "—";
+  const mealPlanLabel = mealPlanInfo?.meal_name || mealPlanInfo?.meal_code || "—";
+
+  const includesParts = [`room rate ${formatMoney(roomBreakdown.base_total, currency)}`];
+  if (roomBreakdown.supplements_total > 0) {
+    includesParts.push(`supplements ${formatMoney(roomBreakdown.supplements_total, currency)}`);
+  }
+  if (mandatoryTaxBreakdown.total > 0) {
+    const taxLabel = mandatoryTaxBreakdown.label || "mandatory tax";
+    includesParts.push(`${taxLabel} ${formatMoney(mandatoryTaxBreakdown.total, currency)}`);
+  }
+  const totalAmount = roomBreakdown.final_total + mandatoryTaxBreakdown.total;
+
+  const rows: [string, string][] = [
+    ["Room Type", roomTypeName],
+    [
+      "Room Check-in — Check-out",
+      `${formatDate(room.arrival_date)} — ${formatDate(room.departure_date)} (${room.nights} nights)`,
+    ],
+    ["Meal Plan", mealPlanLabel],
+    ["Guest Names", guestNames],
+    ["Occupancy", `${room.adults} Adults, ${room.children} Children, ${room.infants} Infants`],
+  ];
+
+  const offerLabels = [...data.promotionNames, ...(data.specialOfferName ? [data.specialOfferName] : [])];
+  if (offerLabels.length > 0) {
+    rows.push(["Special Offer Code", offerLabels.join(", ")]);
+  }
+
+  rows.push(["Total Amount", `${formatMoney(totalAmount, currency)} (includes: ${includesParts.join(" + ")})`]);
+
+  if (room.transfer_type && transferBreakdown) {
+    rows.push([
+      "Transfer",
+      `${transferBreakdown.transfer_name}, for ${room.adults} Adults + ${room.children} Children — ${formatMoney(transferBreakdown.total, currency)}`,
+    ]);
+  }
+
+  return { rows, totalAmount };
+}
+
+function buildMultiRoomLpoEmailText(
+  booking: Booking,
+  hotelName: string,
+  roomsData: RoomLpoData[],
+  managerName: string
+): { subject: string; body: string } | null {
+  const built = roomsData
+    .map((d) => buildLpoRoomRows(d))
+    .filter((b): b is { rows: [string, string][]; totalAmount: number } => b !== null);
+  if (built.length === 0) return null;
+
+  const subject = `Booking Confirmation Request — ${booking.booking_number} — ${hotelName}`;
+  const currency = roomsData[0]?.room.currency ?? booking.currency;
+
+  const sections: string[] = [];
+  built.forEach((b, i) => {
+    sections.push(`--- Room ${i + 1} of ${built.length} ---`, renderTextTable(b.rows), "");
+  });
+  const grandTotal = built.reduce((sum, b) => sum + b.totalAmount, 0);
+
+  const flightRows: [string, string][] = [
+    ["Flight Arrival", formatFlightDetail(booking.arrival_flight_date, booking.arrival_flight_time, booking.arrival_flight_number)],
+    ["Flight Departure", formatFlightDetail(booking.departure_flight_date, booking.departure_flight_time, booking.departure_flight_number)],
+  ];
+
+  const bodyLines = [
+    `Dear ${hotelName} Team,`,
+    "",
+    "Greetings from DMC OS.",
+    "",
+    `We would like to ask you to confirm the below reservations (${built.length} rooms) as per the following details:`,
+    "",
+    ...sections,
+    `Grand Total (${built.length} rooms): ${formatMoney(grandTotal, currency)}`,
+    "",
+    renderTextTable(flightRows),
+    "",
+    "Please confirm these reservations exactly as per the above details.",
+    "",
+    "Best regards,",
+    managerName || "—",
+  ];
+
+  return { subject, body: bodyLines.join("\n") };
+}
+
+// Fetches everything buildMultiRoomLpoEmailText needs, once per room,
+// with results shared across rooms that turn out to need the exact same
+// underlying data (same contract/room type/dates/occupancy/transfer --
+// the common real case for a multi-room application, e.g. BK-000066's
+// two identical villas) so N identical rooms cost the same number of
+// requests as 1, not N.
+function useLpoMultiRoomData(rooms: BookingRoom[]) {
+  const [dataByRoomId, setDataByRoomId] = useState<Record<number, RoomLpoData> | null>(null);
+  const [loading, setLoading] = useState(true);
+  const roomsKey = rooms.map((r) => r.id).join(",");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    const token = localStorage.getItem("token") || "";
+
+    const hotelCache = new Map<number, Promise<string>>();
+    const roomTypeCache = new Map<number, Promise<string>>();
+    const mealPlansByContract = new Map<number, Promise<{ id: number; meal_code: string; meal_name: string | null }[]>>();
+    const specialOfferCache = new Map<number, Promise<string | null>>();
+    const breakdownCache = new Map<
+      string,
+      Promise<{
+        roomBreakdown: RoomPriceBreakdown | null;
+        transferBreakdown: TransferPriceBreakdown | null;
+        mandatoryTaxBreakdown: MandatoryTaxBreakdown | null;
+        promotionNames: string[];
+      }>
+    >();
+
+    function getHotelName(hotelId: number): Promise<string> {
+      if (!hotelCache.has(hotelId)) {
+        hotelCache.set(
+          hotelId,
+          fetchJson<HotelRef>(`/hotel-engine/hotels/${hotelId}`, token).then((h) => h.hotel_name).catch(() => `#${hotelId}`)
+        );
+      }
+      return hotelCache.get(hotelId)!;
+    }
+
+    function getRoomTypeName(roomTypeId: number): Promise<string> {
+      if (!roomTypeCache.has(roomTypeId)) {
+        roomTypeCache.set(
+          roomTypeId,
+          fetchJson<{ room_name: string }>(`/hotel-engine/room-types/${roomTypeId}`, token)
+            .then((rt) => rt.room_name)
+            .catch(() => `#${roomTypeId}`)
+        );
+      }
+      return roomTypeCache.get(roomTypeId)!;
+    }
+
+    async function getMealPlanInfo(contractId: number, mealPlanId: number | null): Promise<MealPlanRef | undefined> {
+      if (mealPlanId === null) return undefined;
+      if (!mealPlansByContract.has(contractId)) {
+        mealPlansByContract.set(
+          contractId,
+          fetchJson<{ id: number; meal_code: string; meal_name: string | null }[]>(
+            `/contract-engine/contracts/${contractId}/meal-plans`,
+            token
+          ).catch(() => [])
+        );
+      }
+      const plans = await mealPlansByContract.get(contractId)!;
+      const match = plans.find((p) => p.id === mealPlanId);
+      return match ? { meal_code: match.meal_code, meal_name: match.meal_name } : undefined;
+    }
+
+    function getSpecialOfferName(offerId: number | null): Promise<string | null> {
+      if (offerId === null) return Promise.resolve(null);
+      if (!specialOfferCache.has(offerId)) {
+        specialOfferCache.set(
+          offerId,
+          fetchJson<SpecialOfferRef>(`/contract-engine/special-offers/${offerId}`, token)
+            .then((o) => o.offer_name)
+            .catch(() => null)
+        );
+      }
+      return specialOfferCache.get(offerId)!;
+    }
+
+    async function getBreakdown(room: BookingRoom) {
+      const key = [
+        room.contract_id, room.room_type_id, room.meal_plan_id, room.arrival_date, room.departure_date,
+        room.adults, room.children, room.infants, room.transfer_type,
+      ].join("|");
+      if (breakdownCache.has(key)) return breakdownCache.get(key)!;
+
+      const promise = (async () => {
+        const mealPlanInfo = await getMealPlanInfo(room.contract_id, room.meal_plan_id);
+        if (!mealPlanInfo) {
+          return { roomBreakdown: null, transferBreakdown: null, mandatoryTaxBreakdown: null, promotionNames: [] };
+        }
+        const roomPriceParams = new URLSearchParams({
+          check_in: room.arrival_date,
+          check_out: room.departure_date,
+          meal_plan: mealPlanInfo.meal_code,
+          adults: String(room.adults),
+          children: String(room.children),
+          infants: String(room.infants),
+        });
+        const mandatoryTaxParams = new URLSearchParams({
+          nights: String(room.nights),
+          adults: String(room.adults),
+          children: String(room.children),
+        });
+        const [roomBreakdown, mandatoryTaxBreakdown] = await Promise.all([
+          fetchJson<RoomPriceBreakdown>(
+            `/contract-engine/contracts/${room.contract_id}/room-types/${room.room_type_id}/price?${roomPriceParams}`,
+            token
+          ).catch(() => null),
+          fetchJson<MandatoryTaxBreakdown>(
+            `/contract-engine/contracts/${room.contract_id}/mandatory-tax?${mandatoryTaxParams}`,
+            token
+          ).catch(() => null),
+        ]);
+        let transferBreakdown: TransferPriceBreakdown | null = null;
+        if (room.transfer_type) {
+          const transferParams = new URLSearchParams({
+            transfer_type: room.transfer_type,
+            check_in: room.arrival_date,
+            check_out: room.departure_date,
+            adults: String(room.adults),
+            children: String(room.children),
+            infants: String(room.infants),
+          });
+          transferBreakdown = await fetchJson<TransferPriceBreakdown>(
+            `/contract-engine/contracts/${room.contract_id}/transfer-price?${transferParams}`,
+            token
+          ).catch(() => null);
+        }
+        let promotionNames: string[] = [];
+        if (roomBreakdown && roomBreakdown.applied_promotions.length > 0) {
+          promotionNames = (
+            await Promise.all(
+              roomBreakdown.applied_promotions.map((id) =>
+                fetchJson<PromotionRef>(`/contract-engine/promotions/${id}`, token).catch(() => null)
+              )
+            )
+          )
+            .filter((p): p is PromotionRef => p !== null)
+            .map((p) => p.promotion_name);
+        }
+        return { roomBreakdown, transferBreakdown, mandatoryTaxBreakdown, promotionNames };
+      })();
+      breakdownCache.set(key, promise);
+      return promise;
+    }
+
+    Promise.all(
+      rooms.map(async (room) => {
+        const [hotelName, roomTypeName, mealPlanInfo, guests, breakdown, specialOfferName] = await Promise.all([
+          getHotelName(room.hotel_id),
+          getRoomTypeName(room.room_type_id),
+          getMealPlanInfo(room.contract_id, room.meal_plan_id),
+          fetchJson<GuestRef[]>(`/booking-engine/rooms/${room.id}/guests`, token).catch(() => []),
+          getBreakdown(room),
+          getSpecialOfferName(room.applied_special_offer_id),
+        ]);
+        const data: RoomLpoData = {
+          room,
+          hotelName,
+          roomTypeName,
+          mealPlanInfo,
+          guests,
+          roomBreakdown: breakdown.roomBreakdown,
+          transferBreakdown: breakdown.transferBreakdown,
+          mandatoryTaxBreakdown: breakdown.mandatoryTaxBreakdown,
+          promotionNames: breakdown.promotionNames,
+          specialOfferName,
+        };
+        return [room.id, data] as const;
+      })
+    ).then((entries) => {
+      if (!cancelled) {
+        setDataByRoomId(Object.fromEntries(entries));
+        setLoading(false);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomsKey]);
+
+  return { dataByRoomId, loading };
+}
+
+function MultiRoomCorrespondencePanel({
+  booking,
+  rooms,
+  onBookingUpdated,
+}: {
+  booking: Booking;
+  rooms: BookingRoom[];
+  onBookingUpdated: (b: Booking) => void;
+}) {
+  const { dataByRoomId, loading } = useLpoMultiRoomData(rooms);
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [recipientEmailSecondary, setRecipientEmailSecondary] = useState("");
+  const [editableLpoBody, setEditableLpoBody] = useState("");
+  const [lpoCopied, setLpoCopied] = useState(false);
+  const [sendSubmitting, setSendSubmitting] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [hotelEmail, setHotelEmail] = useState<string | null>(null);
+
+  // All real rooms today share one hotel_id per application; even if
+  // they didn't, the first billable room's hotel is still the right "To"
+  // default -- the recipient field stays freely editable either way.
+  useEffect(() => {
+    const token = localStorage.getItem("token") || "";
+    fetchJson<HotelRef>(`/hotel-engine/hotels/${rooms[0].hotel_id}`, token)
+      .then((hotel) => setHotelEmail(hotel.email ?? null))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rooms[0]?.hotel_id]);
+
+  useEffect(() => {
+    if (hotelEmail && !recipientEmail) setRecipientEmail(hotelEmail);
+  }, [hotelEmail]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const managerName = (() => {
+    try {
+      return JSON.parse(localStorage.getItem("user") || "{}").name || "";
+    } catch {
+      return "";
+    }
+  })();
+
+  const roomsData = dataByRoomId ? rooms.map((r) => dataByRoomId[r.id]).filter((d): d is RoomLpoData => !!d) : null;
+  const hotelName = roomsData?.[0]?.hotelName ?? "";
+  const lpo = roomsData && roomsData.length > 0 ? buildMultiRoomLpoEmailText(booking, hotelName, roomsData, managerName) : null;
+
+  useEffect(() => {
+    if (lpo && !editableLpoBody) setEditableLpoBody(lpo.body);
+  }, [lpo?.body]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const lpoFullText = lpo ? `Subject: ${lpo.subject}\n\n${editableLpoBody || lpo.body}` : null;
+
+  function handleCopyLpo() {
+    if (!lpoFullText) return;
+    navigator.clipboard.writeText(lpoFullText).then(() => {
+      setLpoCopied(true);
+      setTimeout(() => setLpoCopied(false), 2000);
+    });
+  }
+
+  async function handleSendCorrespondence() {
+    if (!lpo) return;
+    const token = localStorage.getItem("token") || "";
+    setSendSubmitting(true);
+    setSendError(null);
+    try {
+      // Still exactly ONE POST, to the same booking-level (not room-
+      // level) endpoint -- one combined email, sent once, covering every
+      // room in the body built above.
+      await fetchJson<BookingCorrespondenceRow>(`/booking-engine/bookings/${booking.id}/correspondence/send`, token, {
+        method: "POST",
+        body: JSON.stringify({
+          subject: lpo.subject,
+          body: editableLpoBody || lpo.body,
+          recipient_email: recipientEmail.trim() || null,
+          recipient_email_secondary: recipientEmailSecondary.trim() || null,
+        }),
+      });
+      onBookingUpdated({ ...booking });
+    } catch (err: any) {
+      setSendError(err.message || "Failed to send email");
+    } finally {
+      setSendSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-ink/10 bg-sand/30 p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
+          LPO — booking confirmation request to hotel ({rooms.length} rooms, one email)
+        </p>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleCopyLpo}
+            disabled={!lpoFullText}
+            className="rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-ink/80 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {lpoCopied ? "Copied ✓" : "Copy"}
+          </button>
+          <button
+            type="button"
+            onClick={handleSendCorrespondence}
+            disabled={!lpo || sendSubmitting}
+            className="rounded-lg bg-coral px-3 py-1.5 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+          >
+            {sendSubmitting ? "Sending..." : "Send"}
+          </button>
+        </div>
+      </div>
+      {lpo ? (
+        <>
+          <div className="mb-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <input
+              type="email"
+              placeholder="To (hotel email)"
+              value={recipientEmail}
+              onChange={(e) => setRecipientEmail(e.target.value)}
+              className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+            />
+            <input
+              type="email"
+              placeholder="Second email (optional)"
+              value={recipientEmailSecondary}
+              onChange={(e) => setRecipientEmailSecondary(e.target.value)}
+              className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+            />
+          </div>
+          {!hotelEmail && (
+            <p className="mb-2 text-[11px] text-slate/40">The hotel has no email on file — enter one manually.</p>
+          )}
+          <p className="mb-1 text-[11px] font-medium text-slate/50">Subject: {lpo.subject}</p>
+          <textarea
+            value={editableLpoBody || lpo.body}
+            onChange={(e) => setEditableLpoBody(e.target.value)}
+            rows={20}
+            className="w-full rounded-lg border border-ink/15 bg-white p-3 font-mono text-xs text-ink focus:border-coral focus:outline-none"
+          />
+        </>
+      ) : (
+        <p className="text-xs text-slate/50">
+          {loading ? "Calculating prices for all rooms..." : "Could not generate the email — check each room's price calculation."}
         </p>
       )}
       {sendError && (
@@ -949,7 +1432,42 @@ function FinancialSummaryBlock({ ctx }: { ctx: DetailCtx }) {
 // together or dropped.
 // ---------------------------------------------------------------------------
 
-function ListSummaryBar({ bookings }: { bookings: Booking[] }) {
+function ListSummaryBar({
+  bookings,
+  financialsByBooking,
+  onFinancialsLoaded,
+}: {
+  bookings: Booking[];
+  financialsByBooking: Record<number, BookingListFinancials>;
+  onFinancialsLoaded: (map: Record<number, BookingListFinancials>) => void;
+}) {
+  // Bulk-fetches live (commercial-line-aware) financials for exactly
+  // whatever the list currently has visible -- one request per distinct
+  // visible set (filter/sort/date-range change), not one per row and not
+  // one per re-render. See compute_bookings_list_financials's own
+  // docstring (backend/app/engines/finance/service.py) for why this is
+  // needed at all: a manual cost correction in a room's commercial ledger
+  // never touches Booking's own frozen columns, so without this, the list
+  // silently keeps showing the pre-correction profit forever.
+  const idsKey = bookings.map((b) => b.id).sort((a, b) => a - b).join(",");
+  useEffect(() => {
+    if (bookings.length === 0) return;
+    const token = localStorage.getItem("token") || "";
+    fetchJson<BookingListFinancials[]>(`/finance-engine/bookings/financials?ids=${idsKey}`, token)
+      .then((rows) => {
+        const map: Record<number, BookingListFinancials> = {};
+        rows.forEach((r) => {
+          map[r.booking_id] = r;
+        });
+        onFinancialsLoaded(map);
+      })
+      .catch(() => {
+        // Best-effort -- rows simply keep using the frozen-column
+        // fallback below, same as before this endpoint existed.
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey]);
+
   if (bookings.length === 0) return null;
 
   const cancelled = bookings.filter((b) => b.status === "Cancelled").length;
@@ -961,12 +1479,13 @@ function ListSummaryBar({ bookings }: { bookings: Booking[] }) {
   const profitByCurrency: Record<string, number> = {};
   let anyUncomputed = false;
   for (const b of billable) {
-    const financials = computeBookingFinancials(b);
-    if (financials.profit === null) {
+    const bulk = financialsByBooking[b.id];
+    const profit = bulk ? bulk.profit : computeBookingFinancials(b).profit;
+    if (profit === null) {
       anyUncomputed = true;
       continue;
     }
-    profitByCurrency[b.currency] = (profitByCurrency[b.currency] ?? 0) + financials.profit;
+    profitByCurrency[b.currency] = (profitByCurrency[b.currency] ?? 0) + profit;
   }
   const profitEntries = Object.entries(profitByCurrency);
 
@@ -1330,6 +1849,18 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
   // after auto-creating), which otherwise have no way to talk to each
   // other since onAfterClaim is a plain callback, not a component.
   const [invoicesByBooking, setInvoicesByBooking] = useState<Record<number, InvoiceInfo | null>>({});
+  // Bulk, live (commercial-line-aware) Net/Sale/Profit per booking_id --
+  // populated by ListSummaryBar's own bulk-fetch effect (it's the one
+  // component that already receives the full visible booking array), read
+  // by renderFinancialColumnCells below. A booking_id absent from this map
+  // (not yet loaded, or the bulk endpoint returned nothing for it) falls
+  // back to the old frozen-column computeBookingFinancials, same as
+  // before this existed -- never a blank/broken cell.
+  const [financialsByBooking, setFinancialsByBooking] = useState<Record<number, BookingListFinancials>>({});
+
+  function mergeFinancials(map: Record<number, BookingListFinancials>) {
+    setFinancialsByBooking((prev) => ({ ...prev, ...map }));
+  }
 
   useEffect(() => {
     const token = localStorage.getItem("token") || "";
@@ -1356,13 +1887,25 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
       </>
     ),
     renderFinancialColumnCells: (booking) => {
-      const financials = computeBookingFinancials(booking);
+      const bulk = financialsByBooking[booking.id];
+      const netTotal = bulk ? bulk.net_total : computeBookingFinancials(booking).netTotal;
+      const profit = bulk ? bulk.profit : computeBookingFinancials(booking).profit;
       return (
         <>
-          <td className="whitespace-nowrap px-4 py-3.5 font-medium text-ink">{formatNumber(financials.netTotal)}</td>
           <td className="whitespace-nowrap px-4 py-3.5 font-medium text-ink">
-            {financials.profit !== null ? (
-              formatNumber(financials.profit)
+            {formatNumber(netTotal)}
+            {bulk?.has_manual_adjustment && (
+              <span
+                className="ml-1 cursor-help text-[10px] text-warning"
+                title="Includes a manual correction from the commercial ledger"
+              >
+                ✎
+              </span>
+            )}
+          </td>
+          <td className="whitespace-nowrap px-4 py-3.5 font-medium text-ink">
+            {profit !== null ? (
+              formatNumber(profit)
             ) : (
               <span
                 className="cursor-help text-slate/40"
@@ -1388,7 +1931,9 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
     renderCorrespondencePanel: (ctx) => <CorrespondencePanel ctx={ctx} />,
     renderReplyLogButton: (ctx) => <ReplyLogButton ctx={ctx} />,
     renderFinancialSummary: (ctx) => <FinancialSummaryBlock ctx={ctx} />,
-    renderListSummary: (bookings) => <ListSummaryBar bookings={bookings} />,
+    renderListSummary: (bookings) => (
+      <ListSummaryBar bookings={bookings} financialsByBooking={financialsByBooking} onFinancialsLoaded={mergeFinancials} />
+    ),
     onAfterClaim: (ctx) => {
       const bookingId = ctx.booking.id;
       // Decision 080: claiming auto-creates a Draft invoice as a

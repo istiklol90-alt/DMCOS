@@ -1048,6 +1048,15 @@ def list_booking_rooms(db: Session, booking_id: int) -> list[BookingRoom]:
     return repository.list_booking_rooms(db, booking_id)
 
 
+def list_booking_rooms_bulk(db: Session, booking_ids: list[int]) -> list[BookingRoom]:
+    """Bulk variant of list_booking_rooms -- deliberately does NOT validate
+    each booking_id exists (unlike the single-id version): callers pass
+    ids they already loaded from a real list endpoint, and a booking with
+    zero rooms simply contributes no rows, no different from an id that
+    doesn't exist."""
+    return repository.list_booking_rooms_bulk(db, booking_ids)
+
+
 def get_booking_room(db: Session, booking_room_id: int) -> BookingRoom:
     """Fetch one room by id, or raise ValueError if it doesn't exist."""
     return _require_booking_room(db, booking_room_id)

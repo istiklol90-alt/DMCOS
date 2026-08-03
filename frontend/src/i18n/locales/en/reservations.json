@@ -5,6 +5,8 @@
   "statusBadge": {
     "draft": "Draft",
     "pending": "Pending",
+    "waitingHotel": "Waiting Hotel",
+    "partiallyConfirmed": "Partially Confirmed",
     "confirmed": "Confirmed",
     "cancellationRequested": "Cancellation Requested",
     "cancelled": "Cancelled",
@@ -140,6 +142,7 @@
     "specialRequestsLabel": "Special requests:",
     "total": "Total",
     "hotelConfirmationTitle": "Hotel confirmation",
+    "confirmationPerRoomHint": "entered separately per room below",
     "cancellationConfirmationTitle": "Cancellation confirmation",
     "cancellationSectionTitle": "Cancellation",
     "reasonLabel": "Reason:",
@@ -188,6 +191,7 @@
     "columnSalePrice": "Sale price",
     "noBookingsFound": "No bookings found",
     "needsAttention": "Needs attention",
+    "inReview": "In review",
     "totalLabel": "Total:",
     "totalCount_one": "{{count}} booking",
     "totalCount_other": "{{count}} bookings"

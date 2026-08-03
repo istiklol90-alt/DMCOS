@@ -66,7 +66,12 @@
   },
   "hotelCard": {
     "noActiveContract": "Нет активного контракта",
-    "noRoomTypes": "Нет доступных типов номеров."
+    "noRoomTypes": "Нет доступных типов номеров.",
+    "roomOptions_one": "{{count}} вариант размещения",
+    "roomOptions_few": "{{count}} варианта размещения",
+    "roomOptions_many": "{{count}} вариантов размещения",
+    "roomOptions_other": "{{count}} вариантов размещения",
+    "transferAvailable": "Есть трансфер"
   },
   "cart": {
     "title_one": "Поездка: {{count}} номер",
@@ -77,6 +82,7 @@
     "show": "Показать",
     "remove": "Убрать",
     "checkout": "Оформить заявку",
+    "empty": "Пока нет добавленных номеров — выберите номер и нажмите «Добавить в поездку».",
     "checkoutTitle": "Данные гостей",
     "close": "Отмена",
     "roomNumber": "Номер {{number}}",

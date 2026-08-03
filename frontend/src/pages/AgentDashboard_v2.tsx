@@ -95,19 +95,23 @@ function AgentDashboard_v2() {
     <div className="min-h-screen bg-sand font-sans text-slate">
       <AgentTopNav user={user} active="dashboard" />
 
-      {/* Hero -- same ink/coral gradient HotelSearch.tsx's own hero band
-          uses, for visual consistency between the two pages (no stock-photo
-          pipeline exists in this project; flagged during planning rather
-          than silently sourcing one). */}
-      <div className="bg-gradient-to-br from-ink via-ink to-coral/40 px-4 py-14 text-center sm:px-8 sm:py-16">
-        <p className="text-xs font-semibold tracking-widest text-coral">{t("hero.title")}</p>
+      {/* Hero -- byte-identical gradient/accent to HotelSearch.tsx's own
+          hero band, so entering the panel and searching read as the same
+          product rather than two differently-lit pages (reported live: the
+          two screens had visibly different light). Design System v1.0
+          ink/gold; no stock-photo pipeline exists in this project. */}
+      <div className="bg-gradient-to-br from-ink via-ink to-gold/30 px-4 py-14 text-center sm:px-8 sm:py-16">
+        <p className="text-xs font-semibold tracking-widest text-gold">{t("hero.title")}</p>
         <h1 className="mt-2 font-display text-3xl font-semibold text-white sm:text-5xl">
           {t("hero.greeting", { name: getFirstName(user.name) })}
         </h1>
         <p className="mx-auto mt-3 max-w-xl text-sm text-white/70 sm:text-base">{t("hero.subtitle")}</p>
       </div>
 
-      <main className="mx-auto max-w-6xl px-4 pb-12 sm:px-8">
+      {/* Same 96rem container HotelSearch.tsx now uses -- two agent pages
+          capping their content at different widths read as two different
+          layouts even when the palette matches. */}
+      <main className="mx-auto max-w-[96rem] px-4 pb-12 sm:px-8">
         {/* Single CTA -- search itself lives only on the Search page/nav
             item now (see file header comment); this just gets an agent
             there, it doesn't re-implement the form. */}
@@ -115,7 +119,7 @@ function AgentDashboard_v2() {
           <button
             type="button"
             onClick={() => navigate("/hotel-search")}
-            className="w-full appearance-none rounded-lg border-0 bg-coral px-8 py-3.5 text-base font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 sm:w-auto"
+            className="flex w-full appearance-none items-center justify-center gap-2 rounded-full border-0 bg-ink px-8 py-3.5 text-base font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 sm:w-auto"
           >
             {t("search.searchButton")}
           </button>
@@ -197,7 +201,10 @@ function AgentDashboard_v2() {
                     type="button"
                     onClick={() => navigate("/hotel-search", { state: { destination: hotel.hotel_name } })}
                     className={`overflow-hidden rounded-xl border-0 bg-gradient-to-br p-4 text-left transition-transform hover:-translate-y-0.5 ${
-                      i % 2 === 0 ? "from-ink to-teal" : "from-coral to-ink"
+                      // Same ink/gold pair HotelSearch.tsx's own
+                      // CARD_GRADIENTS uses, so a hotel tile here and a
+                      // hotel card there belong to one palette.
+                      i % 2 === 0 ? "from-ink to-gold" : "from-gold to-ink"
                     }`}
                   >
                     <p className="font-display text-base font-semibold text-white">{hotel.hotel_name}</p>

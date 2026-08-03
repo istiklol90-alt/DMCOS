@@ -12,7 +12,7 @@ import Counteragents from "./Counteragents";
 import Invoices from "./Invoices";
 import Balance from "./Balance";
 import Cashback from "./Cashback";
-import AdminNav from "./AdminNav";
+import AdminShell from "../components/layout/AdminShell";
 import Card from "../components/ui/Card";
 import Badge, { type BadgeTone } from "../components/ui/Badge";
 import Button from "../components/ui/Button";
@@ -165,6 +165,15 @@ const AdminPanel = () => {
     navigate("/");
   };
 
+  const userLabel = (() => {
+    try {
+      const u = JSON.parse(localStorage.getItem("user") || "{}");
+      return u.name ? `${u.name}${u.role ? ` · ${u.role}` : ""}` : "Admin";
+    } catch {
+      return "Admin";
+    }
+  })();
+
   const statCards: { key: StatKey; label: string; value: number }[] = [
     { key: "all", label: "Total", value: stats.total },
     { key: "agent", label: "Agents", value: stats.agents },
@@ -185,15 +194,12 @@ const AdminPanel = () => {
 
   return (
     <I18nextProvider i18n={adminI18n}>
-    <div className="min-h-screen bg-sand px-5 py-4 font-sans text-slate">
-      <div className="mx-auto max-w-[1400px]">
-        <div className="flex items-center justify-between gap-4 border-b border-ink/10">
-          <AdminNav activeTab={activeTab} onSelect={(key) => setActiveTab(key as AdminTab)} />
-          <Button variant="secondary" size="sm" onClick={handleLogout} className="shrink-0">
-            Log out
-          </Button>
-        </div>
-
+      <AdminShell
+        activeTab={activeTab}
+        onSelect={(key) => setActiveTab(key as AdminTab)}
+        userLabel={userLabel}
+        onLogout={handleLogout}
+      >
         {activeTab === "counteragents" && <Counteragents />}
 
         {activeTab === "invoices" && <Invoices />}
@@ -408,8 +414,7 @@ const AdminPanel = () => {
         </div>
         </>
         )}
-      </div>
-    </div>
+      </AdminShell>
     </I18nextProvider>
   );
 };

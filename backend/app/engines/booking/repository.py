@@ -197,6 +197,21 @@ def list_booking_rooms(db: Session, booking_id: int) -> list[BookingRoom]:
     )
 
 
+def list_booking_rooms_bulk(db: Session, booking_ids: list[int]) -> list[BookingRoom]:
+    """Bulk variant of list_booking_rooms for many applications in one query
+    -- used by Finance Engine's list-level financials aggregation to avoid
+    an N+1 (one query per booking) when computing figures for a whole
+    Bookings list page at once."""
+    if not booking_ids:
+        return []
+    return (
+        db.query(BookingRoom)
+        .filter(BookingRoom.booking_id.in_(booking_ids))
+        .order_by(BookingRoom.booking_id, BookingRoom.sequence_number)
+        .all()
+    )
+
+
 def update_booking_room(db: Session, room: BookingRoom, **fields) -> BookingRoom:
     """Apply the given field values to an existing room row and persist them — generic update, same shape as update_booking."""
     for key, value in fields.items():

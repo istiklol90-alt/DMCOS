@@ -6043,6 +6043,182 @@ Status: Implemented and verified. `npx tsc -b`: clean at the established 2-error
 
 ---
 
+# Decision 136
+
+Date: 2026-07-30
+
+Decision: Three real bugs reported live against BK-000066 (a genuine 2-room application) fixed, all frontend-only, backend extended additively.
+
+(1) **Confirmation number was one field for the whole application.** `BookingRoom.confirmation_number` and `PUT /booking-engine/rooms/{id}` already existed server-side (Decision 097's own Stage 4), just never wired into the UI — `ConfirmationNumberEdit` only ever edited `Booking.confirmation_number`, so entering the hotel's reference for room 1 silently applied to room 2 as well. New `RoomConfirmationNumberEdit` (Reservations.tsx) renders per room whenever an application has 2+ rooms — single-room applications (the common case) keep the exact original whole-booking editor, untouched.
+
+(2) **Bookings list showed stale profit after a manual commercial-ledger correction.** `BookingDetail`'s own header already read live `BookingCommercialLine` data (Decision 120) when it existed for a room, but the list's Net/Profit column and "Total profit" summary strip both still called `compute_booking_financials`/`computeBookingFinancials` — the frozen Pricing-Engine snapshot, never touched by `upsert_commercial_line`. New bulk, read-only `GET /finance-engine/bookings/financials?ids=...` (service.`compute_bookings_list_financials`, two bulk queries total — new `booking_service.list_booking_rooms_bulk`/`finance repository.list_commercial_lines_bulk` — never one query per booking/room, and deliberately never seeds rows the way the existing per-room GET does) returns the same live-if-corrected figure the detail view already showed. `AdminBookingFinance.tsx`'s `ListSummaryBar`/`renderFinancialColumnCells` now read this bulk result, falling back to the old frozen calc for any booking absent from it (no `BookingRoom` rows at all — a legacy edge case). A `✎` marker shows on rows with a real manual adjustment (`has_manual_adjustment`, keyed off `adjusted_by IS NOT NULL` on any line — corrected mid-implementation from an initial version that only checked the `adjustment_*` delta columns, which missed a direct `base_cost` correction, the exact kind BK-000066 had).
+
+(3) **LPO for a multi-room application only ever described one room.** `renderCorrespondencePanel` always received `booking`'s own "representative" (first-room) fields; a hotel confirmation-request email for a 2-room stay silently covered just one of them. `DetailCtx` gained an optional `rooms` field (`BookingRoom[] | null`, threaded from `BookingDetail`'s own already-fetched `rooms` state). New `MultiRoomCorrespondencePanel`/`useLpoMultiRoomData`/`buildMultiRoomLpoEmailText` build one combined email — a `--- Room N of M ---` table per billable room plus a shared flight-details table and grand total — fired by exactly one `POST .../correspondence/send` call, same as before (no new endpoint, no room-scoped correspondence introduced). Identical-room lookups (contract/room type/dates/occupancy/transfer) are deduped via an in-request cache, so BK-000066's two identical villas cost the same number of backend calls as one room would. Single-room applications take the completely untouched original code path (`SingleRoomCorrespondencePanel`).
+
+Reason: three independently-reported real defects on a live multi-room booking, not hypothetical — each traced to the same root cause shape (multi-room support added at the `BookingRoom` layer in earlier decisions, but a UI surface never updated to consume it).
+
+Approved By: Daler
+
+Status: Implemented and verified against BK-000066's real data (rooms 63/64) via direct API calls — the new bulk financials endpoint's `has_manual_adjustment`/summed net-sale-profit figures matched the real, deliberately-edited test values on those two commercial-line rows exactly. `npx tsc -b`/`npx vite build` clean at the 2-error dead-file baseline. Both dev servers restarted fresh; new code confirmed live via direct `curl` against served bundles. Not yet verified live in-browser (no automation tool this session) — needs a real click-through: open BK-000066, confirm both rooms show independent confirmation-number editors, the list's Profit column matches the detail view, and the LPO panel shows one combined 2-room email.
+
+---
+
+# Decision 137
+
+Date: 2026-07-30
+
+Decision: Kicked off "DMC OS Design System v1.0" — a full-platform corporate visual unification the project owner requested (explicit hard constraints: no new features, no business-logic/backend/API/Engine/permission changes, UI/UX only). Given the genuinely large scope (20+ page files, several still fully hand-rolled), this is being delivered in phases, same "prove it once, extend later" discipline as every prior design-system pass this session — **this decision covers Phase 0 (foundation) only.**
+
+Before any code was touched, a palette proposal (colors, buttons, status pills, a card+table mock, a sidebar mock, calendar before/after, and the one real spec conflict) was shown to the owner as a live preview artifact, and three scope questions were asked and answered: **Cancelled** gets its own dedicated muted-terracotta token (`#8a5a52`) rather than reusing Rejected's red — preserves the Cancelled-vs-Rejected distinction (Decision 104, reinforced by this session's own recent line-through fix) while still reading "in the red family" per the brief. **Sidebar** is scoped to the admin panel only — the agent-facing top nav (`AgentTopNav.tsx`) is deliberately untouched, deferred to a later phase alongside HotelSearch/AgentDashboard_v2's own full migration. **Start point** confirmed as foundation (tokens/primitives/Sidebar/Calendar) rather than the highest-risk pages (Bookings/Finance) or the Sidebar alone.
+
+**Colors** (`tailwind.css` `@theme`): `--color-ink` (`#1b2340`, primary/navy) and `--color-sand` (`#f3eee4`, background) were already correct per the brief and kept byte-identical. New `--color-gold`/`--color-gold-deep` (accent, used sparingly — sidebar active state — never the default button fill, since the brief names navy as основной). `--color-success` changed from a teal-alias to a genuine independent green (`#2f7d52`) — teal read too close to the new navy primary to stay an unambiguous "Confirmed" signal. New `--color-cancelled` (`#8a5a52`, see above). `--color-warning`/`--color-danger`/`--color-teal`/`--color-coral` unchanged and still defined (not deleted — still referenced directly by pages not yet migrated). Real bug found and fixed alongside this: `global.css`'s actual `body` background was a stock `#f5f7fb` (cool blue-grey) that had been silently overriding the sand token everywhere since before Design System v1.0 — corrected to sand's own hex.
+
+**Buttons** (`Button.tsx`): the brief asks for exactly 4 — Primary/Secondary/Outline/Danger. `primary` is now solid navy (was coral) — gold stays the accent, not the default CTA. New `outline` variant (transparent + navy border) is what `secondary` used to render as; `secondary` itself is now a new subtle navy-tinted fill, a real second-tier action distinct from `outline`. `danger` unchanged. `dark`/`ghost` deliberately kept, not removed — dozens of existing call sites across already-migrated pages use them; ripping them out is future cleanup once every page is on v1.0, not attempted mid-foundation-pass. `primary`/`dark` now render identically (both solid navy) — disclosed, not accidental.
+
+**Badge** (`Badge.tsx`): new `"cancelled"` tone using the new token.
+
+**Sidebar/Header**: new `components/layout/AdminShell.tsx` — a left sidebar (navy, gold active-state) plus a slim topbar (user label, logout), replacing `AdminPanel.tsx`'s previous `AdminNav`-top-bar-only layout. Reuses `AdminNav.tsx`'s existing `NAV_STRUCTURE` data array and its exact controlled `activeTab`/`onSelect` contract verbatim — zero navigation logic change, purely a new presentational shell. Groups render as an always-expanded label + child list (a sidebar has the vertical room a horizontal bar didn't) rather than the old click-to-open dropdown, so that interaction's own state/click-outside-listener is gone entirely, not just hidden. `AdminNav.tsx` itself is left in place, unused by `AdminPanel.tsx` now but not deleted. **Scope-narrowed from the original plan during implementation:** a contextual search slot in the topbar was planned but dropped — `AdminPanel.tsx` has no single cross-tab search state to lift up without either faking a non-functional box or changing which page owns search state (a real behavior change, out of scope) — search unification stays a future-phase concern once individual pages' own search inputs get visually standardized.
+
+**Calendar** (`HotelSearch.tsx`'s `MonthGrid`/`DateRangePicker`, shared by 3 consumers — HotelSearch, Reservations, PriceCalculator): visual-only rework — day cells `h-7/w-7` → `h-10/w-10`, panel width `w-56` → `w-72`, popover padding `p-3` → `p-5`, date numerals `text-xs` → `text-sm`, weekday header restyled to the Label convention (uppercase, tracking-wide), range-band recolored from `bg-coral/10` to `bg-gold/10`, endpoint circles recolored from `bg-coral` to `bg-ink` (navy, matching the new primary). `buildMonthGrid`, `handleDayClick`, and every prop (`checkIn`/`checkOut`/`onChange`/`forceLang`/`size`/`allowPast`) are byte-identical — confirmed by inspection, not just intent.
+
+**Status**: `Reservations.tsx`'s `STATUS_CLASSES.Cancelled` repointed from neutral slate to the new `--color-cancelled` token (kept the line-through decoration from this session's own recent fix).
+
+Explicitly **not** touched in Phase 0 (future phases): `Contracts.tsx`, `ContractsAI.tsx`, `Invoices.tsx`/`financeShared.tsx`, `PriceCalculator.tsx`, `BookingsSubViews.tsx`, `AdminBookingFinance.tsx`'s remaining raw stock-color literals, `AgentTopNav.tsx`, `ChangePassword.tsx`/`ManagerDashboard.tsx`/`AgentRegistration.tsx` (the last confirmed dead code), and any backend file.
+
+Reason: project-owner-requested full-platform visual unification; scoped to a foundation-first phase (per the owner's own confirmed answer) specifically because the token/primitive layer already cascades automatically to every already-migrated page (`AdminPanel.tsx`, `Login.tsx`, `Balance.tsx`, `Cashback.tsx`, `Counteragents.tsx`) for zero additional file touches — the highest-leverage, lowest-risk place to start a genuinely large effort.
+
+Approved By: Daler (palette + 3 scope questions confirmed via a preview artifact and AskUserQuestion before any code was touched)
+
+Status: Implemented and verified. `npx tsc -b`/`npx vite build` clean at the 2-error dead-file baseline (zero new). `git status` confirms zero backend files touched by this pass (the backend changes present in the working tree are Decision 136's, predating this one). Both dev servers restarted fresh; new tokens (`--color-gold`, `--color-cancelled`), `AdminShell.tsx`, `AdminPanel.tsx`'s new wiring, and the `STATUS_CLASSES.Cancelled` change all confirmed live via direct `curl` against the served bundles. **Not yet verified live in-browser** (no automation tool this session, same limitation as recent decisions) — needs a real click-through by the project owner: `/admin-panel`'s new sidebar+topbar (every nav item still reaches the same tab it did before), the booking status pills (Cancelled visibly distinct from both Rejected and the old grey), and the calendar's new spacing/sizing across all 3 consumers.
+
+---
+
+# Decision 138
+
+Date: 2026-07-30
+
+Decision: Four real, live-reported UX iterations on `AdminShell.tsx`'s new sidebar (Decision 137), all found by the project owner testing the actual running admin panel rather than planned in advance.
+
+(1) **Collapsible.** The sidebar was permanently visible with no way to reclaim its width for wide tables (Needs Attention, Bookings). A chevron button inside the sidebar (near the logo) collapses it to full-width content; a menu icon appears in the topbar to bring it back. State persisted in `localStorage["admin_sidebar_collapsed"]`, same flat-key convention as `token`/`role`/`user`.
+
+(2) **Accordion groups.** Bookings/Contracts/Finance used to show every child permanently expanded. Now one group opens at a time (`openGroup` state) — clicking a group expands it and closes whichever was open; clicking a top-level leaf (Users, Price calculator, Counteragents) closes any open group, since navigating there means leaving that section. The group containing the current `activeTab` starts open on load so landing directly on e.g. "Arrival" doesn't hide the very item you're on.
+
+(3) **Real bug, found from a screenshot: group header labels (BOOKINGS/CONTRACTS/FINANCE) were unreadable** — near-invisible white-on-white. Root cause: the group header `<button>` never set an explicit `bg-*` class, and this project deliberately excludes Tailwind's preflight reset (`tailwind.css`'s own top comment), so the browser's native UA-stylesheet button background (light/white) showed through underneath low-opacity white text. Every other nav button in the file already had an explicit `bg-transparent`/`bg-gold/20`; only the group header was missing it. Fixed by adding `bg-transparent` explicitly.
+
+(4) **"Make them all one look."** Group headers were small uppercase (`text-[10.5px] uppercase tracking-wide`) while leaf items were normal sentence-case `text-sm` buttons — visually two different component types. Extracted one shared `navItemClass(active)` builder that every nav row (top-level leaf, group header, child leaf) now renders through, so "one look" is true by construction, not by three independently hand-copied className strings that can drift apart (exactly what had just happened). Group headers keep only the trailing chevron and a `pl-3` indent on their children as the sole visual differentiators. A final pass added a subtle `border border-white/10` (`/20` + brighter on hover when active) to every nav item, per an explicit "add a frame so each item reads cleanly" request — folded into the same shared `navItemClass` builder.
+
+Reason: real usability gaps and a real rendering bug found by the project owner actually using the feature Decision 137 shipped, not hypothetical — each fix scoped to exactly `AdminShell.tsx`.
+
+Approved By: Daler (each iteration requested live against a running screenshot/session)
+
+Status: Implemented and verified after every one of the 4 changes — `npx tsc -b`/`npx vite build` clean at the 2-error dead-file baseline each time, dev server restarted fresh and the change confirmed live via `curl` against the served bundle before moving to the next iteration.
+
+---
+
+# Decision 139
+
+Date: 2026-07-30
+
+Decision: "DMC OS Design System v1.0" Phase 1 — search bar, hotel result cards, and a persistent cart, on top of Phase 0's foundation (Decision 137). Same hard constraints as Phase 0 (no new features/backend/API/Engine/business-logic/calculation/permission changes — UI/UX only). The project owner's brief for this phase was significantly larger and more detailed than Phase 0's (Apple/Stripe/Linear/Notion/Figma referenced, not Marriott/Booking.com; explicit asks for a 3-column tariff-selection page, richer hotel cards, table/detail-panel/modal unification across every remaining page, Header/Sidebar polish). Given the size, two scope questions were asked and owner-confirmed before implementation: **the full 3-column restructure (hotel list left / room-meal-transfer detail center / cart right) is deferred to its own future phase** — it's a real information-architecture change to `HotelSearch.tsx` (2853 lines, the largest file in the project, and the actual screen that creates real bookings), too large and risky to bundle with everything else in one pass; this phase does the smaller, still-high-value pieces within the *current* single-column results architecture instead. **Real hotel photos are out of scope entirely** — confirmed by reading `HotelResult`'s type definition: no image field exists anywhere in the search response today (only a `CARD_GRADIENTS` color placeholder), and adding one would require a backend/API change, explicitly forbidden.
+
+**Token cleanup:** `Input.tsx`/`Select.tsx` still had `focus:border-coral`/`focus:ring-coral/30`, never updated in Phase 0 — repointed to `gold`, cascading free to every already-migrated page.
+
+**Search bar (`HotelSearch.tsx`):** confirmed by reading the code that the form was **already** a Marriott-style unified block with inset dividers (an earlier decision this session), not separate cards — most of this ask was already done. What was actually missing: the old coral accent (hero gradient, `IconPin`, focus states) never got Phase 0's navy/gold treatment. Repointed throughout; modest spacing increase (`px-7 py-5` → `px-8 py-6`/`py-8`, tighter gaps loosened) for a more spacious feel. Hero gradient `to-coral/40` → `to-gold/30`.
+
+**Hotel result cards (`HotelCard`):** new summary strip added — price ("from `{currency}` `{amount}` / night", the most prominent element, via new `cheapestPerNightForHotel`, which reuses the exact same `agent_room_total / nights` division `RoomTypeCard`'s own per-room-type header already does, just finding the minimum across room types — no new pricing formula), room-type count badge, deduped meal-plan-code badges, and a transfer-available badge — all built from data already present in `HotelResult`/`RoomTypeResult` (`cheapestOption`, `hotel.roomTypes`, `hotel.transferOptions`), zero new fetches. Card image area enlarged (`h-36`→`h-40`, `sm:w-56`→`sm:w-64`) and content padding increased (`p-5`→`p-6`). `CARD_GRADIENTS` recolored from coral/teal combinations to ink/gold. `RoomTypeCard`'s own coral usages (selected-meal-plan highlight, "Select" button, mandatory-transfer/included-free badges, radio accent, "Add to trip" CTA) recolored with real semantic distinctions, not a blind find-replace: selection/toggle states → `gold` (matching the sidebar's own "active = gold" convention); the actual submit-type CTA buttons (Add to trip, checkout) → `ink`/navy (matching `Button.tsx`'s own primary); genuine error text and a stray stock `text-red-600` → the branded `danger` token; "mandatory choice" notice → `warning`; "included free" (a real discount reaching 100%) → `success`.
+
+**Persistent cart:** `CartPanel` gained an additive `variant?: "floating" | "pinned"` prop (default `"floating"`, byte-identical to the original behavior) — internal list/remove/checkout logic is completely shared and unchanged either way; only the outer wrapper and open/collapse header differ. On `lg+` screens, once a search has real results and checkout isn't open (`showPinnedCart`), results render in a 2-column grid (`lg:grid-cols-3`, results `lg:col-span-2`) with the cart pinned in a `lg:sticky lg:top-4` right column, `variant="pinned"` — always expanded, shown even when empty (new `cart.empty` copy) rather than gated on `cart.length > 0` as before. Below `lg`, the original floating bottom-right bubble (gated on `cart.length > 0`, same as always) is unchanged. Real gap closed while wiring this: the pinned cart is now reachable with zero items (previously impossible, since the floating panel never rendered at all when empty) — the checkout button gained a plain `disabled={cart.length === 0}` guard so this newly-reachable empty state can't submit a broken zero-room application; this is defensive UI only, not a new business rule (checkout with zero rooms was never a real, supported path either way).
+
+Reason: continuation of the project owner's Design System v1.0 initiative, scoped to the next highest-value, self-contained slice per the owner's own confirmed answers, deferring the riskiest piece (3-column restructure of the real booking-creation screen) to its own future pass.
+
+Approved By: Daler (3-column deferral and no-photos decisions confirmed via `AskUserQuestion` before implementation)
+
+Status: Implemented and verified. `npx tsc -b`/`npx vite build` clean at the 2-error dead-file baseline (zero new). `git status` confirms only `frontend/` files touched (the backend changes present in the working tree are Decision 136's, predating this one) — no backend/API/Engine file touched by this phase. Dev server restarted fresh; the new `showPinnedCart`/`cheapestPerNightForHotel`/`variant === "pinned"` code and `Input.tsx`'s `focus:border-gold` confirmed live via direct `curl` against the served bundle. **Not yet verified live in-browser** (no automation tool this session) — needs a real click-through by the project owner: search for a hotel, confirm the new card summary strip shows a correct minimum price, add a room to the cart and confirm it now appears pinned in a right column on a large screen (and still floats correctly on a narrow one), and complete a full add-to-cart → checkout flow to confirm the actual booking-creation logic is untouched.
+
+---
+
+# Decision 140
+
+Date: 2026-08-03
+
+Decision: Two live-reported layout iterations on `HotelSearch.tsx`, both found by the project owner on a real running search (screenshot with annotations), both purely presentational — no new features, no backend/API/pricing/business-logic change, same hard constraints as Decisions 137/139.
+
+(1) **"Оформить заявку" moved to the top of the cart panel.** The checkout button used to be the last block inside `CartPanel`, below the room list. With a real multi-room trip the list grows tall enough to push the one action that finishes the whole flow out of view — the button that matters most was the first thing to disappear. Moved to sit directly under the panel's dark header, above the list, for both `variant` values (the floating mobile bubble's collapsed state is visually unchanged either way — header + button — so no separate handling was needed). Its border flipped `border-t` → a conditional `border-b` (`showList ? "border-b border-ink/10 p-3" : "p-3"`), so a collapsed floating panel doesn't render a dangling bottom rule. The `onClick`/`disabled={cart.length === 0}` guard/styling are byte-identical — only the position in the panel changed. Confirmed with the owner via `AskUserQuestion` before implementing (the annotated arrow pointed past the panel toward the top nav, which would have meant a cart button in `AgentTopNav.tsx` instead — a materially different, larger change; the owner chose the panel-top option).
+
+(2) **Search + results area widened.** `main` capped at `max-w-6xl` (1152px), leaving roughly a third of a normal 1920 screen as dead margin on both sides — visible directly in the owner's screenshot, where the annotated "make this bigger" box spans ~81% of the viewport. Raised to `max-w-[96rem]` (1536px, matching that ~81%); Tailwind v4 dropped the old `max-w-screen-2xl` named utility, hence the explicit rem value. Because a 1/3-width cart column at that container width would be far wider than its own content needs, the pinned-cart grid switches to 4 columns at `xl` (`xl:grid-cols-4 xl:gap-8`, results `xl:col-span-3`), giving the extra width to the results and keeping the cart at ~360px. Below `xl` the original 3-column 2+1 split is untouched, and below `lg` the single-column + floating-cart layout is untouched. `ApplicationCheckoutForm` is a fixed overlay with its own `max-w-2xl` and is unaffected by the container change.
+
+Reason: two real usability gaps reported by the project owner against the running app after Decision 139 shipped, not hypothetical.
+
+Approved By: Daler (button destination confirmed via `AskUserQuestion` with previews before any code was touched)
+
+Status: Implemented and verified. `npx tsc -b`/`npx vite build` clean at the 2-error dead-file baseline (zero new). Only `frontend/src/pages/HotelSearch.tsx` touched — no backend file, no other page. Vite dev server (already running) confirmed serving the new code via direct `curl` against `/src/pages/HotelSearch.tsx` (`max-w-[96rem]`, `xl:col-span-3`, the conditional `border-b` on the moved button block all present). **Not yet verified live in-browser** — the browser-automation extension was declined this session, so this needs a real click-through by the project owner: confirm the checkout button now sits at the top of the "Поездка" panel with several rooms added, and that the wider layout looks right at his own screen width (including that the cart column doesn't get overly wide on a very large monitor).
+
+---
+
+# Decision 141
+
+Date: 2026-08-03
+
+Decision: One UI fix and one real data-completeness fix, both reported live off a running search screenshot.
+
+(1) **Hotel-card image corners.** The gradient placeholder block sat flush against the card's own edges, so the card's `overflow-hidden rounded-2xl` clipped exactly one of its corners (top-left) round while the other three stayed square — three corners matching, one not, which is what the owner marked. Because `sm:items-start` (Decision 139) keeps the block sized to the header area rather than stretching to the card's full height, it only ever touches one rounded card edge, so no radius tweak on the card itself could make all four agree. Fixed by insetting the block (`m-6 mb-0`, the same 24px the content column's own `p-6` uses, `sm:mr-0` so the content padding provides the right-hand gap) and giving it its own `overflow-hidden rounded-2xl` — all four corners are now genuinely identical instead of depending on which card edge each one happens to touch. Purely presentational; the star badge, gradient, and every size class are otherwise unchanged.
+
+(2) **Siyam World had no star rating at all.** `hotels.star_rating` was `NULL` for `hotel_id=13` since the row was created (2026-07-13), so `HotelCard`'s `hotel.star_rating != null` guard correctly rendered no badge — the card simply showed nothing where Kandima showed "★★★★★ 5". Not a display bug: the data was genuinely missing. Set to `5` (Siyam World Maldives is a real 5-star resort) via the existing `PUT /hotel-engine/hotels/13` endpoint with a real admin JWT — through Hotel Engine's own service/validators (`star_rating` 1-5 check), never raw SQL, so LOCKED Hotel Engine needed no change. Verified afterwards through `GET /hotel-engine/hotels`: both hotels in the database now return `star_rating = 5`. Same "real data gap, not a code bug" shape as Decision 105's missing cancellation policies — worth noting for the same reason: `star_rating` is nullable by design and nothing forces it at hotel creation, so any future hotel added without it will silently show no badge.
+
+Reason: both reported directly by the project owner against the running app.
+
+Approved By: Daler ("сделай все углы одинаковыми", "siyam world 5*")
+
+Status: Implemented and verified. `npx tsc -b`/`npx vite build` clean at the 2-error dead-file baseline. Only `frontend/src/pages/HotelSearch.tsx` touched in code; the star rating is a data change through the existing API, no file changed for it. Dev server confirmed serving the new corner classes via `curl`; the star rating confirmed via a real API read. **Not yet verified live in-browser** (browser automation declined this session) — needs the owner to refresh and confirm all four corners read as one shape and that Siyam World's card now shows its 5★ badge.
+
+---
+
+# Decision 142
+
+Date: 2026-08-03
+
+Decision: "DMC OS Design System v1.0" Phase 2 — the whole agent panel is now on one palette. Reported live with two side-by-side screenshots: `/agent-dashboard` (on entering) still rendered the pre-v1.0 coral/teal scheme — coral hero accent, solid-coral primary CTA, teal-and-coral featured-hotel tiles — while `/hotel-search` had already been migrated to navy/gold by Decisions 137/139, so the two screens read as two differently-lit products. Same hard constraints as every prior phase: no new features, no backend/API/Engine/business-logic/permission change, presentation only.
+
+**Files touched (all agent-facing):** `AgentDashboard_v2.tsx`, `AgentTopNav.tsx`, `Reservations.tsx`, and the parts of `HotelSearch.tsx` Decision 139 hadn't reached.
+
+**`AgentDashboard_v2.tsx`:** hero gradient `to-coral/40` → `to-gold/30` and its accent tag `text-coral` → `text-gold`, both now byte-identical to `HotelSearch.tsx`'s own hero band rather than merely "similar" (the previous code comment claimed they already matched — they didn't, which is exactly the drift this phase closes). The single "Найти отели" CTA became the same navy pill the search page's own submit button is (`rounded-full bg-ink`, `shadow-ink/30`) instead of a coral rounded-lg. Featured-hotel tiles moved from `from-ink to-teal`/`from-coral to-ink` to the `from-ink to-gold`/`from-gold to-ink` pair `HotelSearch.tsx`'s `CARD_GRADIENTS` already uses. Container widened `max-w-6xl` → `max-w-[96rem]` to match Decision 140's search-page width — two pages capping content at different widths read as two layouts even once the palette agrees.
+
+**`AgentTopNav.tsx`:** the logo square and the user-avatar circle both used `from-coral to-teal` — the one element visible on every agent screen, and the only remaining place the retired palette appeared in the top bar. Both → `from-gold to-gold-deep`.
+
+**`Reservations.tsx` (53 usages) and `HotelSearch.tsx`'s checkout flow (34):** mapped by meaning, not find-replaced — form focus rings/`focus:ring` → `gold` (matching `Input.tsx`/`Select.tsx`'s own Decision 139 change); selection/active states (selected room row, active date-mode chip, stepper progress, outbound correspondence bubble, lead-guest badge) → `gold`/`gold-deep`; error text, error banners, and validation-failed field borders → `danger`; submit-type CTAs → `ink`; status/success signals (`Confirmed`, `Partially Confirmed`, `Completed`, the "included" badge, a created-application row) teal → `success`, the genuine independent green Decision 137 introduced. Zero non-comment `coral`/`teal` references remain in any agent-facing file (verified by grep; the four remaining hits are explanatory comment text).
+
+**Deliberately not touched:** the admin panel's own remaining pre-v1.0 files (`AdminBookingFinance.tsx`, `Contracts.tsx`, `ContractsAI.tsx`, `Invoices.tsx`, `financeShared.tsx`, `PriceCalculator.tsx`, `BookingsSubViews.tsx`, `AdminNav.tsx`, `Counteragents.tsx`, `Cashback.tsx`) and the public pages `Home.tsx`/`Register.tsx` — a separate phase, same staged discipline Decision 137 established. One real consequence disclosed rather than hidden: `AdminBookingFinance.tsx`'s "needs attention" badge is still coral and now sits inside an otherwise navy/gold `Reservations.tsx`; `Reservations.tsx`'s own `STATUS_CLASSES` comment was updated to say so explicitly instead of leaving a stale claim about where coral lives.
+
+Reason: the project owner reported the two agent screens having visibly different "light" and asked for one scheme and one design.
+
+Approved By: Daler ("сделай один свет и один дизайн", with two screenshots)
+
+Status: Implemented and verified. `npx tsc -b`/`npx vite build` clean at the 2-error dead-file baseline (zero new). Only frontend presentation files touched — no backend, no API, no `.json` locale, no logic. Dev server confirmed serving the recolored modules via direct `curl` (`AgentDashboard_v2.tsx`/`HotelSearch.tsx`: zero coral/teal served; `AgentTopNav.tsx`: the new gold gradient present). **Not yet verified live in-browser** (browser automation declined this session) — needs the owner to click through `/agent-dashboard` → `/hotel-search` → a booking's detail panel and confirm the light now reads as one product across all three, particularly that no status badge lost its meaning in the teal → success move.
+
+---
+
+# Decision 143
+
+Date: 2026-08-03
+
+Decision: Design System v1.0 remaining scope was presented to the project owner as a live preview artifact (six blocks A–F, each with a browser-rendered mockup on real project data — Kandima KM26_03 prices, the real 50%/14-day cancellation fee, real file/usage counts from a grep sweep). Owner approved and **re-ordered the plan: the entire agent panel first, admin panel only after it is finished.** This decision covers the first two agent-side blocks; the remaining agent-side work (shared table/panel/modal primitives, then the three-column search rework) follows in its own decisions, deliberately keeping the highest-risk screen last within the agent phase.
+
+**Block E (agent scope) — stock Tailwind colors replaced with branded tokens in `Reservations.tsx`.** Decision 142 removed every `coral`/`teal` reference from this file but left 13 raw stock colors untouched (`red-500/600`, `red-50`, `amber-500/600`, `amber-50`) — visibly brighter than the branded `danger`/`warning` and sitting right next to them in the same panels. All 13 mapped: the cancellation panel's border/background/heading/fee-error/submit button → `danger`; the "awaiting hotel confirmation" notice and its adjacent action → `warning`; room-level rejection reasons and the list's own error row → `danger`.
+
+**Block D — public pages (`Home.tsx`, `Register.tsx`, `Login.tsx`).** The first screens a new agent sees, still entirely on the retired palette, so a partner registered in one visual identity and landed in another. `Register.tsx`: focus rings → `gold`, invalid-field borders and all 11 field-error messages → `danger`, the "number accepted" confirmation and the success-state icon → `success`, submit buttons → `ink`, checkbox accents → `gold`, error banner → `danger`. `Login.tsx`: eyebrow → `gold-deep` (readable on its white card, unlike bright `gold`), checkbox accent → `gold`. `Home.tsx`: promo-slide gradients → the same ink/gold pair `HotelSearch.tsx`'s `CARD_GRADIENTS` uses, carousel active dot → `gold`, the slide's own CTA → `ink`. Its two hero CTAs needed a real decision rather than a mapping: both sit **on** the dark ink hero, where a navy primary fill would disappear entirely — so "Регистрация" became the single `gold` accent fill and "Вход для агентов" an outline-on-dark (`border-white/30 bg-transparent`), matching `Button.tsx`'s own Primary/Outline pairing adapted to a dark ground instead of two competing solid fills.
+
+Verified by grep: zero non-comment `coral`/`teal` references and zero stock Tailwind color utilities remain in any agent-facing file (`Reservations.tsx`, `HotelSearch.tsx`, `AgentDashboard_v2.tsx`, `Home.tsx`, `Login.tsx`, `Register.tsx`, `AgentTopNav.tsx`).
+
+**Correction to an earlier claim, found while building the preview:** Decision 139 recorded real hotel photos as impossible without a backend change, on the basis that no image field exists in the search response. The search response part is true, but the claim was too broad — Hotel Engine's `models.py` has had `hotel_images` and `room_images` tables since it was built, with real `POST /hotel-engine/hotel-images` / `GET /hotel-engine/hotels/{id}/hotel-images` endpoints. Both tables are empty (0 rows, verified directly) and store an `image_path` string, so what is actually missing is file hosting plus joining images into the search response — not the schema or the CRUD. Presented to the owner as Block F with two honest options (files committed into the project as a stopgap vs. real upload + storage); awaiting his decision.
+
+Reason: owner-approved plan, re-sequenced by the owner to finish the agent panel before the admin panel.
+
+Approved By: Daler ("мне нравится, предлагаю сделать сперва agent panel и всё, что связано с работой агента, и как закончим после этого сделаем admin panel")
+
+Status: Implemented and verified. `npx tsc -b`/`npx vite build` clean at the 2-error dead-file baseline. Frontend presentation only — no backend, no API, no locale, no logic. **Not yet verified live in-browser** — needs the owner to open `/`, `/register`, `/login` and a booking's cancellation panel.
+
+---
+
 # Decision Template
 
 Decision Number:

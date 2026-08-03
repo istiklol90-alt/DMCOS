@@ -20,27 +20,45 @@
   --font-display: "Fraunces", ui-serif, serif;
   --font-sans: "Inter", ui-sans-serif, sans-serif;
 
-  /* Core brand palette -- unchanged from the existing design language.
-     Every semantic token below is additive, not a replacement. */
+  /* Core brand palette -- ink/sand were already a dark navy / warm light
+     background before Design System v1.0 ever started, so both are kept
+     byte-identical (confirmed against the v1.0 brief's own "тёмно-синий
+     основной, тёплый светлый фон" -- no change needed). teal/coral/slate
+     stay defined too, unchanged -- still referenced directly by pages not
+     yet migrated onto the v1.0 palette; removing them now would break
+     those pages for no visual benefit before their own migration pass. */
   --color-ink: #1b2340;
   --color-sand: #f3eee4;
   --color-teal: #3c6e71;
   --color-coral: #e8734a;
   --color-slate: #2c2c2c;
 
-  /* Semantic status tokens (DMC OS design system, Phase 0). Previously
-     every cancel/error/pending state hand-picked a raw stock Tailwind
-     color (red-500/600, amber-500/600) instead of a branded token --
-     these formalize that into the palette, tuned to sit next to
-     ink/coral/teal rather than clash with them.
-     --color-success is deliberately an ALIAS for the existing teal, not
-     a new hue: teal is already used project-wide as the "positive/
-     active/confirmed" signal (StatusBadge etc.) -- adding a second,
-     visually different "success green" would create two competing
-     positive colors instead of formalizing the one already in use. */
+  /* Design System v1.0 (2026-07-30) -- the warm gold accent the brief
+     asked for. Deliberately NOT the default Button "primary" fill: the
+     brief names navy as the основной (primary) color and gold as the
+     акцент (accent, used sparingly) -- gold is for emphasis (sidebar
+     active state, key highlights), not the default CTA. */
+  --color-gold: #b8874a;
+  --color-gold-deep: #96692f;
+
+  /* Semantic status tokens. Previously every cancel/error/pending state
+     hand-picked a raw stock Tailwind color (red-500/600, amber-500/600)
+     instead of a branded token -- these formalize that into the palette,
+     tuned to sit next to ink/gold rather than clash with them.
+     --color-cancelled is new (Design System v1.0): the brief specifies
+     Cancelled=red, but Cancelled was deliberately kept distinct from
+     Rejected's own red (Decision 104: "in progress" vs "hotel declined"
+     are different facts a manager needs to tell apart at a glance) --
+     owner-approved resolution is a muted terracotta, still visibly "in
+     the red family," but never color-identical to Rejected. */
   --color-danger: #c1443d;
   --color-warning: #c08a2e;
-  --color-success: var(--color-teal);
+  --color-cancelled: #8a5a52;
+  /* Design System v1.0: --color-success is now a genuine independent
+     green, no longer an alias for teal -- teal reads blue-green, which
+     sits too close to the new navy primary to read as an unambiguous
+     "positive/confirmed" signal on its own. */
+  --color-success: #2f7d52;
 
   /* Soft, barely-there elevation for cards/panels (Stripe-dashboard
      style), tinted with the brand ink color instead of generic black --

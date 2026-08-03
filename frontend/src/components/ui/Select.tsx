@@ -31,7 +31,7 @@ export default function Select({ tone = "white", scale = "sm", className = "", c
     <select
       className={[
         "appearance-none rounded-lg border border-ink/15 text-sm text-slate",
-        "focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30",
+        "focus:border-gold focus:outline-none focus:ring-2 focus:ring-gold/30",
         TONE_CLASSES[tone],
         SCALE_CLASSES[scale],
         className,

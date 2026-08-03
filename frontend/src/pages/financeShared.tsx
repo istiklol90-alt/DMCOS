@@ -111,6 +111,23 @@ export function invoiceProfit(inv: { commission: number | null; discount: number
   return inv.commission - inv.discount;
 }
 
+// Bulk, list-level Net/Sale/Profit -- mirrors backend/app/engines/finance/
+// schemas.py's BookingListFinancialsResponse. See
+// compute_bookings_list_financials's own docstring for why this exists:
+// the Bookings list needs the same "live, commercial-line-aware if a
+// manual correction exists" figure BookingDetail's own header already
+// shows, instead of silently staying on computeBookingFinancials' frozen
+// Pricing-Engine snapshot forever, even after a manager corrects a room's
+// cost in its commercial ledger.
+export interface BookingListFinancials {
+  booking_id: number;
+  currency: string;
+  net_total: number;
+  sale_total: number;
+  profit: number | null;
+  has_manual_adjustment: boolean;
+}
+
 // Per-room, per-category commercial cost/price ledger with a manual
 // adjustment mechanism -- mirrors backend/app/engines/finance/models.py's
 // BookingCommercialLine exactly (see its own docstring for the full

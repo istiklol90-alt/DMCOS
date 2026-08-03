@@ -99,6 +99,23 @@ class FlagForReviewRequest(BaseModel):
     old_departure_date: date
 
 
+class BookingListFinancialsResponse(BaseModel):
+    """Bulk, list-level Net/Sale/Profit -- not a real ORM model (a computed
+    cross-engine aggregate), same 'plain dict validated structurally'
+    shape as UrgentBookingResponse below. See
+    service.compute_bookings_list_financials's own docstring for why this
+    exists: the Bookings list needs to know about a room's manual
+    commercial-line correction, the same live figure BookingDetail's
+    header already reflects, instead of silently staying on the frozen
+    Pricing-Engine snapshot."""
+    booking_id: int
+    currency: str
+    net_total: float
+    sale_total: float
+    profit: Optional[float] = None
+    has_manual_adjustment: bool
+
+
 class UrgentBookingResponse(BaseModel):
     """Decision 108: Бронирования's own "Требует внимания" panel --
     not a real ORM model (a computed cross-engine summary), same

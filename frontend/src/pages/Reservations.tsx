@@ -70,7 +70,7 @@ export interface Booking {
 // total_amount/etc.) only ever reflect the FIRST room as a legacy
 // "representative" snapshot, so this is the only place that shows the
 // real, complete picture for an application with more than one room.
-interface BookingRoom {
+export interface BookingRoom {
   id: number;
   booking_id: number;
   sequence_number: number;
@@ -95,6 +95,7 @@ interface BookingRoom {
   total_amount: number | null;
   confirmation_number: string | null;
   special_requests: string | null;
+  applied_special_offer_id: number | null;
 }
 
 interface Guest {
@@ -196,6 +197,14 @@ export interface DetailCtx {
   // renderFinancialSummary that never had a room to select in the
   // first place.
   bookingRoomId?: number | null;
+  // Real bug fix: the LPO (booking confirmation request) email used to
+  // be built from `booking`'s own "representative" (first-room) fields
+  // only, so a 2+-room application's hotel email silently described just
+  // one of the rooms. renderCorrespondencePanel needs the full room list
+  // to build one combined email covering every room. null/undefined has
+  // the exact same meaning as the "Rooms" section's own `rooms` state:
+  // still loading, or a legacy application with zero BookingRoom rows.
+  rooms?: BookingRoom[] | null;
 }
 
 export interface AdminBookingExtensions {
@@ -295,6 +304,8 @@ function resolveCancellationFeePreview(
 const STATUS_LABEL_KEYS: Record<string, string> = {
   Draft: "draft",
   Pending: "pending",
+  "Waiting Hotel": "waitingHotel",
+  "Partially Confirmed": "partiallyConfirmed",
   Confirmed: "confirmed",
   // Decision 104: intermediate stage -- allotment is still held, the
   // hotel hasn't yet acknowledged the cancellation.
@@ -309,16 +320,40 @@ function statusLabel(t: TFunction, status: string): string {
   return key ? t(`statusBadge.${key}`) : status;
 }
 
+// Booking-control plan, Phase A: one color used to mean three different
+// things (new/in-progress/alarm) at once -- coral was both "Pending" AND
+// the "needs attention" overlay's color, so every brand-new booking read
+// as an alarm. Pending/Waiting Hotel/Cancellation Requested now share the
+// warning (amber) family -- "still moving, not final yet" -- freeing that
+// alert color to mean a real alert exclusively (see the needsAttention
+// badge below, scoped to the admin queue only; it still uses the old
+// coral, which lives in AdminBookingFinance.tsx and is deliberately left
+// for the admin-side design-system phase). Design System v1.0: every
+// coral/teal usage in THIS file is now on the branded tokens instead --
+// Confirmed/Partially Confirmed/Completed moved teal -> success (the real
+// independent green), form focus rings and selection states -> gold,
+// error text/CTA buttons -> danger/ink. Cancelled/Rejected use
+// the branded danger/warning/slate tokens (tailwind.css's @theme) instead
+// of raw stock red/amber, and Cancelled gets a line-through on its own
+// label text so it can never again visually collide with an unmapped
+// status falling back to the same neutral slate classes.
 const STATUS_CLASSES: Record<string, string> = {
   Draft: "bg-slate/10 text-slate",
-  Pending: "bg-coral/15 text-coral",
-  Confirmed: "bg-teal/15 text-teal",
-  // Amber, deliberately distinct from both Cancelled's neutral slate and
-  // Rejected's red -- signals "in progress, not final."
-  "Cancellation Requested": "bg-amber-500/15 text-amber-600",
-  Cancelled: "bg-slate/10 text-slate",
-  Rejected: "bg-red-500/15 text-red-600",
-  Completed: "bg-teal/15 text-teal",
+  Pending: "bg-warning/15 text-warning",
+  "Waiting Hotel": "bg-warning/15 text-warning",
+  // Outlined, not filled -- "moving toward Confirmed" without claiming it
+  // yet, visually distinct from both solid Pending and solid Confirmed.
+  "Partially Confirmed": "border border-success/40 bg-success/5 text-success",
+  Confirmed: "bg-success/15 text-success",
+  "Cancellation Requested": "bg-warning/15 text-warning",
+  // Design System v1.0: dedicated muted-terracotta token, distinct from
+  // Rejected's own danger red -- owner-approved resolution to the brief's
+  // "Red = Cancelled" while preserving the Cancelled-vs-Rejected
+  // distinction (Decision 104) this session's own line-through fix just
+  // reinforced. See tailwind.css's --color-cancelled comment.
+  Cancelled: "bg-cancelled/15 text-cancelled line-through decoration-cancelled/40",
+  Rejected: "bg-danger/15 text-danger",
+  Completed: "bg-success/15 text-success",
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -462,7 +497,7 @@ function AIInsightStrip({
   return (
     <div className="mt-6 flex flex-col gap-4 rounded-2xl bg-ink px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
       <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-coral/20 text-coral">
+        <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gold/20 text-gold">
           <IconSparkle className="w-4 h-4" />
         </span>
         <div className="text-sm leading-relaxed text-white/90">
@@ -556,7 +591,7 @@ function GuestRow({
       <li className="flex items-center gap-2 rounded-lg bg-sand/50 px-3 py-2">
         <span className="font-medium text-ink">{guest.first_name} {guest.last_name}</span>
         {guest.is_lead_guest && (
-          <span className="rounded-full bg-coral/15 px-2 py-0.5 text-xs text-coral">{t("guestRow.leadGuest")}</span>
+          <span className="rounded-full bg-gold/15 px-2 py-0.5 text-xs text-gold-deep">{t("guestRow.leadGuest")}</span>
         )}
         {guest.nationality && <span className="text-slate/60">· {guest.nationality}</span>}
         {guest.date_of_birth && <span className="text-slate/60">· {formatDate(guest.date_of_birth)}</span>}
@@ -580,48 +615,48 @@ function GuestRow({
           placeholder={t("guestRow.firstNamePlaceholder")}
           value={firstName}
           onChange={(e) => setFirstName(e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
         />
         <input
           placeholder={t("guestRow.lastNamePlaceholder")}
           value={lastName}
           onChange={(e) => setLastName(e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
         />
         <input
           placeholder={t("guestRow.nationalityPlaceholder")}
           value={nationality}
           onChange={(e) => setNationality(e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
         />
         <input
           type="date"
           value={dateOfBirth}
           onChange={(e) => setDateOfBirth(e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-gold focus:outline-none"
         />
         <input
           placeholder={t("guestRow.passportNumberPlaceholder")}
           value={passportNumber}
           onChange={(e) => setPassportNumber(e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
         />
         <input
           type="date"
           value={passportExpiry}
           onChange={(e) => setPassportExpiry(e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-gold focus:outline-none"
         />
       </div>
       {error && (
-        <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{error}</div>
+        <div className="rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">{error}</div>
       )}
       <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={handleSave}
           disabled={submitting}
-          className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+          className="rounded-lg bg-ink px-4 py-2 text-xs font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
         >
           {submitting ? t("guestRow.saving") : t("guestRow.save")}
         </button>
@@ -710,13 +745,13 @@ function FlightNumbersEdit({
           placeholder={t("flightNumbersEdit.arrivalFlightNumberPlaceholder")}
           value={arrivalFlight}
           onChange={(e) => setArrivalFlight(e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
         />
         <input
           placeholder={t("flightNumbersEdit.departureFlightNumberPlaceholder")}
           value={departureFlight}
           onChange={(e) => setDepartureFlight(e.target.value)}
-          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+          className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
         />
       </div>
       <div className="grid grid-cols-2 gap-2">
@@ -726,14 +761,14 @@ function FlightNumbersEdit({
             title={t("flightNumbersEdit.arrivalFlightDateTitle")}
             value={arrivalFlightDate}
             onChange={(e) => setArrivalFlightDate(e.target.value)}
-            className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+            className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-gold focus:outline-none"
           />
           <input
             type="time"
             title={t("flightNumbersEdit.arrivalFlightTimeTitle")}
             value={arrivalFlightTime}
             onChange={(e) => setArrivalFlightTime(e.target.value)}
-            className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+            className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-gold focus:outline-none"
           />
         </div>
         <div className="grid grid-cols-2 gap-1.5">
@@ -742,27 +777,27 @@ function FlightNumbersEdit({
             title={t("flightNumbersEdit.departureFlightDateTitle")}
             value={departureFlightDate}
             onChange={(e) => setDepartureFlightDate(e.target.value)}
-            className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+            className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-gold focus:outline-none"
           />
           <input
             type="time"
             title={t("flightNumbersEdit.departureFlightTimeTitle")}
             value={departureFlightTime}
             onChange={(e) => setDepartureFlightTime(e.target.value)}
-            className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-coral focus:outline-none"
+            className="rounded-lg border border-ink/15 bg-white px-2 py-2 text-sm text-slate focus:border-gold focus:outline-none"
           />
         </div>
       </div>
       <p className="text-[11px] text-slate/50">{t("flightNumbersEdit.flightDateTimeHint")}</p>
       {error && (
-        <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{error}</div>
+        <div className="rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">{error}</div>
       )}
       <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={handleSave}
           disabled={submitting}
-          className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+          className="rounded-lg bg-ink px-4 py-2 text-xs font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
         >
           {submitting ? t("flightNumbersEdit.saving") : t("flightNumbersEdit.save")}
         </button>
@@ -854,20 +889,124 @@ function ConfirmationNumberEdit({
         placeholder={t("confirmationNumberEdit.numberPlaceholder")}
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+        className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
       />
       {value.trim() && value.trim() !== (booking.confirmation_number ?? "") && (
         <p className="text-[11px] text-slate/50">{t("confirmationNumberEdit.voucherHint")}</p>
       )}
       {error && (
-        <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{error}</div>
+        <div className="rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">{error}</div>
       )}
       <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={handleSave}
           disabled={submitting}
-          className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+          className="rounded-lg bg-ink px-4 py-2 text-xs font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+        >
+          {submitting ? t("confirmationNumberEdit.saving") : t("confirmationNumberEdit.save")}
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          disabled={submitting}
+          className="rounded-lg border border-ink/15 bg-white px-4 py-2 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {t("confirmationNumberEdit.cancel")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Per-room confirmation-number edit (real bug fix, reported live on
+// BK-000066: a 2-room application only ever had ONE confirmation_number
+// field -- the whole-booking one above -- so entering the hotel's
+// reference for room 1 silently "confirmed" room 2 with the exact same
+// number too, even when the hotel sent two separate references. The
+// backend has supported a genuinely separate confirmation_number per
+// BookingRoom since Decision 097's own Stage 4 (PUT /rooms/{id}, see
+// BookingRoomUpdate's docstring) -- this was simply never wired into the
+// UI. Same shape as ConfirmationNumberEdit above, but scoped to one room
+// and best-effort-triggering the already-built PER-ROOM voucher endpoint
+// instead of the whole-booking one.
+// ---------------------------------------------------------------------------
+
+function RoomConfirmationNumberEdit({
+  room,
+  onUpdated,
+  canEdit,
+}: {
+  room: BookingRoom;
+  onUpdated: (updated: BookingRoom) => void;
+  canEdit: boolean;
+}) {
+  const { t } = useTranslation("reservations");
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(room.confirmation_number ?? "");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSave() {
+    const token = localStorage.getItem("token") || "";
+    const trimmed = value.trim() || null;
+    const previous = room.confirmation_number;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const updated = await fetchJson<BookingRoom>(`/booking-engine/rooms/${room.id}`, token, {
+        method: "PUT",
+        body: JSON.stringify({ confirmation_number: trimmed }),
+      });
+      onUpdated(updated);
+      setEditing(false);
+      if (trimmed && trimmed !== previous) {
+        fetchJson(`/finance-engine/rooms/${room.id}/voucher`, token, { method: "POST" }).catch(() => {
+          // Best-effort -- nothing to recover here even if this fails.
+        });
+      }
+    } catch (err: any) {
+      setError(err.message || t("confirmationNumberEdit.saveFailed"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!canEdit) return null;
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setEditing(true);
+        }}
+        className="rounded-lg border border-ink/15 bg-white px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:bg-sand"
+      >
+        {room.confirmation_number
+          ? t("confirmationNumberEdit.editNumber")
+          : t("confirmationNumberEdit.addNumber")}
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-2 w-full space-y-2 rounded-lg border border-ink/10 bg-sand/30 p-3" onClick={(e) => e.stopPropagation()}>
+      <input
+        placeholder={t("confirmationNumberEdit.numberPlaceholder")}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
+      />
+      {error && <div className="rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">{error}</div>}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={submitting}
+          className="rounded-lg bg-ink px-4 py-2 text-xs font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
         >
           {submitting ? t("confirmationNumberEdit.saving") : t("confirmationNumberEdit.save")}
         </button>
@@ -950,7 +1089,7 @@ function CancellationConfirmationEdit({
       <button
         type="button"
         onClick={() => setEditing(true)}
-        className="rounded-lg border border-amber-500/30 bg-white px-2.5 py-1 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-50"
+        className="rounded-lg border border-warning/30 bg-white px-2.5 py-1 text-xs font-medium text-warning transition-colors hover:bg-warning/10"
       >
         {t("cancellationConfirmationEdit.confirmWithHotel")}
       </button>
@@ -958,23 +1097,23 @@ function CancellationConfirmationEdit({
   }
 
   return (
-    <div className="mt-2 space-y-2 rounded-lg border border-amber-500/20 bg-amber-50/40 p-3">
+    <div className="mt-2 space-y-2 rounded-lg border border-warning/20 bg-warning/5 p-3">
       <input
         placeholder={t("cancellationConfirmationEdit.numberPlaceholder")}
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+        className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
       />
       <p className="text-[11px] text-slate/50">{t("cancellationConfirmationEdit.hint")}</p>
       {error && (
-        <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{error}</div>
+        <div className="rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">{error}</div>
       )}
       <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={handleSave}
           disabled={submitting}
-          className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+          className="rounded-lg bg-ink px-4 py-2 text-xs font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
         >
           {submitting ? t("cancellationConfirmationEdit.saving") : t("cancellationConfirmationEdit.save")}
         </button>
@@ -1074,7 +1213,7 @@ function DocumentsSection({ booking }: { booking: Booking }) {
             <button
               type="button"
               onClick={() => handleDownload("voucher")}
-              className="font-medium text-coral hover:underline"
+              className="font-medium text-gold-deep hover:underline"
             >
               {t("documentsSection.download")}
             </button>
@@ -1090,7 +1229,7 @@ function DocumentsSection({ booking }: { booking: Booking }) {
             <button
               type="button"
               onClick={() => handleDownload("invoice")}
-              className="font-medium text-coral hover:underline"
+              className="font-medium text-gold-deep hover:underline"
             >
               {t("documentsSection.download")}
             </button>
@@ -1100,7 +1239,7 @@ function DocumentsSection({ booking }: { booking: Booking }) {
         </div>
       </div>
       {downloadError && (
-        <p className="mt-1.5 text-xs font-medium text-coral">{downloadError}</p>
+        <p className="mt-1.5 text-xs font-medium text-danger">{downloadError}</p>
       )}
     </div>
   );
@@ -1520,7 +1659,7 @@ function BookingDetail({
   }, [booking]);
 
   // DetailCtx passed to every adminExtensions slot below.
-  const ctx: DetailCtx = { booking, onBookingUpdated };
+  const ctx: DetailCtx = { booking, onBookingUpdated, rooms };
 
   return (
     <div
@@ -1578,7 +1717,7 @@ function BookingDetail({
               <button
                 type="button"
                 onClick={openCancelPanel}
-                className="rounded-lg border border-red-500/30 bg-white px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50"
+                className="rounded-lg border border-danger/30 bg-white px-3 py-1.5 text-xs font-medium text-danger transition-colors hover:bg-danger/10"
               >
                 {t("bookingDetail.cancelBooking")}
               </button>
@@ -1588,7 +1727,7 @@ function BookingDetail({
         </div>
 
         {claimError && (
-          <div className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{claimError}</div>
+          <div className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">{claimError}</div>
         )}
 
         {/* Requirement (audit trail): claimed_by/claimed_at are permanent
@@ -1625,10 +1764,10 @@ function BookingDetail({
             {t("bookingDetail.roomsTitle")}
             {rooms && rooms.length > 1 && <span className="ml-1 normal-case text-slate/40">({rooms.length})</span>}
           </h4>
-          {roomsError && <p className="text-sm text-red-600">{roomsError}</p>}
+          {roomsError && <p className="text-sm text-danger">{roomsError}</p>}
           {!rooms && !roomsError && <p className="text-sm text-slate/50">{t("bookingDetail.roomsLoading")}</p>}
           {roomActionError && (
-            <div className="mb-2 rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{roomActionError}</div>
+            <div className="mb-2 rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">{roomActionError}</div>
           )}
           {rooms && rooms.length > 1 && (
             <p className="mb-2 text-xs text-slate/50">{t("bookingDetail.roomsClickHint")}</p>
@@ -1643,8 +1782,8 @@ function BookingDetail({
                     rooms.length > 1 ? "cursor-pointer" : ""
                   } ${
                     room.id === selectedRoomId
-                      ? "border-coral bg-coral/5"
-                      : "border-ink/10 hover:border-coral/30"
+                      ? "border-gold bg-gold/5"
+                      : "border-ink/10 hover:border-gold/30"
                   }`}
                 >
                   <div className="flex flex-wrap items-start justify-between gap-2">
@@ -1665,7 +1804,7 @@ function BookingDetail({
                         {t("bookingDetail.infantsCount", { count: room.infants })}
                       </p>
                       {room.rejection_reason && (
-                        <p className="mt-1 text-xs text-red-600">{room.rejection_reason}</p>
+                        <p className="mt-1 text-xs text-danger">{room.rejection_reason}</p>
                       )}
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-1.5">
@@ -1689,7 +1828,7 @@ function BookingDetail({
                             type="button"
                             onClick={() => handleRejectRoom(room.id)}
                             disabled={roomActionId === room.id}
-                            className="rounded-lg border border-red-500/30 bg-white px-2.5 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            className="rounded-lg border border-danger/30 bg-white px-2.5 py-1 text-xs font-medium text-danger transition-colors hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             {t("bookingDetail.rejectRoom")}
                           </button>
@@ -1697,6 +1836,15 @@ function BookingDetail({
                       )}
                     </div>
                   </div>
+                  {rooms.length > 1 && (
+                    <RoomConfirmationNumberEdit
+                      room={room}
+                      canEdit={permissions.canConfirmWithHotel}
+                      onUpdated={(updated) =>
+                        setRooms((prev) => prev?.map((r) => (r.id === updated.id ? updated : r)) ?? null)
+                      }
+                    />
+                  )}
                 </div>
               ))}
             </div>
@@ -1744,7 +1892,7 @@ function BookingDetail({
                   <div
                     key={msg.id}
                     className={`rounded-lg p-3 text-sm ${
-                      outbound ? "ml-6 bg-coral/10" : "mr-6 bg-ink/5"
+                      outbound ? "ml-6 bg-gold/10" : "mr-6 bg-ink/5"
                     }`}
                   >
                     <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-slate/50">
@@ -1774,13 +1922,13 @@ function BookingDetail({
         </div>
 
         {cancelOpen && (
-          <div className="mt-3 space-y-3 rounded-lg border border-red-500/20 bg-red-50/40 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-red-600/80">
+          <div className="mt-3 space-y-3 rounded-lg border border-danger/20 bg-danger/5 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-danger/80">
               {t("bookingDetail.cancelPanelTitle")}
             </p>
             <div className="rounded-lg bg-white/70 px-3 py-2 text-sm">
               {cancelFeeLoading && <span className="text-slate/50">{t("bookingDetail.feeCalculating")}</span>}
-              {cancelFeeError && <span className="text-red-600">{cancelFeeError}</span>}
+              {cancelFeeError && <span className="text-danger">{cancelFeeError}</span>}
               {!cancelFeeLoading && !cancelFeeError && cancelFeePreview && (
                 <span className="text-ink">
                   {t("bookingDetail.cancellationFeeLabel")}{" "}
@@ -1797,17 +1945,17 @@ function BookingDetail({
               value={cancelReason}
               onChange={(e) => setCancelReason(e.target.value)}
               rows={2}
-              className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+              className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
             />
             {cancelError && (
-              <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">{cancelError}</div>
+              <div className="rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">{cancelError}</div>
             )}
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={handleCancelSubmit}
                 disabled={cancelSubmitting || cancelFeeLoading}
-                className="rounded-lg bg-red-600 px-4 py-2 text-xs font-medium text-white shadow-sm shadow-red-600/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                className="rounded-lg bg-danger px-4 py-2 text-xs font-medium text-white shadow-sm shadow-danger/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
               >
                 {cancelSubmitting ? t("bookingDetail.sending") : t("bookingDetail.confirmCancel")}
               </button>
@@ -1844,10 +1992,10 @@ function BookingDetail({
               value={changeDatesReason}
               onChange={(e) => setChangeDatesReason(e.target.value)}
               rows={2}
-              className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-coral focus:outline-none"
+              className="w-full rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
             />
             {changeDatesError && (
-              <div className="rounded-lg bg-coral/10 px-3 py-2 text-xs font-medium text-coral">
+              <div className="rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">
                 {changeDatesError}
               </div>
             )}
@@ -1856,7 +2004,7 @@ function BookingDetail({
                 type="button"
                 onClick={handleChangeDatesSubmit}
                 disabled={changeDatesSubmitting}
-                className="rounded-lg bg-coral px-4 py-2 text-xs font-medium text-white shadow-sm shadow-coral/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+                className="rounded-lg bg-ink px-4 py-2 text-xs font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
               >
                 {changeDatesSubmitting ? t("bookingDetail.sending") : t("bookingDetail.confirm")}
               </button>
@@ -1989,7 +2137,7 @@ function BookingDetail({
                   canEdit={permissions.canEditFlights}
                 />
               </div>
-              {guestsError && <p className="text-sm text-red-600">{guestsError}</p>}
+              {guestsError && <p className="text-sm text-danger">{guestsError}</p>}
               {!guests && !guestsError && <p className="text-sm text-slate/50">{t("bookingDetail.guestsLoading")}</p>}
               {guests && guests.length === 0 && <p className="text-sm text-slate/50">{t("bookingDetail.noGuests")}</p>}
               {guests && guests.length > 0 && (
@@ -2008,17 +2156,31 @@ function BookingDetail({
               )}
             </div>
 
-            {/* ===== Подтверждение отеля (Decision 097) ===== */}
-            <div className="flex items-center justify-between">
-              <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">
-                {t("bookingDetail.hotelConfirmationTitle")}
-              </h4>
-              <ConfirmationNumberEdit
-                booking={booking}
-                onUpdated={onBookingUpdated}
-                canEdit={permissions.canConfirmWithHotel}
-              />
-            </div>
+            {/* ===== Подтверждение отеля (Decision 097) =====
+                A 2+-room application gets its confirmation number per
+                room instead (see the Rooms section below) -- one shared
+                field here would silently apply a single hotel reference
+                to every room, wrong whenever the hotel sends separate
+                confirmations per room (the real bug reported on
+                BK-000066). Single-room applications (the common case)
+                are completely unaffected. */}
+            {(!rooms || rooms.length <= 1) && (
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-medium uppercase tracking-wide text-slate/50">
+                  {t("bookingDetail.hotelConfirmationTitle")}
+                </h4>
+                <ConfirmationNumberEdit
+                  booking={booking}
+                  onUpdated={onBookingUpdated}
+                  canEdit={permissions.canConfirmWithHotel}
+                />
+              </div>
+            )}
+            {rooms && rooms.length > 1 && (
+              <p className="text-sm text-slate/50">
+                {t("bookingDetail.hotelConfirmationTitle")} — {t("bookingDetail.confirmationPerRoomHint")}
+              </p>
+            )}
 
             {/* ===== Подтверждение отмены отелем (Decision 104) — stage 2
                 of the two-step cancellation workflow. Admin-only, same
@@ -2082,7 +2244,7 @@ function BookingDetail({
                     </p>
                   </>
                 ) : (
-                  <p className="mt-2 text-amber-600">{t("bookingDetail.awaitingHotelConfirmation")}</p>
+                  <p className="mt-2 text-warning">{t("bookingDetail.awaitingHotelConfirmation")}</p>
                 )}
               </div>
             )}
@@ -2501,7 +2663,7 @@ const BookingsList = ({
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+              className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-gold focus:outline-none focus:ring-2 focus:ring-gold/30"
             >
               <option value="all">{t("bookingsList.allStatuses")}</option>
               {availableStatuses.map((s) => (
@@ -2514,7 +2676,7 @@ const BookingsList = ({
             <select
               value={hotelFilter}
               onChange={(e) => setHotelFilter(e.target.value)}
-              className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+              className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-gold focus:outline-none focus:ring-2 focus:ring-gold/30"
             >
               <option value="all">{t("bookingsList.allHotels")}</option>
               {Object.entries(hotels).map(([id, name]) => (
@@ -2528,7 +2690,7 @@ const BookingsList = ({
               <select
                 value={agentFilter}
                 onChange={(e) => setAgentFilter(e.target.value)}
-                className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-coral focus:outline-none focus:ring-2 focus:ring-coral/30"
+                className="appearance-none rounded-lg border border-ink/15 bg-white px-3.5 py-2.5 text-sm text-slate focus:border-gold focus:outline-none focus:ring-2 focus:ring-gold/30"
               >
                 <option value="all">{t("bookingsList.allAgents")}</option>
                 {availableAgentIds.map((id) => (
@@ -2560,7 +2722,7 @@ const BookingsList = ({
             onClick={() => setDateModeEnabled(!dateModeEnabled)}
             className={`appearance-none rounded-lg border px-3.5 py-2.5 text-sm font-medium transition-colors ${
               dateModeEnabled
-                ? "border-coral bg-coral/10 text-coral"
+                ? "border-gold bg-gold/10 text-gold-deep"
                 : "border-ink/15 bg-white text-slate hover:bg-sand/60"
             }`}
           >
@@ -2609,7 +2771,7 @@ const BookingsList = ({
               type="button"
               onClick={() => setDateModeView("staying")}
               className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                dateModeView === "staying" ? "bg-coral text-white" : "text-slate/70 hover:bg-sand/60"
+                dateModeView === "staying" ? "bg-ink text-white" : "text-slate/70 hover:bg-sand/60"
               }`}
             >
               {t("bookingsList.dateModeStaying")}
@@ -2618,7 +2780,7 @@ const BookingsList = ({
               type="button"
               onClick={() => setDateModeView("created")}
               className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                dateModeView === "created" ? "bg-coral text-white" : "text-slate/70 hover:bg-sand/60"
+                dateModeView === "created" ? "bg-ink text-white" : "text-slate/70 hover:bg-sand/60"
               }`}
             >
               {t("bookingsList.dateModeCreated")}
@@ -2627,7 +2789,7 @@ const BookingsList = ({
               type="button"
               onClick={() => setDateModeView("cancellations")}
               className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                dateModeView === "cancellations" ? "bg-coral text-white" : "text-slate/70 hover:bg-sand/60"
+                dateModeView === "cancellations" ? "bg-ink text-white" : "text-slate/70 hover:bg-sand/60"
               }`}
             >
               {t("bookingsList.dateModeCancellations")}
@@ -2683,7 +2845,7 @@ const BookingsList = ({
               Array.from({ length: 6 }).map((_, i) => <SkeletonRow key={i} columns={columnCount} />)
             ) : error ? (
               <tr>
-                <td colSpan={columnCount} className="px-4 py-10 text-center text-sm text-red-600">
+                <td colSpan={columnCount} className="px-4 py-10 text-center text-sm text-danger">
                   {t("bookingsList.errorLabel")} {error}
                 </td>
               </tr>
@@ -2700,19 +2862,31 @@ const BookingsList = ({
                 // Cancelled/old booking doesn't need an "has anyone
                 // looked at this" signal. Unclaimed Pending gets a
                 // strong, unmistakable red highlight to demand
-                // attention; claimed Pending gets no overlay at all,
-                // back to the normal row appearance. hover: is
+                // attention; claimed Pending gets a quiet "in review"
+                // chip instead (see inReview below) -- neither the alarm
+                // nor a silent return to "looks resolved". hover: is
                 // overridden too (not just left as the default
                 // hover:bg-sand/40) so hovering never washes out the
                 // signal -- it intensifies it instead.
-                const needsAttention = b.status === "Pending" && b.claimed_by === null;
+                //
+                // Booking-control plan, Phase A: this overlay only means
+                // something to a manager deciding what to pick up next --
+                // an agent's own list (adminExtensions absent, see
+                // Decision 107's structural admin/agent split) would
+                // otherwise show virtually every fresh booking she just
+                // submitted as a red "alarm", since Pending+unclaimed is
+                // simply the normal starting state, not a problem. Scoped
+                // to the admin queue only.
+                const isAdminQueue = Boolean(adminExtensions);
+                const needsAttention = isAdminQueue && b.status === "Pending" && b.claimed_by === null;
+                const inReview = isAdminQueue && b.status === "Pending" && b.claimed_by !== null;
                 return (
                   <tr
                     key={b.id}
                     onClick={() => setSelectedBooking(b)}
                     className={`cursor-pointer border-b border-ink/5 last:border-b-0 ${
                       needsAttention
-                        ? "border-l-8 border-l-red-600 bg-red-500/20 hover:bg-red-500/30"
+                        ? "border-l-8 border-l-danger bg-danger/15 hover:bg-danger/25"
                         : "hover:bg-sand/40"
                     }`}
                   >
@@ -2729,8 +2903,13 @@ const BookingsList = ({
                       <span className="inline-flex items-center gap-1.5">
                         {b.booking_number}
                         {needsAttention && (
-                          <span className="rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                          <span className="rounded-full bg-danger px-1.5 py-0.5 text-[10px] font-semibold text-white">
                             {t("bookingsList.needsAttention")}
+                          </span>
+                        )}
+                        {inReview && (
+                          <span className="rounded-full border border-ink/15 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-slate/70">
+                            {t("bookingsList.inReview")}
                           </span>
                         )}
                       </span>
