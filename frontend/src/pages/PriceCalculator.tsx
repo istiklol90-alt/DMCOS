@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { API_URL } from "../config";
+import { handleSessionExpired } from "../session";
 import { DateRangePicker, deriveOccupancy } from "./HotelSearch";
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,10 @@ interface TransferPriceBreakdown {
   adult_total: number;
   child_total: number;
   infant_total: number;
+  // Decision 196: "per_person" or "per_vehicle". On a per_vehicle option the
+  // three buckets above are all 0.00 and vehicle_total carries the fare.
+  pricing_basis: string;
+  vehicle_total: number;
   total: number;
 }
 
@@ -113,6 +118,13 @@ async function fetchJson<T>(path: string, token: string): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  // A 30-minute token simply expires while a tab sits open; every request
+  // then fails with 401 "Invalid token". Handled once, centrally, instead of
+  // each panel rendering that raw string or hanging on a spinner forever.
+  if (response.status === 401) {
+    handleSessionExpired();
+    throw new Error("Session expired");
+  }
   if (!response.ok) {
     let detail = `Request error (${response.status})`;
     try {
@@ -182,10 +194,15 @@ function buildSummaryText(r: CalculationResult): string {
   ];
 
   if (r.transferBreakdown) {
-    rows.push([
-      `Transfer (${r.transferBreakdown.transfer_name ?? r.transferBreakdown.transfer_type})`,
-      `${formatMoney(r.transferBreakdown.total, r.transferBreakdown.currency)} (adults: ${formatMoney(r.transferBreakdown.adult_total, r.transferBreakdown.currency)}, children: ${formatMoney(r.transferBreakdown.child_total, r.transferBreakdown.currency)})`,
-    ]);
+    const tb = r.transferBreakdown;
+    // Decision 196: a per_vehicle transfer has no adult/child split -- both
+    // buckets are a real 0.00 -- so printing them would read as a bug on a
+    // verification document whose whole purpose is being checkable by hand.
+    const detail =
+      tb.pricing_basis === "per_vehicle"
+        ? `${formatMoney(tb.total, tb.currency)} (per vehicle, round trip)`
+        : `${formatMoney(tb.total, tb.currency)} (adults: ${formatMoney(tb.adult_total, tb.currency)}, children: ${formatMoney(tb.child_total, tb.currency)})`;
+    rows.push([`Transfer (${tb.transfer_name ?? tb.transfer_type})`, detail]);
   }
 
   const grandTotal =
@@ -436,8 +453,10 @@ const PriceCalculator = () => {
   return (
     <div className="mt-6">
       <div className="rounded-2xl border border-ink/10 bg-white p-6">
-        <h2 className="font-display text-lg font-semibold text-ink">Price Calculator</h2>
-        <p className="mt-1 text-sm text-slate/60">
+        {/* Decision 188: the page no longer titles itself -- the open tab
+            already says Price calculator. The line below it says what the
+            tool is, which the title never did. */}
+        <p className="text-sm text-slate/60">
           Internal verification tool — read-only, creates or books nothing. Uses the same real endpoints
           (get_room_price / get_transfer_price / get_mandatory_tax) as hotel search and the booking detail
           view.
@@ -616,12 +635,19 @@ const PriceCalculator = () => {
                   <dd className="font-mono text-ink">{formatMoney(result.transferBreakdown.total, result.transferBreakdown.currency)}</dd>
                 </div>
                 <p className="mt-1 pl-3 text-[11px] text-slate/50">
-                  Adults: {formatMoney(result.transferBreakdown.adult_total, result.transferBreakdown.currency)}
-                  {result.occupancy.children > 0 && (
-                    <> · Children: {formatMoney(result.transferBreakdown.child_total, result.transferBreakdown.currency)}</>
-                  )}
-                  {result.occupancy.infants > 0 && (
-                    <> · Infants: {formatMoney(result.transferBreakdown.infant_total, result.transferBreakdown.currency)}</>
+                  {/* Decision 196: per_vehicle has no per-guest split to show. */}
+                  {result.transferBreakdown.pricing_basis === "per_vehicle" ? (
+                    <>Per vehicle, round trip — party size does not change this fare</>
+                  ) : (
+                    <>
+                      Adults: {formatMoney(result.transferBreakdown.adult_total, result.transferBreakdown.currency)}
+                      {result.occupancy.children > 0 && (
+                        <> · Children: {formatMoney(result.transferBreakdown.child_total, result.transferBreakdown.currency)}</>
+                      )}
+                      {result.occupancy.infants > 0 && (
+                        <> · Infants: {formatMoney(result.transferBreakdown.infant_total, result.transferBreakdown.currency)}</>
+                      )}
+                    </>
                   )}
                 </p>
               </div>

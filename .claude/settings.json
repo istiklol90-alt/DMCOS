@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit",
+      "Write",
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(npx *)",
+      "Bash(npm *)",
+      "Bash(node *)",
+      "Bash(tail *)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(netstat *)",
+      "Bash(tasklist *)",
+      "Bash(taskkill *)",
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git show *)",
+      "Bash(git branch *)",
+      "Bash(cd * && *)",
+      "Bash(./.venv/Scripts/python.exe *)",
+      "Bash(sqlite3 *)"
+    ],
+    "ask": [
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git reset *)",
+      "Bash(git checkout *)",
+      "Bash(git clean *)",
+      "Bash(git branch -D *)",
+      "Bash(rm *)",
+      "Bash(del *)",
+      "Bash(Remove-Item *)"
+    ]
+  }
+}

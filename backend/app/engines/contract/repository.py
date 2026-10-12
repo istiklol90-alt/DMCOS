@@ -279,6 +279,30 @@ def list_contract_transfer_options(db: Session, contract_id: int) -> list[Contra
     )
 
 
+def get_contract_transfer_option(db: Session, option_id: int) -> ContractTransferOption | None:
+    """Return one transfer option by id, or None."""
+    return (
+        db.query(ContractTransferOption).filter(ContractTransferOption.id == option_id).first()
+    )
+
+
+def update_contract_transfer_option(
+    db: Session, option: ContractTransferOption, **fields
+) -> ContractTransferOption:
+    """Apply the given field values to an existing transfer option and persist them."""
+    for key, value in fields.items():
+        setattr(option, key, value)
+    db.commit()
+    db.refresh(option)
+    return option
+
+
+def delete_contract_transfer_option(db: Session, option: ContractTransferOption) -> None:
+    """Remove a transfer option row outright."""
+    db.delete(option)
+    db.commit()
+
+
 # ---------------------------------------------------------------------------
 # Rate
 # ---------------------------------------------------------------------------

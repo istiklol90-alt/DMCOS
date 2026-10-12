@@ -75,6 +75,15 @@ class InvoiceResponse(BaseModel):
     created_by: int
     created_at: Optional[datetime] = None
     email_sent_at: Optional[datetime] = None
+    # Decision 182: resolved for display, never stored -- the list showed
+    # "#29" and "#2" where a booking number and a hotel name belong.
+    booking_number: Optional[str] = None
+    hotel_name: Optional[str] = None
+    agent_name: Optional[str] = None
+    # Decision 182: what the booking costs now, so the list can tell a real
+    # money difference from a booking that merely changed.
+    booking_total_now: Optional[float] = None
+    booking_status: Optional[str] = None
     review_notes: List[InvoiceReviewNoteResponse] = []
     room_breakdown: List[InvoiceRoomLineResponse] = []
     flag_acknowledged_at: Optional[datetime] = None
@@ -114,6 +123,82 @@ class BookingListFinancialsResponse(BaseModel):
     sale_total: float
     profit: Optional[float] = None
     has_manual_adjustment: bool
+
+
+class CommercialSummaryLineResponse(BaseModel):
+    """One category's effective cost/price for one room -- base plus any
+    manual adjustment, already summed. `adjusted` says a manager has
+    touched this line, so the figure is no longer purely system-computed."""
+    category: str
+    cost: float
+    price: float
+    adjusted: bool
+
+
+class CommercialSummaryRoomResponse(BaseModel):
+    booking_room_id: int
+    sequence_number: int
+    room_type_id: int
+    status: str
+    billable: bool
+    lines: list[CommercialSummaryLineResponse]
+    net_total: float
+    sale_total: float
+
+
+class BookingCommercialSummaryResponse(BaseModel):
+    """Read-only whole-application money summary -- see
+    service.get_booking_commercial_summary. `sale_total` is the figure the
+    agent actually booked at (room + transfer + tax, across every billable
+    room), which is NOT what BookingRoom.total_amount alone shows."""
+    booking_id: int
+    currency: str
+    rooms: list[CommercialSummaryRoomResponse]
+    net_total: float
+    sale_total: float
+    has_manual_adjustment: bool
+    # Decision 191: ONE hotel confirmation for the whole application.
+    hotel_confirmed_amount: Optional[float] = None
+    hotel_reference: Optional[str] = None
+    hotel_note: Optional[str] = None
+    hotel_confirmed_by: Optional[int] = None
+    hotel_confirmed_at: Optional[datetime] = None
+    hotel_difference: Optional[float] = None
+    billable_rooms: int = 0
+
+
+class PriceBreakdownLineResponse(BaseModel):
+    """Agent-facing. Price only -- there is deliberately no cost, margin or
+    adjustment field on this model, so none can be sent by accident."""
+    category: str
+    price: float
+
+
+class PriceBreakdownRoomResponse(BaseModel):
+    booking_room_id: int
+    sequence_number: int
+    room_type_id: int
+    status: str
+    billable: bool
+    lines: list[PriceBreakdownLineResponse]
+    total: float
+
+
+class BookingPriceBreakdownResponse(BaseModel):
+    """Decision 181: what the agent sees -- her own price, per room and per
+    category, exactly as quoted at booking. See
+    service.get_booking_price_breakdown."""
+    booking_id: int
+    currency: str
+    rooms: list[PriceBreakdownRoomResponse]
+    total: float
+
+
+class HotelPriceConfirmationUpsert(BaseModel):
+    """Decision 190: what the hotel says one room costs us."""
+    confirmed_amount: float
+    hotel_reference: Optional[str] = None
+    note: Optional[str] = None
 
 
 class UrgentBookingResponse(BaseModel):
@@ -268,7 +353,12 @@ class VoucherResponse(BaseModel):
     booking_room_id: Optional[int] = None
     agent_id: int
     hotel_id: int
-    confirmation_number: str
+    # Decision 166: None when the voucher was sent at approval time, before
+    # the hotel replied. The response model was `str` and returned a 500 on
+    # the very first such voucher -- the row was written and the caller saw
+    # a server error, which is exactly why the send is best-effort on the
+    # frontend and the approval was still correct.
+    confirmation_number: Optional[str] = None
     hotel_name: str
     arrival_date: date
     departure_date: date

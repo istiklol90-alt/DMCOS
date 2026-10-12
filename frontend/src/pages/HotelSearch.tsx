@@ -4,7 +4,9 @@ import { useLocation } from "react-router-dom";
 import type { TFunction } from "i18next";
 import i18n from "../i18n/i18n";
 import { API_URL } from "../config";
+import { handleSessionExpired } from "../session";
 import AgentTopNav from "../components/layout/AgentTopNav";
+import Modal from "../components/ui/Modal";
 import { IconPin, IconSearch } from "../components/ui/icons";
 
 function localeOf(lang: string): string {
@@ -65,6 +67,37 @@ function IconChevronRight({ className = "w-4 h-4" }: { className?: string }) {
   );
 }
 
+// Decision 150's flight step. A plane tilted down vs up reads as
+// arrival/departure at a glance in a way the words alone don't, which
+// matters on a step that now shows the same six fields several times over.
+function IconPlaneArrival({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M2 21h20" />
+      <path d="M3.8 12.6l2.6-.7 3.2 2.4 4.4-1.2-5.3-6.6 2-.6 7.1 5.6 3.1-.8a1.7 1.7 0 0 1 .9 3.3L5.6 18.1z" />
+    </svg>
+  );
+}
+
+function IconPlaneDeparture({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M2 21h20" />
+      <path d="M3.2 15.5l2.3 1.4 3.7-1.5.9 5.1 2 .5.9-6.4 6.9-2.8a1.7 1.7 0 0 0-1-3.2l-3 1.2-5.6-4.3-2 .8 3.4 5.4-4.3 1.7-2.6-1.6-1.6.6z" />
+    </svg>
+  );
+}
+
+function IconUsers({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M16 20v-1.6a3.4 3.4 0 0 0-3.4-3.4H6.4A3.4 3.4 0 0 0 3 18.4V20" />
+      <circle cx="9.5" cy="8" r="3.2" />
+      <path d="M21 20v-1.6a3.4 3.4 0 0 0-2.6-3.3M15.5 5a3.2 3.2 0 0 1 0 6.2" />
+    </svg>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Real session + API types
 //
@@ -119,6 +152,19 @@ type TransferOption = {
   price_adult: number;
   price_child: number;
   price_infant: number | null;
+  // Decision 196: "per_person" (a seaplane seat, priced per passenger) or
+  // "per_vehicle" (a road transfer, one flat fare for the car whoever rides
+  // in it). On a per_vehicle option the three per-person prices are a real
+  // 0.00 and price_per_vehicle carries the fare.
+  pricing_basis: string;
+  price_per_vehicle: number | null;
+  // Decision 197: how many guests it can carry, counting infants. null means
+  // the contract states no limit (a seaplane), never "unknown".
+  max_passengers: number | null;
+  // Decision 198: separate cap on guests aged 12+. A sedan is "4 total but
+  // only 2 adults", which one number could not express. null = no adult-
+  // specific limit.
+  max_adults: number | null;
   status: string;
 };
 
@@ -140,6 +186,12 @@ type TransferPrice = {
   adult_total: number;
   child_total: number;
   infant_total: number;
+  // Decision 196: on a per_vehicle option the buckets above are all 0.00 and
+  // the fare lives here, so a breakdown must branch on pricing_basis rather
+  // than assume the buckets tell the whole story.
+  pricing_basis: string;
+  price_per_vehicle: number | null;
+  vehicle_total: number;
   total: number;
 };
 
@@ -148,6 +200,14 @@ type PricedTransferOption = {
   price?: TransferPrice;
   priceError?: string;
 };
+
+// Decision 196. Read from the priced response when there is one and fall
+// back to the catalog row otherwise, so an option whose price call failed
+// still renders as the kind of thing it is rather than silently reverting
+// to a per-person layout that would print "2 adults - 0".
+function isPerVehicle(opt: PricedTransferOption): boolean {
+  return (opt.price?.pricing_basis ?? opt.option.pricing_basis) === "per_vehicle";
+}
 
 // GET /contracts/{id}/mandatory-tax's response shape — a flat
 // per-person-per-night government tax (e.g. Kandima's Green Tax), keyed
@@ -193,6 +253,12 @@ type CartRoom = {
   childAges: number[];
   transferType: string | null;
   transferName: string | null;
+  // Decision 196: true only when a transfer WAS on offer for this room and
+  // the agent chose to go without one. Distinguishes a deliberate "guests
+  // make their own way" from a hotel that simply doesn't sell transfers,
+  // which a null transferType alone cannot -- the cart would otherwise show
+  // the same blank line for both.
+  transferDeclined: boolean;
   currency: string | null;
   grandTotal: number | null;
 };
@@ -258,6 +324,9 @@ type HotelResult = Hotel & {
   contractId?: number;
   transferRequired: boolean;
   transferOptions: PricedTransferOption[];
+  // Decision 197: Active options this party is too large for. Lets the room
+  // card explain an empty transfer list instead of just omitting it.
+  transfersTooSmall: number;
   transferCurrency: string | null;
   mandatoryTax?: MandatoryTax;
   roomTypes: RoomTypeResult[];
@@ -418,6 +487,41 @@ function formatSearchOccupancy(
 // ValueError -> HTTP 400 with {"detail": "..."})
 // ---------------------------------------------------------------------------
 
+// FastAPI returns TWO different shapes under "detail": a plain string for
+// every deliberate HTTPException this project raises, but a LIST of
+// {loc, msg, ...} objects for a 422 request-validation failure. The old code
+// assigned either straight into `new Error(detail)`, so a 422 surfaced to the
+// agent as the literal text "[object Object]" -- which is exactly what a real
+// booking submit showed after a stray keystroke turned a flight year into
+// "122029". Kept language-neutral (English) for the same reason the caller's
+// own comment gives: this is module scope, with no safe `t()` to call.
+function formatApiDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const lines = detail
+      .map((entry) => {
+        const e = entry as { loc?: unknown; msg?: unknown };
+        // Drop FastAPI's leading "body"/"query" segment -- it names the
+        // request part, not anything the agent can act on.
+        const field = Array.isArray(e?.loc)
+          ? e.loc.filter((p) => p !== "body" && p !== "query" && p !== "path").join(" → ")
+          : "";
+        const msg = typeof e?.msg === "string" ? e.msg : "";
+        return [field, msg].filter(Boolean).join(": ");
+      })
+      .filter(Boolean);
+    if (lines.length) return lines.join("; ");
+  }
+  if (detail && typeof detail === "object") {
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
 async function fetchJson<T>(path: string, token: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
@@ -427,6 +531,13 @@ async function fetchJson<T>(path: string, token: string, init?: RequestInit): Pr
       ...init?.headers,
     },
   });
+  // A 30-minute token simply expires while a tab sits open; every request
+  // then fails with 401 "Invalid token". Handled once, centrally, instead of
+  // each panel rendering that raw string or hanging on a spinner forever.
+  if (response.status === 401) {
+    handleSessionExpired();
+    throw new Error("Session expired");
+  }
   if (!response.ok) {
     // Module-scope helper -- can't use the useTranslation() hook, and can't
     // safely call the ambient i18n singleton's t() either: DateRangePicker
@@ -438,7 +549,7 @@ async function fetchJson<T>(path: string, token: string, init?: RequestInit): Pr
     let detail = `Request error (${response.status})`;
     try {
       const body = await response.json();
-      if (body?.detail) detail = body.detail;
+      detail = formatApiDetail(body?.detail, detail);
     } catch {
       // response body wasn't JSON — keep the generic message
     }
@@ -546,6 +657,317 @@ function formatDateRangeLabel(t: TFunction, lang: string, checkIn: string, check
   return `${fmt(checkIn || checkOut)} – ?`;
 }
 
+// ---------------------------------------------------------------------------
+// Flexible dates (Decision 149)
+//
+// Until now the picker's "Flexible Dates" tab was an explicitly documented
+// visual-only stub -- it flipped a pill and changed nothing else. It now
+// describes a real scan: hold the stay LENGTH fixed and let the check-in
+// date move across a whole month, so the agent can see which check-in
+// dates are actually cheaper before committing to one.
+//
+// Whole-month is the ONLY mode, by explicit owner decision after seeing the
+// first version: an earlier "+/- N days around a chosen date" mode was
+// removed outright rather than kept as a second option. It needed an exact
+// anchor date to already be picked (so it could never be the first thing an
+// agent used), and a month scan answers the same question more broadly --
+// "when in this period is it cheap" rather than "is the day either side of
+// this one cheaper". What the agent actually needs instead is to move
+// quickly between months AND YEARS, which is what the config panel is now
+// built around.
+//
+// The config lives in the parent (HotelSearch.tsx), not in the picker,
+// because the scan it drives and the price strip it produces both belong
+// to the search screen -- the picker only edits it. Callers that don't
+// pass onFlexibleChange (Reservations.tsx, PriceCalculator.tsx) don't get
+// the tab at all, rather than getting a tab that does nothing.
+// ---------------------------------------------------------------------------
+
+export type FlexibleDatesConfig = {
+  nights: number;
+  // Candidates are every (not-yet-past) day of this month. "YYYY-MM".
+  anchorMonth: string;
+};
+
+const DEFAULT_FLEX_NIGHTS = 7;
+const FLEX_MIN_NIGHTS = 1;
+// Matches the longest stay the month grid can meaningfully scan, and keeps
+// a mistyped "300" from becoming a check-out a year away.
+const FLEX_MAX_NIGHTS = 30;
+// How far ahead the year arrows may go. Contracts in this project already
+// run into 2028, and a hotel contract signed more than a few years out
+// isn't a real case -- this only stops the arrows running away, it isn't a
+// business rule.
+const FLEX_MAX_YEARS_AHEAD = 5;
+
+function monthKeyOf(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function nightsBetween(checkIn: string, checkOut: string): number | null {
+  if (!checkIn || !checkOut) return null;
+  const n = Math.round(
+    (parseISODate(checkOut).getTime() - parseISODate(checkIn).getTime()) / (1000 * 60 * 60 * 24)
+  );
+  return n > 0 ? n : null;
+}
+
+// Seeded from whatever exact dates the agent already picked, so switching
+// to the flexible tab keeps their intent (a 20-27 Nov selection becomes
+// "7 nights, November") instead of resetting to an unrelated default.
+// fallbackMonth is the month the calendar is currently showing, used when
+// no check-in is picked yet -- so an agent who paged the calendar forward
+// to December 2027 and only then switched tabs lands on December 2027,
+// the mirror image of the month carrying back the other way.
+function defaultFlexibleConfig(checkIn: string, checkOut: string, fallbackMonth: Date): FlexibleDatesConfig {
+  return {
+    nights: nightsBetween(checkIn, checkOut) ?? DEFAULT_FLEX_NIGHTS,
+    anchorMonth: monthKeyOf(checkIn ? parseISODate(checkIn) : fallbackMonth),
+  };
+}
+
+// Small "!" affordance that reveals an explanation on hover, focus or
+// click. Built here rather than imported -- no tooltip component exists
+// anywhere in this project yet, and one call site isn't enough to justify
+// putting a shared one in components/ui/ (same "build only once a real,
+// repeated need exists" precedent the engines follow).
+function InfoTooltip({ label, text }: { label: string; text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative inline-flex align-middle">
+      <button
+        type="button"
+        aria-label={label}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onClick={() => setOpen((o) => !o)}
+        className="flex h-4 w-4 appearance-none items-center justify-center rounded-full border border-slate/40 bg-transparent p-0 text-[10px] font-bold leading-none text-slate/60 transition-colors hover:border-ink hover:text-ink"
+      >
+        !
+      </button>
+      {open && (
+        // Left-anchored, not centred: the icon sits near the left edge of
+        // the popover, so a centred tooltip would hang off it.
+        <span
+          role="tooltip"
+          className="absolute left-0 top-full z-30 mt-2 w-72 whitespace-pre-line rounded-lg bg-ink px-3.5 py-3 text-[11px] font-normal leading-relaxed text-white shadow-lg"
+        >
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function formatFlexibleLabel(t: TFunction, lang: string, cfg: FlexibleDatesConfig): string {
+  const [y, m] = cfg.anchorMonth.split("-").map(Number);
+  const monthLabel = new Date(y, m - 1, 1).toLocaleDateString(localeOf(lang), {
+    month: "long",
+    year: "numeric",
+  });
+  return `${monthLabel} · ${t("dateRangePicker.flexNightsShort", { count: cfg.nights })}`;
+}
+
+// Every (hotel, candidate check-in) row the scan endpoint returns. Mirrors
+// pricing/schemas.py's DateScanResultResponse exactly.
+export type DateScanRow = {
+  hotel_id: number;
+  hotel_name: string;
+  check_in: string;
+  check_out: string;
+  nights: number;
+  contract_id: number | null;
+  currency: string | null;
+  min_total: number | null;
+  room_type_id: number | null;
+  room_name: string | null;
+  meal_code: string | null;
+  meal_name: string | null;
+  available: boolean | null;
+  combinations_priced: number;
+  unavailable_reason: string | null;
+};
+
+// The candidate check-in dates a config expands to. Past days are dropped
+// (a stay can't start yesterday), which is also why a scan of the current
+// month legitimately returns fewer days than the month has.
+export function buildScanCandidates(cfg: FlexibleDatesConfig): string[] {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const out: string[] = [];
+  const [year, month] = cfg.anchorMonth.split("-").map(Number);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  for (let d = 1; d <= daysInMonth; d++) {
+    const day = new Date(year, month - 1, d);
+    if (day >= today) out.push(toISODate(day));
+  }
+  return out;
+}
+
+// Stay length + a year/month picker, shown in place of the two-month
+// calendar while the flexible tab is active. The year is navigated with
+// arrows and the 12 months are always all visible, so reaching e.g. April
+// 2028 is two clicks from anywhere -- the previous rolling "next 12 months"
+// list could only ever reach one year ahead, and buried the month the agent
+// wanted in a flat list of 12 differently-worded buttons.
+function FlexibleConfigPanel({
+  t,
+  lang,
+  cfg,
+  onChange,
+  onCommitMonth,
+}: {
+  t: TFunction;
+  lang: string;
+  cfg: FlexibleDatesConfig;
+  onChange: (cfg: FlexibleDatesConfig) => void;
+  // Double-click shortcut: take this month and go straight to the exact-date
+  // calendar on it. Single click still just selects the month for a scan --
+  // the two are the two real intents an agent has in front of this grid
+  // ("scan this whole month" vs "I already know the month, let me pick the
+  // days"), and the second used to cost a separate trip to the tab strip.
+  onCommitMonth: (monthKey: string) => void;
+}) {
+  const locale = localeOf(lang);
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
+
+  const [selectedYear, selectedMonth] = cfg.anchorMonth.split("-").map(Number);
+  // The panel browses independently of the selection, so an agent can look
+  // at another year without losing the month they already picked.
+  const [viewYear, setViewYear] = useState(selectedYear);
+
+  // The nights field is free text while being typed, committed to the
+  // config only when it parses. Binding the input straight to cfg.nights
+  // made it impossible to clear: an empty box reads as 0, which the clamp
+  // instantly rewrote to 1, so backspacing to type "11" produced "1".
+  const [nightsText, setNightsText] = useState(String(cfg.nights));
+  useEffect(() => {
+    setNightsText(String(cfg.nights));
+  }, [cfg.nights]);
+
+  const minYear = currentYear;
+  const maxYear = currentYear + FLEX_MAX_YEARS_AHEAD;
+
+  return (
+    <div className="w-[26rem] max-w-full">
+      <p className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+        {t("dateRangePicker.flexNightsLabel")}
+        <InfoTooltip label={t("dateRangePicker.flexHowItWorksAria")} text={t("dateRangePicker.flexHint")} />
+      </p>
+      <div className="mt-2 flex items-center gap-2">
+        <input
+          type="number"
+          inputMode="numeric"
+          min={FLEX_MIN_NIGHTS}
+          max={FLEX_MAX_NIGHTS}
+          value={nightsText}
+          onChange={(e) => {
+            const raw = e.target.value;
+            setNightsText(raw);
+            const parsed = Math.floor(Number(raw));
+            // Commit only a value that is already in range, rather than
+            // clamping every keystroke: clamping rewrote a half-typed "0"
+            // (on the way to "07") into "1" under the agent's cursor.
+            // Anything out of range just stays as text until blur snaps it
+            // back to the value actually in effect.
+            if (raw.trim() === "" || Number.isNaN(parsed)) return;
+            if (parsed < FLEX_MIN_NIGHTS || parsed > FLEX_MAX_NIGHTS) return;
+            if (parsed !== cfg.nights) onChange({ ...cfg, nights: parsed });
+          }}
+          // An empty or out-of-range box on blur snaps back to the value
+          // actually in effect, so what is displayed is never a number the
+          // scan isn't about to use.
+          onBlur={() => setNightsText(String(cfg.nights))}
+          aria-label={t("dateRangePicker.flexNightsLabel")}
+          className="w-20 rounded-lg border border-ink/15 px-3 py-2 text-center text-sm font-semibold text-ink focus:border-gold focus:outline-none"
+        />
+        <span className="text-sm text-slate/70">{t("dateRangePicker.flexNightsUnit")}</span>
+        <span className="text-xs text-slate/45">
+          {t("dateRangePicker.flexNightsRange", { min: FLEX_MIN_NIGHTS, max: FLEX_MAX_NIGHTS })}
+        </span>
+      </div>
+
+      <p className="mt-5 text-sm font-semibold text-ink">{t("dateRangePicker.flexMonthLabel")}</p>
+
+      <div className="mt-2 flex items-center justify-between rounded-full bg-sand px-1.5 py-1">
+        <button
+          type="button"
+          disabled={viewYear <= minYear}
+          onClick={() => setViewYear((y) => Math.max(minYear, y - 1))}
+          aria-label={t("dateRangePicker.flexPrevYear")}
+          className="flex h-7 w-7 appearance-none items-center justify-center rounded-full border-0 bg-transparent text-slate transition-colors hover:bg-white hover:text-ink disabled:cursor-not-allowed disabled:text-slate/25 disabled:hover:bg-transparent"
+        >
+          <IconChevronLeft />
+        </button>
+        <span className="text-sm font-semibold text-ink">{viewYear}</span>
+        <button
+          type="button"
+          disabled={viewYear >= maxYear}
+          onClick={() => setViewYear((y) => Math.min(maxYear, y + 1))}
+          aria-label={t("dateRangePicker.flexNextYear")}
+          className="flex h-7 w-7 appearance-none items-center justify-center rounded-full border-0 bg-transparent text-slate transition-colors hover:bg-white hover:text-ink disabled:cursor-not-allowed disabled:text-slate/25 disabled:hover:bg-transparent"
+        >
+          <IconChevronRight />
+        </button>
+      </div>
+
+      <div className="mt-2 grid grid-cols-4 gap-1.5">
+        {Array.from({ length: 12 }, (_, i) => {
+          const key = `${viewYear}-${String(i + 1).padStart(2, "0")}`;
+          const label = new Date(viewYear, i, 1).toLocaleDateString(locale, { month: "short" });
+          // A month entirely in the past has no candidate check-in dates at
+          // all, so offering it would only ever produce an empty scan.
+          const isPast = viewYear < currentYear || (viewYear === currentYear && i < currentMonth);
+          const isSelected = viewYear === selectedYear && i + 1 === selectedMonth;
+          return (
+            <button
+              key={key}
+              type="button"
+              disabled={isPast}
+              onClick={() => onChange({ ...cfg, anchorMonth: key })}
+              // React fires both onClick calls before this; passing the key
+              // explicitly makes the handoff independent of whether those
+              // state writes have landed yet. select-none stops the double
+              // click from highlighting the month name as text.
+              onDoubleClick={() => onCommitMonth(key)}
+              title={t("dateRangePicker.flexMonthDoubleClickHint")}
+              className={`select-none appearance-none rounded-lg border px-2 py-2 text-xs font-medium capitalize transition-colors ${
+                isPast
+                  ? "cursor-not-allowed border-ink/5 bg-sand/40 text-slate/25"
+                  : isSelected
+                    ? "border-ink bg-ink text-white"
+                    : "border-ink/15 bg-white text-slate hover:border-ink/40 hover:text-ink"
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* The double-click shortcut is invisible otherwise -- an affordance
+          nobody is told about is one nobody uses. */}
+      <p className="mt-2.5 text-[11px] text-slate/50">{t("dateRangePicker.flexMonthDoubleClickHint")}</p>
+
+      {/* The selection can be in a different year than the one being
+          browsed, so it is always restated in full rather than left to be
+          inferred from a highlight that may not even be on screen. */}
+      <p className="mt-2 text-xs text-slate/70">
+        {t("dateRangePicker.flexSelected", {
+          value: new Date(selectedYear, selectedMonth - 1, 1).toLocaleDateString(locale, {
+            month: "long",
+            year: "numeric",
+          }),
+        })}
+      </p>
+    </div>
+  );
+}
+
 // One month's weekday header + day grid -- shared by both panels of the
 // two-month picker below. Pure rendering, all selection logic (which day
 // is check-in/check-out/in-range, whether a day is clickable) stays in
@@ -651,6 +1073,8 @@ export function DateRangePicker({
   forceLang,
   size = "sm",
   allowPast = false,
+  flexible,
+  onFlexibleChange,
 }: {
   checkIn: string;
   checkOut: string;
@@ -671,18 +1095,46 @@ export function DateRangePicker({
   // existing caller (real hotel check-in search, which can never start
   // in the past) is byte-identical to before.
   allowPast?: boolean;
+  // Decision 149: flexible-date mode. The config is owned by the parent
+  // (the scan it drives and the price strip it renders both live there);
+  // this component only edits it. A caller that omits onFlexibleChange
+  // gets no Specific/Flexible tabs at all -- deliberate, since before this
+  // decision every caller rendered those tabs and none of them did
+  // anything at all.
+  flexible?: FlexibleDatesConfig | null;
+  onFlexibleChange?: (cfg: FlexibleDatesConfig | null) => void;
 }) {
   const { t: ambientT, i18n: i18nInstance } = useTranslation("hotelSearch");
   const lang = forceLang ?? i18nInstance.language;
   const t = forceLang ? i18n.getFixedT(forceLang, "hotelSearch") : ambientT;
   const [open, setOpen] = useState(false);
   const [viewDate, setViewDate] = useState(() => (checkIn ? parseISODate(checkIn) : new Date()));
-  // Visual-only tab, per explicit scope -- no flexible-date search exists
-  // (backend only ever takes exact check_in/check_out dates). Selecting
-  // "Flexible Dates" just changes which pill is active; the calendar below
-  // keeps behaving identically either way.
-  const [dateMode, setDateMode] = useState<"specific" | "flexible">("specific");
+  // Decision 149: no longer local state. The tab now reflects real parent
+  // state -- "flexible" is exactly "the parent is holding a config" -- so
+  // the pill can never show a mode the actual search isn't in.
+  const supportsFlexible = Boolean(onFlexibleChange);
+  const dateMode: "specific" | "flexible" = flexible ? "flexible" : "specific";
   const containerRef = useRef<HTMLDivElement>(null);
+
+  function monthStartOf(anchorMonth: string): Date {
+    const [y, m] = anchorMonth.split("-").map(Number);
+    return new Date(y, m - 1, 1);
+  }
+
+  // Re-anchor the calendar every time the picker is opened, so it always
+  // opens on the month the current selection is actually about. Without
+  // this, viewDate kept whatever month it was first initialised with: after
+  // picking a date out of the flexible price calendar (which writes
+  // check-in/check-out from the parent, never through this component), the
+  // agent could reopen the picker and be looking at a month a year away
+  // from the dates they had just chosen.
+  function togglePicker() {
+    if (!open) {
+      if (flexible) setViewDate(monthStartOf(flexible.anchorMonth));
+      else if (checkIn) setViewDate(parseISODate(checkIn));
+    }
+    setOpen((o) => !o);
+  }
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -727,7 +1179,7 @@ export function DateRangePicker({
     <div ref={containerRef} className="relative">
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={togglePicker}
         className={
           size === "lg"
             ? "flex w-full items-center gap-2.5 px-7 py-1 text-left text-lg text-slate sm:text-xl"
@@ -735,8 +1187,10 @@ export function DateRangePicker({
         }
       >
         <IconCalendar className={size === "lg" ? "w-5 h-5 shrink-0 text-slate/50" : "w-4 h-4 shrink-0 text-slate/50"} />
-        <span className={checkIn || checkOut ? "text-slate" : "text-slate/40"}>
-          {formatDateRangeLabel(t, lang, checkIn, checkOut)}
+        <span className={checkIn || checkOut || flexible ? "text-slate" : "text-slate/40"}>
+          {flexible
+            ? formatFlexibleLabel(t, lang, flexible)
+            : formatDateRangeLabel(t, lang, checkIn, checkOut)}
         </span>
       </button>
 
@@ -744,28 +1198,53 @@ export function DateRangePicker({
         <div className="absolute left-0 top-full z-20 mt-2 w-fit rounded-2xl border border-ink/10 bg-white p-5 shadow-lg">
           {/* Marriott-style segmented control: a light gray track with the
               active tab rendered as a raised white pill, not a solid-filled
-              tab against a transparent track. */}
-          <div className="mb-4 flex items-center gap-1 rounded-full bg-sand p-1">
-            <button
-              type="button"
-              onClick={() => setDateMode("specific")}
-              className={`flex-1 appearance-none rounded-full border-0 px-4 py-2 text-xs font-semibold transition-colors ${
-                dateMode === "specific" ? "bg-white text-ink shadow-sm" : "bg-transparent text-slate/50 hover:text-ink"
-              }`}
-            >
-              {t("dateRangePicker.specificDates")}
-            </button>
-            <button
-              type="button"
-              onClick={() => setDateMode("flexible")}
-              className={`flex-1 appearance-none rounded-full border-0 px-4 py-2 text-xs font-semibold transition-colors ${
-                dateMode === "flexible" ? "bg-white text-ink shadow-sm" : "bg-transparent text-slate/50 hover:text-ink"
-              }`}
-            >
-              {t("dateRangePicker.flexibleDates")}
-            </button>
-          </div>
+              tab against a transparent track. Rendered only where flexible
+              dates are actually supported (Decision 149) -- a caller
+              without onFlexibleChange never sees a tab it can't honour. */}
+          {supportsFlexible && (
+            <div className="mb-4 flex items-center gap-1 rounded-full bg-sand p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  // Carry the flexible month over to the calendar: an agent
+                  // who settled on December 2027 in flexible mode and then
+                  // switches here to pick exact dates within it should land
+                  // on December 2027, not back on today's month.
+                  if (flexible) setViewDate(monthStartOf(flexible.anchorMonth));
+                  onFlexibleChange?.(null);
+                }}
+                className={`flex-1 appearance-none rounded-full border-0 px-4 py-2 text-xs font-semibold transition-colors ${
+                  dateMode === "specific" ? "bg-white text-ink shadow-sm" : "bg-transparent text-slate/50 hover:text-ink"
+                }`}
+              >
+                {t("dateRangePicker.specificDates")}
+              </button>
+              <button
+                type="button"
+                onClick={() => onFlexibleChange?.(flexible ?? defaultFlexibleConfig(checkIn, checkOut, viewDate))}
+                className={`flex-1 appearance-none rounded-full border-0 px-4 py-2 text-xs font-semibold transition-colors ${
+                  dateMode === "flexible" ? "bg-white text-ink shadow-sm" : "bg-transparent text-slate/50 hover:text-ink"
+                }`}
+              >
+                {t("dateRangePicker.flexibleDates")}
+              </button>
+            </div>
+          )}
 
+          {flexible ? (
+            <FlexibleConfigPanel
+              t={t}
+              lang={lang}
+              cfg={flexible}
+              onChange={(next) => onFlexibleChange?.(next)}
+              onCommitMonth={(monthKey) => {
+                // Same handoff the "Точные даты" tab performs, just reached
+                // in one gesture from the month itself.
+                setViewDate(monthStartOf(monthKey));
+                onFlexibleChange?.(null);
+              }}
+            />
+          ) : (
           <div className="flex items-start gap-3">
             <button
               type="button"
@@ -806,6 +1285,7 @@ export function DateRangePicker({
               <IconChevronRight />
             </button>
           </div>
+          )}
 
           <div className="mt-3 flex items-center justify-between border-t border-ink/10 pt-3">
             <button
@@ -830,6 +1310,294 @@ export function DateRangePicker({
 }
 
 // ---------------------------------------------------------------------------
+// Flexible-date price calendar (Decision 149)
+//
+// One cell per candidate check-in date, showing the cheapest bookable
+// room total for a stay of the chosen length starting that day. Picking a
+// cell is what ends flexible mode: it writes real check-in/check-out
+// dates and hands off to the normal exact-date search, so nothing
+// downstream (results, cart, checkout, booking) ever sees a "flexible"
+// booking -- there is no such thing.
+// ---------------------------------------------------------------------------
+
+type FlexibleDayCell = {
+  checkIn: string;
+  checkOut: string;
+  best: DateScanRow | null;
+  // Every hotel scanned for this date, cheapest first -- shown in the
+  // tooltip so a multi-hotel scan doesn't hide which hotel the headline
+  // price actually belongs to.
+  priced: DateScanRow[];
+  reason: string | null;
+};
+
+function buildFlexibleCells(candidates: string[], rows: DateScanRow[]): FlexibleDayCell[] {
+  const byDate = new Map<string, DateScanRow[]>();
+  for (const row of rows) {
+    const list = byDate.get(row.check_in) ?? [];
+    list.push(row);
+    byDate.set(row.check_in, list);
+  }
+  return candidates.map((checkIn) => {
+    const dayRows = byDate.get(checkIn) ?? [];
+    const priced = dayRows
+      .filter((r) => r.min_total !== null)
+      .sort((a, b) => (a.min_total as number) - (b.min_total as number));
+    return {
+      checkIn,
+      checkOut: dayRows[0]?.check_out ?? "",
+      best: priced[0] ?? null,
+      priced,
+      // Only meaningful when nothing could be priced at all. Every hotel
+      // agreeing on one reason reports it; a mix reports the first, since
+      // the cell has room for one line.
+      reason: priced.length > 0 ? null : (dayRows.find((r) => r.unavailable_reason)?.unavailable_reason ?? null),
+    };
+  });
+}
+
+function FlexibleResultsPanel({
+  cfg,
+  candidates,
+  rows,
+  scanning,
+  scannedCount,
+  error,
+  multiHotel,
+  onPick,
+}: {
+  cfg: FlexibleDatesConfig;
+  candidates: string[];
+  rows: DateScanRow[];
+  scanning: boolean;
+  scannedCount: number;
+  error: string | null;
+  multiHotel: boolean;
+  onPick: (checkIn: string, checkOut: string) => void;
+}) {
+  const { t, i18n: i18nInstance } = useTranslation("hotelSearch");
+  const locale = localeOf(i18nInstance.language);
+  const cells = buildFlexibleCells(candidates, rows);
+  const pricedCells = cells.filter((c) => c.best !== null);
+
+  // Cheapest and dearest PER CURRENCY, never across them. With a EUR
+  // contract in the system a mixed scan is now normal (Mauritius in EUR
+  // beside the Maldives in USD), and ranking 6,685 EUR against 2,863 USD as
+  // bare numbers would paint a "cheapest date" that no exchange rate backs
+  // -- the exact mistake Balance made before Decision 193, where one summed
+  // figure was stamped with the first row's currency. No conversion here
+  // either: a scan spanning two currencies reports each one on its own.
+  const range = new Map<string, { min: number; max: number }>();
+  for (const cell of pricedCells) {
+    const cur = cell.best!.currency ?? "";
+    const total = cell.best!.min_total as number;
+    const seen = range.get(cur);
+    range.set(
+      cur,
+      seen === undefined
+        ? { min: total, max: total }
+        : { min: Math.min(seen.min, total), max: Math.max(seen.max, total) }
+    );
+  }
+
+  // Green means "there is a real spread across these dates, and this is the
+  // low end of it" -- so it requires max > min, the same condition the
+  // savings line uses, which is what keeps the two from ever disagreeing.
+  // Without that condition a currency represented by a single cell would be
+  // badged cheapest against nothing (a lone EUR date beside USD ones), and a
+  // month where every date costs the same would turn entirely green while
+  // the savings line correctly stayed silent.
+  function isCheapestCell(cell: FlexibleDayCell): boolean {
+    if (cell.best === null) return false;
+    const seen = range.get(cell.best.currency ?? "");
+    return seen !== undefined && seen.max > seen.min && (cell.best.min_total as number) <= seen.min + 0.005;
+  }
+
+  // One entry per currency that actually varies across the scanned dates.
+  // A single-currency scan produces exactly one line, identical to what this
+  // rendered before.
+  const savings = [...range.entries()]
+    .filter(([, r]) => r.max > r.min)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([cur, r]) =>
+      t("flexPanel.savings", {
+        amount: (r.max - r.min).toLocaleString(locale, { maximumFractionDigits: 0 }),
+        currency: cur,
+      })
+    );
+
+  function cellClasses(cell: FlexibleDayCell): string {
+    const base =
+      "flex flex-col items-center justify-center gap-0.5 rounded-xl border px-2 py-2.5 text-center transition-colors";
+    if (cell.best === null) {
+      return `${base} cursor-not-allowed border-ink/5 bg-sand/40 text-slate/30`;
+    }
+    return isCheapestCell(cell)
+      ? `${base} cursor-pointer border-success bg-success/10 text-ink hover:bg-success/20`
+      : `${base} cursor-pointer border-ink/10 bg-white text-ink hover:border-ink/40 hover:bg-sand/50`;
+  }
+
+  function cellTitle(cell: FlexibleDayCell): string {
+    if (cell.best === null) {
+      return cell.reason === "no_active_contract"
+        ? t("flexPanel.reasonNoContract")
+        : cell.reason === "no_priceable_rooms"
+          ? t("flexPanel.reasonNoRooms")
+          : t("flexPanel.reasonPending");
+    }
+    return cell.priced
+      .map(
+        (r) =>
+          `${r.hotel_name}: ${r.currency} ${(r.min_total as number).toLocaleString(locale, {
+            maximumFractionDigits: 0,
+          })} — ${r.room_name}${r.available === false ? ` (${t("flexPanel.onRequest")})` : ""}`
+      )
+      .join("\n");
+  }
+
+  function renderCellBody(cell: FlexibleDayCell, dayLabel: string) {
+    const isCheapest = isCheapestCell(cell);
+    return (
+      <>
+        <span className="text-[11px] font-medium uppercase tracking-wide text-slate/50">{dayLabel}</span>
+        {cell.best ? (
+          <>
+            <span className={`text-sm font-semibold ${isCheapest ? "text-success" : "text-ink"}`}>
+              {(cell.best.min_total as number).toLocaleString(locale, { maximumFractionDigits: 0 })}
+            </span>
+            <span className="text-[10px] text-slate/40">{cell.best.currency}</span>
+            {multiHotel && (
+              <span className="max-w-full truncate text-[10px] text-slate/50">{cell.best.hotel_name}</span>
+            )}
+          </>
+        ) : (
+          <span className="text-sm font-semibold">—</span>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <section className="mt-6 rounded-2xl border border-ink/10 bg-white p-5 shadow-card">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-base font-semibold capitalize text-ink">
+          {t("flexPanel.title", {
+            count: cfg.nights,
+            month: new Date(
+              Number(cfg.anchorMonth.split("-")[0]),
+              Number(cfg.anchorMonth.split("-")[1]) - 1,
+              1
+            ).toLocaleDateString(locale, { month: "long", year: "numeric" }),
+          })}
+        </h2>
+        {scanning ? (
+          <span className="text-xs font-medium text-slate/60">
+            {t("flexPanel.progress", { done: scannedCount, total: candidates.length })}
+          </span>
+        ) : (
+          savings.length > 0 && (
+            <span className="text-xs font-medium text-success">{savings.join(" · ")}</span>
+          )
+        )}
+      </div>
+
+      <p className="mt-1 text-xs text-slate/60">{t("flexPanel.subtitle")}</p>
+
+      {error && (
+        <div className="mt-3 flex items-center gap-2 rounded-lg bg-danger/10 px-4 py-2.5 text-sm font-medium text-danger">
+          <IconAlert />
+          {error}
+        </div>
+      )}
+
+      <MonthPriceGrid
+        cfg={cfg}
+        cells={cells}
+        cellClasses={cellClasses}
+        cellTitle={cellTitle}
+        renderCellBody={renderCellBody}
+        onPick={onPick}
+      />
+
+      {!scanning && pricedCells.length === 0 && !error && (
+        <p className="mt-4 rounded-lg bg-warning/10 px-4 py-3 text-sm font-medium text-warning">
+          {t("flexPanel.nothingPriceable")}
+        </p>
+      )}
+    </section>
+  );
+}
+
+// Month mode's calendar grid -- the same cells as the window strip, but
+// laid out Mon-Sun so a month reads as a calendar. Reuses buildMonthGrid
+// (the exact same weekday alignment the date picker itself uses) rather
+// than a second, independently-written month layout that could drift.
+function MonthPriceGrid({
+  cfg,
+  cells,
+  cellClasses,
+  cellTitle,
+  renderCellBody,
+  onPick,
+}: {
+  cfg: FlexibleDatesConfig;
+  cells: FlexibleDayCell[];
+  cellClasses: (cell: FlexibleDayCell) => string;
+  cellTitle: (cell: FlexibleDayCell) => string;
+  renderCellBody: (cell: FlexibleDayCell, dayLabel: string) => React.ReactNode;
+  onPick: (checkIn: string, checkOut: string) => void;
+}) {
+  const { t } = useTranslation("hotelSearch");
+  const [year, month] = cfg.anchorMonth.split("-").map(Number);
+  const grid = buildMonthGrid(year, month - 1);
+  const byIso = new Map(cells.map((c) => [c.checkIn, c]));
+  const weekdayLabels = t("dateRangePicker.weekdays", { returnObjects: true }) as string[];
+
+  return (
+    <div className="mt-4 overflow-x-auto">
+      <div className="min-w-[38rem]">
+        <div className="grid grid-cols-7 gap-2 text-center text-[11px] font-semibold uppercase tracking-wide text-slate/40">
+          {weekdayLabels.map((w) => (
+            <span key={w}>{w}</span>
+          ))}
+        </div>
+        <div className="mt-2 grid grid-cols-7 gap-2">
+          {grid.map((day, i) => {
+            if (!day) return <span key={i} />;
+            const cell = byIso.get(toISODate(day));
+            if (!cell) {
+              // A day of this month that isn't a candidate at all -- i.e.
+              // already in the past. Rendered as an inert placeholder so
+              // the calendar keeps its real shape instead of collapsing.
+              return (
+                <span
+                  key={i}
+                  className="flex flex-col items-center justify-center rounded-xl border border-ink/5 bg-sand/20 px-2 py-2.5 text-center text-[11px] text-slate/20"
+                >
+                  {day.getDate()}
+                </span>
+              );
+            }
+            return (
+              <button
+                key={i}
+                type="button"
+                disabled={cell.best === null}
+                title={cellTitle(cell)}
+                onClick={() => cell.best && onPick(cell.checkIn, cell.checkOut)}
+                className={`${cellClasses(cell)} appearance-none`}
+              >
+                {renderCellBody(cell, String(day.getDate()))}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Hotel result card
 // ---------------------------------------------------------------------------
 
@@ -838,6 +1606,7 @@ function RoomTypeCard({
   expanded,
   onToggle,
   transferOptions,
+  transfersTooSmall,
   transferRequired,
   transferCurrency,
   mandatoryTax,
@@ -857,6 +1626,7 @@ function RoomTypeCard({
   expanded: boolean;
   onToggle: () => void;
   transferOptions: PricedTransferOption[];
+  transfersTooSmall: number;
   transferRequired: boolean;
   transferCurrency: string | null;
   mandatoryTax?: MandatoryTax;
@@ -1001,6 +1771,7 @@ function RoomTypeCard({
       childAges,
       transferType: selectedTransferType,
       transferName: selectedTransfer?.option.transfer_name ?? selectedTransferType,
+      transferDeclined: transferOptions.length > 0 && selectedTransferType === null,
       currency: selectedMeal.price.currency,
       grandTotal,
     };
@@ -1153,7 +1924,7 @@ function RoomTypeCard({
             })}
           </div>
 
-          {transferOptions.length > 0 && (
+          {(transferOptions.length > 0 || transfersTooSmall > 0) && (
             <div className="border-t border-ink/5 px-4 py-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-medium text-slate/50">{t("roomTypeCard.transfer")}</span>
@@ -1164,6 +1935,34 @@ function RoomTypeCard({
                 )}
               </div>
               <div className="mt-2 space-y-2.5">
+                {/* Decision 196: "no transfer" is a real, chosen outcome, not
+                    the absence of a decision. On many destinations guests take
+                    a taxi themselves or have a transfer arranged elsewhere, and
+                    before this the agent could only ever ADD a transfer -- once
+                    a radio was picked there was no way back to none, and a
+                    never-touched block was indistinguishable from a deliberate
+                    "they're making their own way". Hidden when the contract
+                    mandates a transfer, where declining it is not on offer. */}
+                {!transferRequired && (
+                  <div>
+                    <label className="flex cursor-pointer items-center justify-between gap-3 text-sm">
+                      <span className="flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name={`transfer-${rt.id}`}
+                          checked={selectedTransferType === null}
+                          onChange={() => setSelectedTransferType(null)}
+                          className="h-4 w-4 accent-gold"
+                        />
+                        <span className="text-ink">{t("roomTypeCard.noTransfer")}</span>
+                      </span>
+                      <span className="font-mono text-xs font-semibold text-slate/50">—</span>
+                    </label>
+                    <p className="pl-6 text-[11px] leading-relaxed text-slate/50">
+                      {t("roomTypeCard.noTransferHint")}
+                    </p>
+                  </div>
+                )}
                 {transferOptions.map((opt) => {
                   // Decision 059: use the API's real, final post-discount
                   // subtotals directly -- a SpecialOfferTransferDiscount's
@@ -1189,7 +1988,26 @@ function RoomTypeCard({
                             onChange={() => setSelectedTransferType(opt.option.transfer_type)}
                             className="h-4 w-4 accent-gold disabled:cursor-not-allowed"
                           />
-                          <span className="text-ink">{opt.option.transfer_name ?? opt.option.transfer_type}</span>
+                          <span className="text-ink">
+                            {opt.option.transfer_name ?? opt.option.transfer_type}
+                            {/* Decision 197: state the capacity on the option
+                                itself. The agent is choosing a car, and "up to
+                                4" is the fact that decides it. */}
+                            {/* Decision 198: when a car also caps adults, say
+                                both numbers. "до 4 гост." alone would read as
+                                "any four people", which is exactly the wrong
+                                impression for a sedan that refuses 3 adults. */}
+                            {opt.option.max_passengers != null && (
+                              <span className="ml-1.5 text-[11px] text-slate/50">
+                                {opt.option.max_adults != null
+                                  ? t("roomTypeCard.upToGuestsAndAdults", {
+                                      guests: opt.option.max_passengers,
+                                      adults: opt.option.max_adults,
+                                    })
+                                  : t("roomTypeCard.upToGuests", { count: opt.option.max_passengers })}
+                              </span>
+                            )}
+                          </span>
                         </span>
                         {opt.price ? (
                           opt.price.total === 0 ? (
@@ -1214,23 +2032,59 @@ function RoomTypeCard({
                         )}
                       </label>
                       <p className="pl-6 text-[11px] leading-relaxed text-slate/50">
-                        {renderTransferBucketLine(t, lang, adults, "roomTypeCard.adultsLabel", adultTotal, transferCurrency)}
-                        {childrenCount > 0 && (
+                        {/* Decision 196: a car's fare has no per-guest split to
+                            show. Rendering the per-person lines here would print
+                            "2 adults — 0" beside a 220 charge, which reads as a
+                            bug; the honest line says what it is, one vehicle,
+                            round trip, whoever rides in it. */}
+                        {isPerVehicle(opt) ? (
+                          t("roomTypeCard.perVehicleLine", {
+                            currency: transferCurrency,
+                            amount: (opt.price ? opt.price.total : (opt.option.price_per_vehicle ?? 0)).toLocaleString(
+                              localeOf(lang)
+                            ),
+                          })
+                        ) : (
                           <>
-                            <br />
-                            {renderTransferBucketLine(t, lang, childrenCount, "roomTypeCard.childrenLabel", childTotal, transferCurrency)}
-                          </>
-                        )}
-                        {infants > 0 && opt.option.price_infant != null && (
-                          <>
-                            <br />
-                            {renderTransferBucketLine(t, lang, infants, "roomTypeCard.infantsLabel", infantTotal, transferCurrency)}
+                            {renderTransferBucketLine(t, lang, adults, "roomTypeCard.adultsLabel", adultTotal, transferCurrency)}
+                            {childrenCount > 0 && (
+                              <>
+                                <br />
+                                {renderTransferBucketLine(t, lang, childrenCount, "roomTypeCard.childrenLabel", childTotal, transferCurrency)}
+                              </>
+                            )}
+                            {infants > 0 && opt.option.price_infant != null && (
+                              <>
+                                <br />
+                                {renderTransferBucketLine(t, lang, infants, "roomTypeCard.infantsLabel", infantTotal, transferCurrency)}
+                              </>
+                            )}
                           </>
                         )}
                       </p>
                     </div>
                   );
                 })}
+                {/* Decision 197: say why an option is missing. Filtering the
+                    list silently would make a contract that sells four
+                    transfers look like it sells none to a party of six. */}
+                {transfersTooSmall > 0 && (
+                  <p className="text-[11px] leading-relaxed text-warning">
+                    {t("roomTypeCard.transfersTooSmall", {
+                      count: transfersTooSmall,
+                      // Decision 198: the reason can be the total OR the adult
+                      // count, so the message names the party rather than
+                      // asserting which limit was breached.
+                      summary: [
+                        t("roomTypeCard.adultsLabel", { count: adults }),
+                        childrenCount > 0 ? t("roomTypeCard.childrenLabel", { count: childrenCount }) : null,
+                        infants > 0 ? t("roomTypeCard.infantsLabel", { count: infants }) : null,
+                      ]
+                        .filter(Boolean)
+                        .join(", "),
+                    })}
+                  </p>
+                )}
               </div>
             </div>
           )}
@@ -1257,9 +2111,21 @@ function RoomTypeCard({
           {grandTotal != null && (
             <div className="border-t border-ink/10 bg-sand/40 px-4 py-3">
               <div className="flex items-center justify-between gap-3">
+                {/* Decision 196: name only what is actually in this figure.
+                    The label used to read "accommodation + transfer" always,
+                    including on St Regis, which has no transfer in its price at
+                    all -- reported live. Built from the parts that are really
+                    summed, so it stays true when a transfer is declined, when
+                    none is offered, and when a mandatory tax applies. */}
                 <span className="text-sm font-medium text-ink">
                   {t("roomTypeCard.grandTotalLabel", {
-                    taxSuffix: mandatoryTax ? t("roomTypeCard.taxSuffix") : "",
+                    parts: [
+                      t("roomTypeCard.partAccommodation"),
+                      selectedTransferTotal != null ? t("roomTypeCard.partTransfer") : null,
+                      mandatoryTax ? t("roomTypeCard.partTax") : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" + "),
                   })}
                 </span>
                 <span className="font-mono text-base font-semibold text-ink">
@@ -1292,6 +2158,62 @@ function RoomTypeCard({
   );
 }
 
+// Design System v1.0, block A: one row of the left-hand hotel column in the
+// three-column layout. Deliberately carries only what's needed to CHOOSE a
+// hotel -- name, stars, location, cheapest per-night price -- with every
+// room/meal/transfer decision left to the centre column. Reuses
+// cheapestPerNightForHotel, the same figure HotelCard's own summary shows,
+// so the list and the detail can never quote different "from" prices.
+function HotelListRow({
+  hotel,
+  gradient,
+  selected,
+  onSelect,
+}: {
+  hotel: HotelResult;
+  gradient: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const { t } = useTranslation("hotelSearch");
+  const perNight = cheapestPerNightForHotel(hotel);
+  const location = [hotel.island, hotel.city, hotel.country].filter(Boolean).join(", ");
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={selected}
+      className={`flex w-full appearance-none items-start gap-3 rounded-xl border p-3 text-left transition-colors ${
+        selected ? "border-gold bg-gold/10" : "border-transparent bg-transparent hover:bg-sand/60"
+      }`}
+    >
+      <span className={`h-12 w-12 shrink-0 rounded-lg bg-gradient-to-br ${gradient}`} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-display text-sm font-semibold text-ink">{hotel.hotel_name}</span>
+        {hotel.star_rating != null && (
+          <span className="block text-[10px] tracking-[0.2em] text-gold">{"★".repeat(hotel.star_rating)}</span>
+        )}
+        <span className="block truncate text-xs text-slate/55">{location || "—"}</span>
+        {!hotel.contractId ? (
+          <span className="mt-1 inline-block rounded-full bg-slate/10 px-2 py-0.5 text-[10px] font-medium text-slate/60">
+            {t("hotelCard.noActiveContract")}
+          </span>
+        ) : (
+          perNight && (
+            <span className="mt-0.5 block text-xs text-slate/60">
+              {t("roomTypeCard.from")}{" "}
+              <span className="font-mono text-sm font-semibold text-ink">
+                {perNight.currency} {perNight.amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </span>{" "}
+              {t("roomTypeCard.perNight")}
+            </span>
+          )
+        )}
+      </span>
+    </button>
+  );
+}
+
 function HotelCard({
   hotel,
   gradient,
@@ -1303,6 +2225,7 @@ function HotelCard({
   checkIn,
   checkOut,
   onAddToTrip,
+  inColumnLayout = false,
 }: {
   hotel: HotelResult;
   gradient: string;
@@ -1315,6 +2238,14 @@ function HotelCard({
   checkIn: string;
   checkOut: string;
   onAddToTrip: (room: CartRoom) => { ok: boolean; error?: string };
+  // Block A: true when this card is the centre column of the three-column
+  // layout. The only thing it changes is the colour placeholder, which at
+  // lg+ is pure duplication -- the same gradient already identifies this
+  // hotel in the left-hand list, one row above the eye -- and it costs the
+  // centre column ~300px of width that the actual room/meal/transfer
+  // decisions need. Hidden at lg+ only: below lg there is no left column,
+  // so the placeholder still does its job and stays.
+  inColumnLayout?: boolean;
 }) {
   const { t } = useTranslation("hotelSearch");
   const [expandedRoomTypes, setExpandedRoomTypes] = useState<Set<number>>(new Set());
@@ -1357,7 +2288,11 @@ function HotelCard({
             given its own uniform rounded-2xl, so all four corners are
             genuinely identical instead of depending on which card edge
             each one happens to touch. */}
-        <div className={`relative m-6 mb-0 h-40 shrink-0 overflow-hidden rounded-2xl bg-gradient-to-br sm:mr-0 sm:h-48 sm:w-64 ${gradient}`}>
+        <div
+          className={`relative m-6 mb-0 h-40 shrink-0 overflow-hidden rounded-2xl bg-gradient-to-br sm:mr-0 sm:h-48 sm:w-64 ${
+            inColumnLayout ? "lg:hidden" : ""
+          } ${gradient}`}
+        >
           {hotel.star_rating != null && (
             <span className="absolute left-3 top-3 inline-flex items-center rounded-full bg-white/90 px-2.5 py-1 text-xs font-semibold text-ink">
               {"★".repeat(hotel.star_rating)} {hotel.star_rating}
@@ -1425,6 +2360,7 @@ function HotelCard({
                   expanded={expandedRoomTypes.has(rt.id)}
                   onToggle={() => toggleRoomType(rt.id)}
                   transferOptions={hotel.transferOptions}
+                  transfersTooSmall={hotel.transfersTooSmall}
                   transferRequired={hotel.transferRequired}
                   transferCurrency={hotel.transferCurrency}
                   mandatoryTax={hotel.mandatoryTax}
@@ -1538,6 +2474,7 @@ function CartPanel({
                   <p className="text-xs text-slate/60">
                     {room.roomTypeName} · {room.mealPlanLabel}
                     {room.transferName ? ` · ${room.transferName}` : ""}
+                    {room.transferDeclined ? ` · ${t("roomTypeCard.noTransfer")}` : ""}
                   </p>
                   <p className="text-xs text-slate/50">
                     {room.arrivalDate} – {room.departureDate}
@@ -1620,6 +2557,359 @@ type FlightDetails = {
   departureFlightTime: string;
 };
 
+const EMPTY_FLIGHT: FlightDetails = {
+  arrivalFlightNumber: "",
+  arrivalFlightDate: "",
+  arrivalFlightTime: "",
+  departureFlightNumber: "",
+  departureFlightDate: "",
+  departureFlightTime: "",
+};
+
+function hasAnyFlightDetail(f: FlightDetails): boolean {
+  return Object.values(f).some((v) => v.trim() !== "");
+}
+
+// Decision 150: a traveller's stable identity across re-renders of the
+// flight step. Deliberately the SAME triple buildGuestsPayload's own
+// findOrAdd dedupes on -- keying per-guest flights by position in the flat
+// list would silently reassign somebody else's flight if the agent went
+// Back and edited a name, since that can reorder the list.
+function travellerKey(g: { firstName: string; lastName: string; dateOfBirth?: string }): string {
+  return `${g.firstName.trim().toLowerCase()}|${g.lastName.trim().toLowerCase()}|${g.dateOfBirth ?? ""}`;
+}
+
+// The six flight inputs, extracted so the shared party flight and each
+// individual traveller's override are literally the same control -- they
+// have to accept exactly the same data, and two hand-maintained copies of
+// six inputs would drift.
+//
+// Split into two captioned legs rather than one flat 3x2 grid: a bare grid
+// of six boxes gave no clue which row was arrival and which was departure
+// (the date/time inputs show only "dd/mm/yyyy" and "--:--", so the flight
+// number placeholder was the sole hint), and that ambiguity gets worse now
+// that this same block can appear four or five times down one step.
+const FLIGHT_INPUT_CLASS =
+  "rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none";
+
+// ---------------------------------------------------------------------------
+// Flight time/date entry (Decision 150, third pass)
+//
+// `<input type="time">` renders in the BROWSER's locale, so on this machine
+// it demands an AM/PM segment and yields "" until one is picked -- the agent
+// types 09:00, sees "09:00 --", and the value silently stays empty. Worse,
+// a partially-entered native time/date is `badInput`, which makes the whole
+// wizard <form> invalid and blocks Submit with no visible reason ("пока не
+// добавишь время PM или AM дальше не идёт").
+//
+// Flight times are stored as plain `String(5)` text ("08:45", "14:20" -- the
+// real values already in the database), so a text field is not a workaround
+// here, it is the closer fit: 24-hour, locale-independent, always yields a
+// value, and no AM/PM exists to forget.
+// ---------------------------------------------------------------------------
+
+export function formatTimeInput(raw: string): string {
+  const digits = raw.replace(/\D/g, "").slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
+// Empty counts as valid: a flight time is optional everywhere.
+export function isValidTimeValue(value: string): boolean {
+  if (!value) return true;
+  const m = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!m) return false;
+  return Number(m[1]) <= 23 && Number(m[2]) <= 59;
+}
+
+// A flight date typed with a slipped keystroke ("122029" for 2029) is what
+// produced the real 422 behind the "[object Object]" error. The bounds are
+// deliberately wide -- this only catches nonsense, it is not a business rule
+// about how far ahead a flight may be.
+export function isValidFlightDateValue(value: string): boolean {
+  if (!value) return true;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!m) return false;
+  const year = Number(m[1]);
+  return year >= 2000 && year <= 2100;
+}
+
+export function firstInvalidFlightField(f: FlightDetails): "time" | "date" | null {
+  if (!isValidTimeValue(f.arrivalFlightTime) || !isValidTimeValue(f.departureFlightTime)) return "time";
+  if (!isValidFlightDateValue(f.arrivalFlightDate) || !isValidFlightDateValue(f.departureFlightDate)) return "date";
+  return null;
+}
+
+// Decision 153. The BACKEND is what actually refuses an impossible flight
+// date (more than a year from the stay, or a return before the outbound) --
+// booking/validators.py's validate_flight_dates, applied on every write path.
+// These two mirror it so the agent finds out while typing instead of losing
+// a filled-in wizard to a 400 on submit; the server remains the authority.
+const FLIGHT_DATE_MAX_DAYS_FROM_STAY = 365;
+// Owner decision (2026-08-15, superseding this file's first attempt): warn on
+// ANY difference at all, 1 day upward. The original 3-day grace assumed a
+// night arrival the day before check-in is so normal it isn't worth
+// mentioning; the owner wants it mentioned anyway, since a one-day slip is
+// also exactly what a typo looks like. It is still only a warning, so being
+// told about a legitimate itinerary costs nothing.
+const FLIGHT_DATE_WARN_DAYS = 0;
+
+function daysApart(a: string, b: string): number {
+  return Math.round(Math.abs(parseISODate(a).getTime() - parseISODate(b).getTime()) / 86400000);
+}
+
+/** Impossible — must not be submitted. Mirrors validate_flight_dates. */
+export function flightDatesImpossible(
+  f: FlightDetails,
+  arrivalDate: string,
+  departureDate: string
+): { reason: "too_far" | "reversed"; days?: number } | null {
+  if (f.arrivalFlightDate && arrivalDate) {
+    const gap = daysApart(f.arrivalFlightDate, arrivalDate);
+    if (gap > FLIGHT_DATE_MAX_DAYS_FROM_STAY) return { reason: "too_far", days: gap };
+  }
+  if (f.departureFlightDate && departureDate) {
+    const gap = daysApart(f.departureFlightDate, departureDate);
+    if (gap > FLIGHT_DATE_MAX_DAYS_FROM_STAY) return { reason: "too_far", days: gap };
+  }
+  if (f.arrivalFlightDate && f.departureFlightDate && f.departureFlightDate < f.arrivalFlightDate) {
+    return { reason: "reversed" };
+  }
+  return null;
+}
+
+/** Suspicious but allowed — surfaced, never blocked. */
+export function flightDatesSuspicious(
+  f: FlightDetails,
+  arrivalDate: string,
+  departureDate: string
+): number | null {
+  let worst: number | null = null;
+  if (f.arrivalFlightDate && arrivalDate) {
+    const gap = daysApart(f.arrivalFlightDate, arrivalDate);
+    if (gap > FLIGHT_DATE_WARN_DAYS && gap <= FLIGHT_DATE_MAX_DAYS_FROM_STAY) worst = gap;
+  }
+  if (f.departureFlightDate && departureDate) {
+    const gap = daysApart(f.departureFlightDate, departureDate);
+    if (gap > FLIGHT_DATE_WARN_DAYS && gap <= FLIGHT_DATE_MAX_DAYS_FROM_STAY) {
+      worst = worst === null ? gap : Math.max(worst, gap);
+    }
+  }
+  return worst;
+}
+
+// One component for both notices, used under EVERY set of flight fields —
+// the common flight and each traveller's own override alike. The first
+// version of this only appeared under the common block, so a per-guest
+// flight could be days off the stay and say nothing at all (found by the
+// owner, not by review).
+//
+// Amber for something inside the accepted range but worth a second look;
+// red for what the server is going to refuse outright, shown here so the
+// agent sees it while typing instead of on submit.
+function FlightDateNotice({
+  flight,
+  arrivalDate,
+  departureDate,
+}: {
+  flight: FlightDetails;
+  arrivalDate: string;
+  departureDate: string;
+}) {
+  const { t } = useTranslation("hotelSearch");
+  if (!arrivalDate || !departureDate) return null;
+
+  const impossible = flightDatesImpossible(flight, arrivalDate, departureDate);
+  if (impossible) {
+    return (
+      <p className="mt-2.5 rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">
+        {impossible.reason === "reversed"
+          ? t("cart.flightReversed")
+          : t("cart.flightTooFarFromStay", { days: impossible.days })}
+      </p>
+    );
+  }
+
+  const off = flightDatesSuspicious(flight, arrivalDate, departureDate);
+  if (off === null) return null;
+  return (
+    <p className="mt-2.5 rounded-lg bg-warning/10 px-3 py-2 text-xs font-medium text-warning">
+      {t("cart.flightFarFromStayWarning", { days: off })}
+    </p>
+  );
+}
+
+function TimeField({
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  ariaLabel: string;
+}) {
+  const { t } = useTranslation("hotelSearch");
+  // Only a COMPLETE but impossible value ("25:70") is flagged. Half-typed
+  // input ("09:3" on the way to "09:30") is normal and must not turn red
+  // under the cursor -- the submit-time check still catches it if the agent
+  // walks away mid-entry.
+  const invalid = value.length === 5 && !isValidTimeValue(value);
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      maxLength={5}
+      placeholder={t("cart.timePlaceholder")}
+      aria-label={ariaLabel}
+      value={value}
+      onChange={(e) => onChange(formatTimeInput(e.target.value))}
+      className={`${FLIGHT_INPUT_CLASS} ${invalid ? "border-danger focus:border-danger" : ""}`}
+    />
+  );
+}
+
+function FlightLegRow({
+  icon,
+  label,
+  numberValue,
+  dateValue,
+  timeValue,
+  numberPlaceholder,
+  onNumber,
+  onDate,
+  onTime,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  numberValue: string;
+  dateValue: string;
+  timeValue: string;
+  numberPlaceholder: string;
+  onNumber: (v: string) => void;
+  onDate: (v: string) => void;
+  onTime: (v: string) => void;
+}) {
+  const { t } = useTranslation("hotelSearch");
+  return (
+    <div>
+      <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate/55">
+        <span className="text-gold-deep">{icon}</span>
+        {label}
+      </p>
+      {/* Explicit column ratio, not three equal thirds: a flight number
+          needs the room, a time input barely any. */}
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1.3fr_1fr_0.75fr]">
+        <input
+          type="text"
+          placeholder={numberPlaceholder}
+          value={numberValue}
+          onChange={(e) => onNumber(e.target.value)}
+          className={FLIGHT_INPUT_CLASS}
+        />
+        <input
+          type="date"
+          // Bounds so a slipped keystroke can't produce a six-digit year.
+          // Native validation is off on this form (see the <form noValidate>
+          // note), so these are a hint to the browser's own date UI; the
+          // authoritative check is firstInvalidFlightField at submit.
+          min="2000-01-01"
+          max="2100-12-31"
+          aria-label={t("cart.flightDateAria", { leg: label })}
+          value={dateValue}
+          onChange={(e) => onDate(e.target.value)}
+          className={`${FLIGHT_INPUT_CLASS} ${
+            dateValue && !isValidFlightDateValue(dateValue) ? "border-danger focus:border-danger" : ""
+          }`}
+        />
+        <TimeField
+          value={timeValue}
+          onChange={onTime}
+          ariaLabel={t("cart.flightTimeAria", { leg: label })}
+        />
+      </div>
+    </div>
+  );
+}
+
+function FlightFieldsGrid({
+  value,
+  onChange,
+}: {
+  value: FlightDetails;
+  onChange: <K extends keyof FlightDetails>(field: K, next: string) => void;
+}) {
+  const { t } = useTranslation("hotelSearch");
+  return (
+    <div className="flex flex-col gap-3">
+      <FlightLegRow
+        icon={<IconPlaneArrival />}
+        label={t("cart.arrivalLeg")}
+        numberPlaceholder={t("guestDetailsForm.arrivalFlightNumberPlaceholder")}
+        numberValue={value.arrivalFlightNumber}
+        dateValue={value.arrivalFlightDate}
+        timeValue={value.arrivalFlightTime}
+        onNumber={(v) => onChange("arrivalFlightNumber", v)}
+        onDate={(v) => onChange("arrivalFlightDate", v)}
+        onTime={(v) => onChange("arrivalFlightTime", v)}
+      />
+      <FlightLegRow
+        icon={<IconPlaneDeparture />}
+        label={t("cart.departureLeg")}
+        numberPlaceholder={t("guestDetailsForm.departureFlightNumberPlaceholder")}
+        numberValue={value.departureFlightNumber}
+        dateValue={value.departureFlightDate}
+        timeValue={value.departureFlightTime}
+        onNumber={(v) => onChange("departureFlightNumber", v)}
+        onDate={(v) => onChange("departureFlightDate", v)}
+        onTime={(v) => onChange("departureFlightTime", v)}
+      />
+    </div>
+  );
+}
+
+// Initials, for the per-traveller rows. Purely to give each row a fixed
+// visual anchor so a list of 5 travellers scans as a list rather than as a
+// wall of near-identical boxes.
+function travellerInitials(firstName: string, lastName: string): string {
+  const a = firstName.trim()[0] ?? "";
+  const b = lastName.trim()[0] ?? "";
+  return (a + b).toUpperCase() || "?";
+}
+
+// One saved leg, read-only: "SU120 · 21 авг 2026 · 02:01". Missing pieces
+// are simply left out rather than shown as "—", because a saved flight
+// with only a number is a normal, valid state (the guest has the flight
+// but not the exact time yet).
+function FlightLegSummary({
+  icon,
+  label,
+  number,
+  date,
+  time,
+  lang,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  number: string;
+  date: string;
+  time: string;
+  lang: string;
+}) {
+  const { t } = useTranslation("hotelSearch");
+  const parts = [
+    number.trim(),
+    date ? parseISODate(date).toLocaleDateString(localeOf(lang), { day: "numeric", month: "short", year: "numeric" }) : "",
+    time,
+  ].filter(Boolean);
+  return (
+    <p className="flex items-center gap-2 text-xs text-ink">
+      <span className="text-gold-deep">{icon}</span>
+      <span className="font-medium uppercase tracking-wide text-slate/50">{label}</span>
+      <span className="font-mono font-semibold">{parts.length ? parts.join(" · ") : t("cart.legNotFilled")}</span>
+    </p>
+  );
+}
+
 function ApplicationCheckoutForm({
   cart,
   agentId,
@@ -1631,7 +2921,7 @@ function ApplicationCheckoutForm({
   onClose: () => void;
   onSuccess: () => void;
 }) {
-  const { t } = useTranslation("hotelSearch");
+  const { t, i18n: i18nInstance } = useTranslation("hotelSearch");
 
   const [roomGuests, setRoomGuests] = useState<Record<string, RoomGuestEntry>>(() => {
     const initial: Record<string, RoomGuestEntry> = {};
@@ -1657,17 +2947,66 @@ function ApplicationCheckoutForm({
     return initial;
   });
 
-  const [flight, setFlight] = useState<FlightDetails>({
-    arrivalFlightNumber: "",
-    arrivalFlightDate: "",
-    arrivalFlightTime: "",
-    departureFlightNumber: "",
-    departureFlightDate: "",
-    departureFlightTime: "",
-  });
+  const [flight, setFlight] = useState<FlightDetails>({ ...EMPTY_FLIGHT });
 
   function setFlightField<K extends keyof FlightDetails>(key: K, value: string) {
     setFlight((prev) => ({ ...prev, [key]: value }));
+  }
+
+  // Decision 150. "shared" is the pre-existing behaviour and stays the
+  // default: one flight for the whole party, written to the application.
+  // "perGuest" keeps that same common flight AND lets individual
+  // travellers override it -- deliberately not "every guest must now be
+  // filled in separately", because the real case is a mix (most of the
+  // party together, one or two arriving on their own), and an agent
+  // shouldn't have to retype the same flight five times to express it.
+  // A traveller left without an override simply travels on the common
+  // flight, which is exactly what a NULL guest row means server-side.
+  const [flightMode, setFlightMode] = useState<"shared" | "perGuest">("shared");
+  const [guestFlights, setGuestFlights] = useState<Record<string, FlightDetails>>({});
+  // Which travellers' flight forms are currently OPEN. A traveller with an
+  // override is either being edited (fields) or saved (a read-only summary
+  // line) -- without that second state, five travellers meant five
+  // permanently-open six-field forms and no way to see at a glance what had
+  // actually been entered for whom.
+  //
+  // Purely a display state: an override that is still open when the
+  // application is submitted is sent exactly the same as a saved one.
+  // Deliberately so -- making Submit ignore unsaved fields would silently
+  // discard work an agent could plainly see on screen.
+  const [openGuestFlights, setOpenGuestFlights] = useState<Record<string, boolean>>({});
+
+  function setGuestFlightField<K extends keyof FlightDetails>(key: string, field: K, value: string) {
+    setGuestFlights((prev) => ({
+      ...prev,
+      [key]: { ...(prev[key] ?? EMPTY_FLIGHT), [field]: value },
+    }));
+  }
+
+  function addGuestOwnFlight(key: string) {
+    setGuestFlights((prev) => ({ ...prev, [key]: prev[key] ?? { ...EMPTY_FLIGHT } }));
+    setOpenGuestFlights((prev) => ({ ...prev, [key]: true }));
+  }
+
+  function removeGuestOwnFlight(key: string) {
+    setGuestFlights((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    setOpenGuestFlights((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }
+
+  function saveGuestOwnFlight(key: string) {
+    setOpenGuestFlights((prev) => ({ ...prev, [key]: false }));
+  }
+
+  function editGuestOwnFlight(key: string) {
+    setOpenGuestFlights((prev) => ({ ...prev, [key]: true }));
   }
 
   const [submitting, setSubmitting] = useState(false);
@@ -1985,8 +3324,59 @@ function ApplicationCheckoutForm({
     // approve/reject -- not a blocking requirement, just a deliberate
     // "are you sure" so an agent can't submit with no flight info
     // without ever having been asked.
-    const hasAnyFlightDetail = Object.values(flight).some((v) => v.trim() !== "");
-    if (!hasAnyFlightDetail && !window.confirm(t("cart.confirmNoFlightDetails"))) {
+    // Decision 150 (third pass): catch a malformed time/date HERE, with a
+    // message naming what is wrong, instead of letting it reach the backend
+    // as a 422 the agent can do nothing with. A six-digit year typed by
+    // accident is exactly what produced the real "[object Object]" failure.
+    // Decision 153: the stay this application is actually for. Multi-room
+    // applications are one trip for one guest set, and the Booking row takes
+    // the FIRST room's dates (create_booking_application's "representative"
+    // snapshot), so that is what the server will validate against too.
+    const stayArrival = cart[0]?.arrivalDate ?? "";
+    const stayDeparture = cart[0]?.departureDate ?? "";
+
+    const badCommon = firstInvalidFlightField(flight);
+    if (badCommon) {
+      setSubmitError(badCommon === "time" ? t("cart.invalidTime") : t("cart.invalidFlightDate"));
+      return;
+    }
+    const impossibleCommon = flightDatesImpossible(flight, stayArrival, stayDeparture);
+    if (impossibleCommon) {
+      setSubmitError(
+        impossibleCommon.reason === "reversed"
+          ? t("cart.flightReversed")
+          : t("cart.flightTooFarFromStay", { days: impossibleCommon.days })
+      );
+      return;
+    }
+    for (const [key, own] of Object.entries(guestFlights)) {
+      const impossible = flightDatesImpossible(own, stayArrival, stayDeparture);
+      if (impossible) {
+        setSubmitError(
+          impossible.reason === "reversed"
+            ? t("cart.flightReversed")
+            : t("cart.flightTooFarFromStay", { days: impossible.days })
+        );
+        setOpenGuestFlights((prev) => ({ ...prev, [key]: true }));
+        return;
+      }
+      const bad = firstInvalidFlightField(own);
+      if (bad) {
+        setSubmitError(bad === "time" ? t("cart.invalidTime") : t("cart.invalidFlightDate"));
+        // Reopen that traveller's form -- an error about fields the agent
+        // can't see is worse than no error at all.
+        setOpenGuestFlights((prev) => ({ ...prev, [key]: true }));
+        return;
+      }
+    }
+
+    // Decision 150: a per-guest override counts as flight info too, so an
+    // application where only the individually-flying travellers are filled
+    // in doesn't get warned as if nothing had been entered.
+    const anyFlightEntered =
+      hasAnyFlightDetail(flight) ||
+      (flightMode === "perGuest" && Object.values(guestFlights).some(hasAnyFlightDetail));
+    if (!anyFlightEntered && !window.confirm(t("cart.confirmNoFlightDetails"))) {
       return;
     }
 
@@ -2005,15 +3395,33 @@ function ApplicationCheckoutForm({
         method: "POST",
         body: JSON.stringify({
           agent_id: agentId,
-          guests: flat.map((g, i) => ({
-            first_name: g.firstName,
-            last_name: g.lastName,
-            date_of_birth: g.dateOfBirth || null,
-            nationality: g.nationality || null,
-            passport_number: g.passportNumber || null,
-            passport_expiry: g.passportExpiry || null,
-            is_lead_guest: i === 0,
-          })),
+          guests: flat.map((g, i) => {
+            // Decision 150: only a traveller who actually has an override
+            // sends flight fields at all. Everyone else sends nothing, so
+            // their row stays NULL server-side, which is what "travels on
+            // the application's flight" means. In "shared" mode no guest
+            // ever sends them, making that path byte-identical to before.
+            const own = flightMode === "perGuest" ? guestFlights[travellerKey(g)] : undefined;
+            return {
+              first_name: g.firstName,
+              last_name: g.lastName,
+              date_of_birth: g.dateOfBirth || null,
+              nationality: g.nationality || null,
+              passport_number: g.passportNumber || null,
+              passport_expiry: g.passportExpiry || null,
+              is_lead_guest: i === 0,
+              ...(own && hasAnyFlightDetail(own)
+                ? {
+                    arrival_flight_number: own.arrivalFlightNumber || null,
+                    arrival_flight_date: own.arrivalFlightDate || null,
+                    arrival_flight_time: own.arrivalFlightTime || null,
+                    departure_flight_number: own.departureFlightNumber || null,
+                    departure_flight_date: own.departureFlightDate || null,
+                    departure_flight_time: own.departureFlightTime || null,
+                  }
+                : {}),
+            };
+          }),
           rooms: cart.map((room) => ({
             hotel_id: room.hotelId,
             room_type_id: room.roomTypeId,
@@ -2052,8 +3460,20 @@ function ApplicationCheckoutForm({
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-ink/40 p-4">
-      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+    // Design System v1.0, block C: the shared overlay shell from
+    // components/ui/Modal.tsx instead of another hand-rolled copy.
+    // closeOnBackdrop={false} preserves this form's original behavior
+    // exactly and matters here more than anywhere else in the app -- a
+    // stray click beside a wizard already filled with guest passports,
+    // dates of birth and flight numbers must not discard all of it.
+    <Modal
+      open
+      onClose={onClose}
+      closeOnBackdrop={false}
+      maxWidth="max-w-2xl"
+      panelClassName="max-h-[90vh] overflow-y-auto p-6"
+    >
+      <div>
         {result ? (
           <div>
             <h3 className="font-display text-lg font-semibold text-ink">
@@ -2088,7 +3508,12 @@ function ApplicationCheckoutForm({
             </button>
           </div>
         ) : (
-          <form onSubmit={handleSubmit}>
+          <form onSubmit={handleSubmit} noValidate>
+            {/* noValidate: this wizard does its own validation, and the
+                native kind was actively harmful here -- a half-typed date
+                or time input is `badInput`, which makes the whole form
+                invalid and blocks Submit with no message anywhere on
+                screen ("пока не добавишь время PM или AM дальше не идёт"). */}
             <div className="flex items-center justify-between gap-3">
               <h3 className="font-display text-lg font-semibold text-ink">{t("cart.checkoutTitle")}</h3>
               <button
@@ -2139,6 +3564,7 @@ function ApplicationCheckoutForm({
                     <p className="text-xs text-slate/60">
                       {room.roomTypeName} · {room.mealPlanLabel}
                       {room.transferName ? ` · ${room.transferName}` : ""}
+                      {room.transferDeclined ? ` · ${t("roomTypeCard.noTransfer")}` : ""}
                     </p>
                     <p className="text-xs text-slate/50">
                       {room.arrivalDate} – {room.departureDate} · {formatCartOccupancy(t, room)}
@@ -2293,57 +3719,254 @@ function ApplicationCheckoutForm({
                 );
               })()}
 
-              {isFlightStep && (
-              <div className="rounded-xl border border-ink/10 p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
-                {t("cart.flightHeading")}
-              </p>
-              <div className="mt-2 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-                <input
-                  type="text"
-                  placeholder={t("guestDetailsForm.arrivalFlightNumberPlaceholder")}
-                  value={flight.arrivalFlightNumber}
-                  onChange={(e) => setFlightField("arrivalFlightNumber", e.target.value)}
-                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
-                />
-                <input
-                  type="date"
-                  placeholder={t("cart.arrivalFlightDatePlaceholder")}
-                  value={flight.arrivalFlightDate}
-                  onChange={(e) => setFlightField("arrivalFlightDate", e.target.value)}
-                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-gold focus:outline-none"
-                />
-                <input
-                  type="time"
-                  placeholder={t("cart.arrivalFlightTimePlaceholder")}
-                  value={flight.arrivalFlightTime}
-                  onChange={(e) => setFlightField("arrivalFlightTime", e.target.value)}
-                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-gold focus:outline-none"
-                />
-                <input
-                  type="text"
-                  placeholder={t("guestDetailsForm.departureFlightNumberPlaceholder")}
-                  value={flight.departureFlightNumber}
-                  onChange={(e) => setFlightField("departureFlightNumber", e.target.value)}
-                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate placeholder:text-slate/40 focus:border-gold focus:outline-none"
-                />
-                <input
-                  type="date"
-                  placeholder={t("cart.departureFlightDatePlaceholder")}
-                  value={flight.departureFlightDate}
-                  onChange={(e) => setFlightField("departureFlightDate", e.target.value)}
-                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-gold focus:outline-none"
-                />
-                <input
-                  type="time"
-                  placeholder={t("cart.departureFlightTimePlaceholder")}
-                  value={flight.departureFlightTime}
-                  onChange={(e) => setFlightField("departureFlightTime", e.target.value)}
-                  className="rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm text-slate focus:border-gold focus:outline-none"
-                />
-              </div>
-              </div>
-              )}
+              {isFlightStep && (() => {
+                // Decision 150: the traveller list is derived from the room
+                // steps already completed, using the same dedupe the submit
+                // payload itself uses -- so the names offered here are
+                // exactly the guest rows that will be created, never a
+                // separately-maintained second list.
+                const travellers = buildGuestsPayload().flat;
+                const ownCount =
+                  flightMode === "perGuest"
+                    ? travellers.filter((g) => guestFlights[travellerKey(g)]).length
+                    : 0;
+                const commonCount = travellers.length - ownCount;
+
+                // Deliberately buttons, not native radios/checkboxes. This
+                // project's legacy stylesheet applies `width:100%` +
+                // `padding:14px 16px` + a border to EVERY `input`, radios
+                // and checkboxes included -- which is what stretched the
+                // first version of this step across the dialog. Real
+                // selectable cards are both the better control here and
+                // immune to that rule; see CLAUDE.md's note on it.
+                const modeCard = (active: boolean) =>
+                  `flex-1 appearance-none rounded-xl border p-3.5 text-left transition-colors ${
+                    active
+                      ? "border-ink bg-ink/[0.04] shadow-sm"
+                      : "border-ink/12 bg-white hover:border-ink/35 hover:bg-sand/40"
+                  }`;
+
+                return (
+                  <div className="flex flex-col gap-3">
+                    <div>
+                      <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate/55">
+                        <IconUsers className="h-3.5 w-3.5" />
+                        {t("cart.flightModeHeading")}
+                      </p>
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        {([
+                          {
+                            mode: "shared" as const,
+                            title: t("cart.flightModeShared"),
+                            hint: t("cart.flightModeSharedHint"),
+                          },
+                          {
+                            mode: "perGuest" as const,
+                            title: t("cart.flightModePerGuest"),
+                            hint: t("cart.flightModePerGuestHint"),
+                          },
+                        ]).map((opt) => {
+                          const active = flightMode === opt.mode;
+                          return (
+                            <button
+                              key={opt.mode}
+                              type="button"
+                              onClick={() => setFlightMode(opt.mode)}
+                              aria-pressed={active}
+                              className={modeCard(active)}
+                            >
+                              <span className="flex items-start gap-2.5">
+                                {/* Hand-drawn radio dot -- a real one would
+                                    be stretched by the legacy input rule. */}
+                                <span
+                                  className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 ${
+                                    active ? "border-ink" : "border-slate/35"
+                                  }`}
+                                >
+                                  {active && <span className="h-2 w-2 rounded-full bg-ink" />}
+                                </span>
+                                <span className="min-w-0">
+                                  <span className={`block text-sm font-semibold ${active ? "text-ink" : "text-slate"}`}>
+                                    {opt.title}
+                                  </span>
+                                  <span className="mt-0.5 block text-xs leading-snug text-slate/60">{opt.hint}</span>
+                                </span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-ink/12 bg-sand/25 p-4">
+                      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate/55">
+                          {flightMode === "perGuest" ? t("cart.flightCommonHeading") : t("cart.flightHeading")}
+                        </p>
+                        {/* Says who this block actually covers -- in
+                            per-guest mode "common flight" is otherwise a
+                            claim the agent has to work out for themselves. */}
+                        {flightMode === "perGuest" && (
+                          <span className="rounded-full bg-white px-2.5 py-0.5 text-[11px] font-medium text-slate/70">
+                            {commonCount > 0
+                              ? t("cart.appliesToCount", { count: commonCount, total: travellers.length })
+                              : t("cart.appliesToNobody")}
+                          </span>
+                        )}
+                      </div>
+                      <FlightFieldsGrid value={flight} onChange={setFlightField} />
+                      <FlightDateNotice
+                        flight={flight}
+                        arrivalDate={cart[0]?.arrivalDate ?? ""}
+                        departureDate={cart[0]?.departureDate ?? ""}
+                      />
+                    </div>
+
+                    {flightMode === "perGuest" && (
+                      <div className="flex flex-col gap-2">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate/55">
+                          {t("cart.travellersHeading", { count: travellers.length })}
+                        </p>
+                        {travellers.map((g, i) => {
+                          const key = travellerKey(g);
+                          const own = guestFlights[key];
+                          const editing = Boolean(own) && (openGuestFlights[key] ?? true);
+                          const filled = Boolean(own) && hasAnyFlightDetail(own);
+                          const name = `${g.firstName} ${g.lastName}`.trim();
+                          return (
+                            <div
+                              key={key || i}
+                              className={`rounded-xl border p-3.5 transition-colors ${
+                                own ? "border-gold/45 bg-gold/[0.04]" : "border-ink/12 bg-white"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="flex min-w-0 items-center gap-2.5">
+                                  <span
+                                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold ${
+                                      own ? "bg-gold/20 text-gold-deep" : "bg-sand text-slate/70"
+                                    }`}
+                                  >
+                                    {travellerInitials(g.firstName, g.lastName)}
+                                  </span>
+                                  <span className="min-w-0">
+                                    <span className="block truncate text-sm font-medium text-ink">
+                                      {name || t("cart.travellerFallbackName", { number: i + 1 })}
+                                    </span>
+                                    {!own && (
+                                      <span className="block text-xs text-slate/55">{t("cart.usesCommonFlight")}</span>
+                                    )}
+                                    {own && !editing && (
+                                      <span className="block text-xs font-medium text-gold-deep">
+                                        {t("cart.ownFlightSaved")}
+                                      </span>
+                                    )}
+                                  </span>
+                                </span>
+
+                                {/* Three distinct actions instead of one
+                                    toggle that both added and silently
+                                    discarded a filled-in flight. */}
+                                {!own ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => addGuestOwnFlight(key)}
+                                    className="shrink-0 appearance-none whitespace-nowrap rounded-full border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-slate transition-colors hover:border-ink/40 hover:text-ink"
+                                  >
+                                    {t("cart.ownFlightToggle")}
+                                  </button>
+                                ) : (
+                                  <span className="flex shrink-0 items-center gap-1.5">
+                                    {!editing && (
+                                      <button
+                                        type="button"
+                                        onClick={() => editGuestOwnFlight(key)}
+                                        className="appearance-none whitespace-nowrap rounded-full border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-slate transition-colors hover:border-ink/40 hover:text-ink"
+                                      >
+                                        {t("cart.ownFlightEdit")}
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => removeGuestOwnFlight(key)}
+                                      className="appearance-none whitespace-nowrap rounded-full border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-slate/70 transition-colors hover:border-danger hover:text-danger"
+                                    >
+                                      {t("cart.ownFlightRemove")}
+                                    </button>
+                                  </span>
+                                )}
+                              </div>
+
+                              {own && editing && (
+                                <div className="mt-3 border-t border-gold/25 pt-3">
+                                  <FlightFieldsGrid
+                                    value={own}
+                                    onChange={(field, next) => setGuestFlightField(key, field, next)}
+                                  />
+                                  {/* Was missing entirely until the owner
+                                      reported it: a traveller's own flight
+                                      could sit days off the stay in silence. */}
+                                  <FlightDateNotice
+                                    flight={own}
+                                    arrivalDate={cart[0]?.arrivalDate ?? ""}
+                                    departureDate={cart[0]?.departureDate ?? ""}
+                                  />
+                                  <div className="mt-3 flex items-center justify-end gap-2">
+                                    {!filled && (
+                                      <span className="mr-auto text-xs text-slate/55">{t("cart.ownFlightEmptyHint")}</span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      disabled={!filled}
+                                      onClick={() => saveGuestOwnFlight(key)}
+                                      className="appearance-none rounded-full border-0 bg-ink px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-ink/90 disabled:cursor-not-allowed disabled:bg-ink/25"
+                                    >
+                                      {t("cart.ownFlightSave")}
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Saved state: the actual chosen flight, read
+                                  back at a glance instead of six input boxes
+                                  the agent has to re-read to know what is set. */}
+                              {own && !editing && (
+                                <div className="mt-2.5 flex flex-col gap-1 border-t border-gold/25 pt-2.5">
+                                  <FlightLegSummary
+                                    icon={<IconPlaneArrival />}
+                                    label={t("cart.arrivalLeg")}
+                                    number={own.arrivalFlightNumber}
+                                    date={own.arrivalFlightDate}
+                                    time={own.arrivalFlightTime}
+                                    lang={i18nInstance.language}
+                                  />
+                                  <FlightLegSummary
+                                    icon={<IconPlaneDeparture />}
+                                    label={t("cart.departureLeg")}
+                                    number={own.departureFlightNumber}
+                                    date={own.departureFlightDate}
+                                    time={own.departureFlightTime}
+                                    lang={i18nInstance.language}
+                                  />
+                                  {/* Also on the SAVED summary — otherwise
+                                      pressing "Сохранить рейс" would make the
+                                      warning disappear without the date
+                                      having changed. */}
+                                  <FlightDateNotice
+                                    flight={own}
+                                    arrivalDate={cart[0]?.arrivalDate ?? ""}
+                                    departureDate={cart[0]?.departureDate ?? ""}
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             {submitError && (
@@ -2403,7 +4026,7 @@ function ApplicationCheckoutForm({
           </form>
         )}
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -2519,9 +4142,37 @@ function HotelSearch() {
   }, [destination]);
 
   const [destinationDropdownOpen, setDestinationDropdownOpen] = useState(false);
+
+  // Multi-hotel search (project owner, 2026-08-03): at a real catalog size a
+  // free-text destination match can return hundreds of hotels, and no left-
+  // hand list can honestly present those. So the agent picks the hotels
+  // outright -- between one and five -- and the picked set, not a text
+  // match, is what gets searched. One hotel means there is nothing to choose
+  // between, so the list column disappears entirely and the single result
+  // gets the full width (see MAX_PICKED_HOTELS' use in the layout below).
+  const MAX_PICKED_HOTELS = 5;
+  const [pickedHotels, setPickedHotels] = useState<{ id: number; hotel_name: string }[]>([]);
+  const pickedIds = pickedHotels.map((h) => h.id);
+
+  function addPickedHotel(hotel: Hotel) {
+    setPickedHotels((prev) =>
+      prev.length >= MAX_PICKED_HOTELS || prev.some((p) => p.id === hotel.id)
+        ? prev
+        : [...prev, { id: hotel.id, hotel_name: hotel.hotel_name }]
+    );
+    setDestination("");
+    setDestinationDropdownOpen(false);
+  }
+
+  function removePickedHotel(id: number) {
+    setPickedHotels((prev) => prev.filter((p) => p.id !== id));
+  }
+
   const destinationSuggestions =
     debouncedDestination.trim().length >= 2
-      ? catalogHotels.filter((h) => matchesDestination(h, debouncedDestination)).slice(0, 8)
+      ? catalogHotels
+          .filter((h) => matchesDestination(h, debouncedDestination) && !pickedIds.includes(h.id))
+          .slice(0, 8)
       : [];
 
   function handleChildCountChange(newCount: number) {
@@ -2542,11 +4193,145 @@ function HotelSearch() {
   const [formError, setFormError] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [results, setResults] = useState<HotelResult[]>([]);
+  // Block A: which hotel the centre column is showing. Only the left column
+  // writes it; below lg (where there is no left column) it is simply unused,
+  // and the original stacked list of every hotel renders instead.
+  const [selectedHotelId, setSelectedHotelId] = useState<number | null>(null);
+
+  // Decision 149 -- flexible dates. `flexible` non-null IS flexible mode
+  // (the picker derives its active tab from exactly this). scanCfg is the
+  // config the currently-displayed strip was actually produced with, kept
+  // separate so editing the config afterwards doesn't silently relabel a
+  // strip that was scanned with different settings.
+  const [flexible, setFlexible] = useState<FlexibleDatesConfig | null>(null);
+  const [scanCfg, setScanCfg] = useState<FlexibleDatesConfig | null>(null);
+  const [scanCandidates, setScanCandidates] = useState<string[]>([]);
+  const [scanRows, setScanRows] = useState<DateScanRow[]>([]);
+  const [scanning, setScanning] = useState(false);
+  const [scannedCount, setScannedCount] = useState(0);
+  const [scanError, setScanError] = useState<string | null>(null);
+
+  // One "unit" is one (hotel, date) pair, the same unit the backend caps at
+  // service.MAX_SCAN_UNITS = 40. The request chunk is deliberately far
+  // smaller than that cap: a full scan is real pricing work (~0.3-0.5s per
+  // unit), so sending it in small batches lets the strip fill in
+  // progressively instead of leaving the agent on a dead spinner -- and
+  // keeps any single request well clear of a timeout. Measured on real
+  // data: a whole-month scan of one hotel is ~14s total, which at this
+  // chunk size arrives as ~8 visible updates rather than one long freeze.
+  const SCAN_CHUNK_UNITS = 4;
+
+  async function runFlexibleScan(cfg: FlexibleDatesConfig) {
+    const candidates = buildScanCandidates(cfg);
+    if (candidates.length === 0) {
+      setFormError(t("page.flexMonthPast"));
+      return;
+    }
+
+    const token = localStorage.getItem("token");
+    if (!token) return;
+    if (!user) return;
+    const agentId = user.id;
+
+    setScanning(true);
+    setScanError(null);
+    setScanRows([]);
+    setScannedCount(0);
+    setScanCandidates(candidates);
+    setScanCfg(cfg);
+    // A scan replaces whatever exact-date results were on screen -- leaving
+    // them would show prices for dates the agent is in the middle of
+    // reconsidering.
+    setResults([]);
+    setHasSearched(false);
+    setSearchError(null);
+
+    try {
+      const allHotels = catalogLoaded
+        ? catalogHotels
+        : await fetchJson<Hotel[]>("/hotel-engine/hotels?skip=0&limit=100", token);
+      const hotels = resolveSearchHotels(allHotels);
+      if (hotels.length === 0) {
+        setScanError(t("page.noHotelsFound"));
+        return;
+      }
+
+      const chunkSize = Math.max(1, Math.floor(SCAN_CHUNK_UNITS / hotels.length));
+      for (let i = 0; i < candidates.length; i += chunkSize) {
+        const chunk = candidates.slice(i, i + chunkSize);
+        const params = new URLSearchParams({
+          agent_id: String(agentId),
+          nights: String(cfg.nights),
+          adults: String(occupancy.adults),
+          children: String(occupancy.children),
+          infants: String(occupancy.infants),
+        });
+        hotels.forEach((h) => params.append("hotel_ids", String(h.id)));
+        chunk.forEach((d) => params.append("check_ins", d));
+        const rows = await fetchJson<DateScanRow[]>(
+          `/pricing-engine/date-scan?${params.toString()}`,
+          token
+        );
+        setScanRows((prev) => [...prev, ...rows]);
+        setScannedCount(i + chunk.length);
+      }
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : t("page.hotelsLoadFailed"));
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  // Picking a date out of the strip is what ENDS flexible mode: it commits
+  // real check-in/check-out dates and immediately runs the ordinary
+  // exact-date search against them, so everything downstream stays the
+  // single, already-verified booking path.
+  function handlePickScanDate(pickedCheckIn: string, pickedCheckOut: string) {
+    setCheckIn(pickedCheckIn);
+    setCheckOut(pickedCheckOut);
+    setFlexible(null);
+    setScanCfg(null);
+    setScanRows([]);
+    setScanCandidates([]);
+    void runExactSearch(pickedCheckIn, pickedCheckOut);
+  }
+
+  // Picked hotels win over the typed text, and keep the order they were
+  // picked in. The free-text branch stays as the fallback for someone who
+  // types a destination and hits Search without picking anything -- it is
+  // the same matcher as before, just no longer the primary path. Shared by
+  // the exact-date search and the flexible-date scan (Decision 149) so the
+  // two can never disagree about which hotels a search covers.
+  function resolveSearchHotels(allHotels: Hotel[]): Hotel[] {
+    return pickedHotels.length > 0
+      ? pickedHotels
+          .map((p) => allHotels.find((h) => h.id === p.id))
+          .filter((h): h is Hotel => Boolean(h))
+      : allHotels.filter((h) => matchesDestination(h, destination));
+  }
 
   async function handleSearch(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setFormError(null);
     setDestinationDropdownOpen(false);
+
+    // An empty search used to mean "every hotel in the catalog", which is
+    // exactly the case the owner flagged: harmless with two hotels, useless
+    // and unpresentable with a thousand. Either pick hotels or name a
+    // destination -- both bound the result set to something a person can
+    // actually read.
+    if (pickedHotels.length === 0 && !destination.trim()) {
+      setFormError(t("page.hotelRequired"));
+      return;
+    }
+
+    // Decision 149: in flexible mode the agent hasn't chosen a stay yet --
+    // the whole point of the scan is to find out which check-in date to
+    // choose -- so the exact-date validation below doesn't apply.
+    if (flexible) {
+      await runFlexibleScan(flexible);
+      return;
+    }
 
     if (!checkIn || !checkOut) {
       setFormError(t("page.datesRequired"));
@@ -2556,7 +4341,14 @@ function HotelSearch() {
       setFormError(t("page.checkoutAfterCheckin"));
       return;
     }
+    await runExactSearch(checkIn, checkOut);
+  }
 
+  // checkIn/checkOut are parameters that deliberately shadow the state of
+  // the same name: picking a date out of the flexible-date strip needs to
+  // search those exact dates immediately, without waiting a render for the
+  // state write to land.
+  async function runExactSearch(checkIn: string, checkOut: string) {
     const token = localStorage.getItem("token");
     if (!token) return; // guarded above; satisfies TypeScript below
     if (!user) return; // guarded by the render-time check below; narrows for TypeScript here
@@ -2570,7 +4362,7 @@ function HotelSearch() {
       const allHotels = catalogLoaded
         ? catalogHotels
         : await fetchJson<Hotel[]>("/hotel-engine/hotels?skip=0&limit=100", token);
-      const hotels = allHotels.filter((h) => matchesDestination(h, destination));
+      const hotels = resolveSearchHotels(allHotels);
 
       const withRooms = await Promise.all(
         hotels.map(async (hotel): Promise<HotelResult> => {
@@ -2600,12 +4392,32 @@ function HotelSearch() {
           }
 
           let transferOptions: PricedTransferOption[] = [];
+          // Decision 197: how many Active options exist that this party is
+          // too large for. Kept so the UI can say so rather than showing an
+          // empty transfer block.
+          let transfersTooSmall = 0;
           if (contractId) {
             try {
-              const rawOptions = await fetchJson<TransferOption[]>(
+              // Decision 197: fetch the whole Active list in ONE request and
+              // split it here, rather than asking the endpoint to filter.
+              // The page needs BOTH halves: the options that fit, and how
+              // many exist but are too small -- otherwise a family of five on
+              // a contract selling only four-seat cars would see the transfer
+              // block vanish with no explanation. The endpoint's own `guests`
+              // filter stays as the protection for any other caller.
+              const guests = occupancy.adults + occupancy.children + occupancy.infants;
+              // Decision 198: both limits, independently. `occupancy.adults`
+              // already includes anyone 12 or over (deriveOccupancy promotes
+              // them), which is exactly what an adult seat means here.
+              const fits = (o: TransferOption) =>
+                (o.max_passengers === null || o.max_passengers >= guests) &&
+                (o.max_adults === null || o.max_adults >= occupancy.adults);
+              const allOptions = await fetchJson<TransferOption[]>(
                 `/contract-engine/contracts/${contractId}/transfer-options/available`,
                 token
               );
+              const rawOptions = allOptions.filter(fits);
+              transfersTooSmall = allOptions.length - rawOptions.length;
               // Price each option via the discount-aware endpoint (applies
               // any active SpecialOfferTransferDiscount, e.g. Kandima's
               // KM26_03 50%/25% off) instead of the naive
@@ -2736,6 +4548,7 @@ function HotelSearch() {
             contractId,
             transferRequired,
             transferOptions,
+            transfersTooSmall,
             transferCurrency,
             mandatoryTax,
             roomTypes: roomTypeResults,
@@ -2744,6 +4557,10 @@ function HotelSearch() {
       );
 
       setResults(withRooms);
+      // Block A: a fresh result set always starts on its first hotel, so the
+      // centre column is never empty and never left pointing at a hotel from
+      // the previous search.
+      setSelectedHotelId(withRooms[0]?.id ?? null);
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : t("page.hotelsLoadFailed"));
     } finally {
@@ -2762,6 +4579,17 @@ function HotelSearch() {
   // its own cart.length>0/!checkoutOpen conditions, just evaluated once
   // and shared by both the grid wrapper and the results column below.
   const showPinnedCart = hasSearched && results.length > 0 && !checkoutOpen;
+
+  // Block A: the hotel-list column exists only when there is genuinely a
+  // choice to make -- two or more results. A single-hotel search (the common
+  // case now that hotels are picked outright) has nothing to list, so the
+  // column is not rendered at all and its width goes to the result itself,
+  // shown as the full standard card rather than a narrowed centre column.
+  // Both cases keep the cart; the whole area still requires a completed
+  // search and no open checkout, exactly as the pinned cart already did.
+  const showHotelList = showPinnedCart && results.length > 1;
+  const showColumns = showPinnedCart;
+  const selectedHotel = results.find((h) => h.id === selectedHotelId) ?? results[0] ?? null;
 
   return (
     <div className="min-h-screen bg-sand font-sans text-slate">
@@ -2790,19 +4618,12 @@ function HotelSearch() {
           use the screen. Tailwind v4 dropped max-w-screen-2xl, hence the
           explicit rem value rather than the old named utility. */}
       <main className="mx-auto max-w-[96rem] px-4 pb-8 sm:px-8">
-        {/* Requested live: the cart used to start its own row below the
-            search form, only alongside the results -- now it shares one
-            grid with the ENTIRE left column (search form + errors +
-            results), pinned from the very top, so the search bar reads as
-            a clean, evenly-aligned block next to the cart rather than
-            floating above it with the cart trailing in lower down. */}
-        {/* At xl the container is wide enough that a 1/3-width cart column
-            would be far wider than its own content needs -- switching to
-            4 columns there gives the extra width to the results instead,
-            keeping the cart at a sane ~360px. Below xl the original 3/2+1
-            split is unchanged. */}
-        <div className={showPinnedCart ? "lg:grid lg:grid-cols-3 lg:items-start lg:gap-6 xl:grid-cols-4 xl:gap-8" : ""}>
-        <div className={showPinnedCart ? "lg:col-span-2 xl:col-span-3" : ""}>
+        {/* Block A: the search bar now spans the full width above all three
+            columns instead of sharing a grid cell with the results. One
+            search governs every column, so it reads as the page's own
+            header rather than as the left column's first item -- and the
+            hotel list, the room detail and the cart all start on the same
+            line beneath it. */}
         <form
           onSubmit={handleSearch}
           className="-mt-10 rounded-2xl border border-ink/10 bg-white shadow-xl sm:-mt-12 sm:rounded-[2.5rem]"
@@ -2826,18 +4647,55 @@ function HotelSearch() {
               <label className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate/50">
                 <IconPin className="h-3.5 w-3.5 text-gold-deep" />
                 {t("page.destinationLabel")}
+                <span className="ml-auto text-[10px] font-normal normal-case tracking-normal text-slate/40">
+                  {t("page.multiHotelHint")}
+                </span>
               </label>
-              <input
-                type="text"
-                value={destination}
-                onChange={(e) => {
-                  setDestination(e.target.value);
-                  setDestinationDropdownOpen(true);
-                }}
-                onFocus={() => setDestinationDropdownOpen(true)}
-                placeholder={t("page.destinationPlaceholder")}
-                className="w-full bg-transparent text-lg text-slate placeholder:text-slate/40 focus:outline-none sm:text-xl"
-              />
+
+              {/* Picked hotels. Present only once something is picked, so the
+                  common single-hotel search looks exactly as it always has --
+                  type, choose, search -- and the multi-hotel capability costs
+                  nothing until it is actually used. */}
+              {pickedHotels.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {pickedHotels.map((h) => (
+                    <span
+                      key={h.id}
+                      className="inline-flex items-center gap-1.5 rounded-full bg-gold/15 py-1 pl-3 pr-1.5 text-sm font-medium text-ink"
+                    >
+                      {h.hotel_name}
+                      <button
+                        type="button"
+                        onClick={() => removePickedHotel(h.id)}
+                        aria-label={t("page.removeHotel")}
+                        className="flex h-5 w-5 appearance-none items-center justify-center rounded-full border-0 bg-transparent text-ink/50 transition-colors hover:bg-ink/10 hover:text-ink"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {pickedHotels.length >= MAX_PICKED_HOTELS ? (
+                <p className="text-sm text-slate/50">{t("page.maxHotelsReached")}</p>
+              ) : (
+                <input
+                  type="text"
+                  value={destination}
+                  onChange={(e) => {
+                    setDestination(e.target.value);
+                    setDestinationDropdownOpen(true);
+                  }}
+                  onFocus={() => setDestinationDropdownOpen(true)}
+                  placeholder={
+                    pickedHotels.length > 0
+                      ? t("page.addAnotherHotel")
+                      : t("page.destinationPlaceholder")
+                  }
+                  className="w-full bg-transparent text-lg text-slate placeholder:text-slate/40 focus:outline-none sm:text-xl"
+                />
+              )}
               {/* Live suggestions -- same dropdown/debounce pattern as
                   financeShared.tsx's AgentSearchSelect, adapted for an
                   already-loaded in-memory catalog instead of a per-
@@ -2857,10 +4715,7 @@ function HotelSearch() {
                       <button
                         key={hotel.id}
                         type="button"
-                        onClick={() => {
-                          setDestination(hotel.hotel_name);
-                          setDestinationDropdownOpen(false);
-                        }}
+                        onClick={() => addPickedHotel(hotel)}
                         className="block w-full appearance-none border-0 border-b border-ink/5 bg-white px-4 py-2.5 text-left text-sm last:border-b-0 hover:bg-sand/40"
                       >
                         <span className="font-medium text-ink">{hotel.hotel_name}</span>
@@ -2886,6 +4741,20 @@ function HotelSearch() {
                   setCheckOut(co);
                 }}
                 size="lg"
+                flexible={flexible}
+                onFlexibleChange={(cfg) => {
+                  setFlexible(cfg);
+                  setFormError(null);
+                  // Leaving flexible mode drops the strip with it -- a
+                  // stale strip next to exact dates would be two different
+                  // answers to the same question on one screen.
+                  if (!cfg) {
+                    setScanCfg(null);
+                    setScanRows([]);
+                    setScanCandidates([]);
+                    setScanError(null);
+                  }
+                }}
               />
             </div>
 
@@ -2921,11 +4790,17 @@ function HotelSearch() {
             <div className="flex items-center px-5 py-4 sm:py-3 sm:pl-3 sm:pr-3 sm:shrink-0">
               <button
                 type="submit"
-                disabled={searching}
+                disabled={searching || scanning}
                 className="flex w-full items-center justify-center gap-2 rounded-full bg-ink px-8 py-3.5 text-base font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 sm:w-auto"
               >
                 <IconSearch className="h-4 w-4" />
-                {searching ? t("page.searching") : t("page.searchButton")}
+                {scanning
+                  ? t("page.scanning")
+                  : searching
+                    ? t("page.searching")
+                    : flexible
+                      ? t("page.findDatesButton")
+                      : t("page.searchButton")}
               </button>
             </div>
           </div>
@@ -2937,6 +4812,23 @@ function HotelSearch() {
             </div>
           )}
         </form>
+
+        {/* Decision 149: the flexible-date price strip sits between the
+            search bar and the results, because that is exactly its role --
+            a date-choosing step that ENDS by producing ordinary exact
+            dates, not a parallel kind of search result. */}
+        {scanCfg && (
+          <FlexibleResultsPanel
+            cfg={scanCfg}
+            candidates={scanCandidates}
+            rows={scanRows}
+            scanning={scanning}
+            scannedCount={scannedCount}
+            error={scanError}
+            multiHotel={new Set(scanRows.map((r) => r.hotel_id)).size > 1}
+            onPick={handlePickScanDate}
+          />
+        )}
 
         {searchError && (
           <div className="mt-6 flex items-center gap-2 rounded-xl bg-danger/10 px-5 py-4 text-sm font-medium text-danger">
@@ -2952,43 +4844,91 @@ function HotelSearch() {
           </div>
         )}
 
-        <div className="mt-6 space-y-5">
-          {results.map((hotel, i) => (
-            <HotelCard
-              key={hotel.id}
-              hotel={hotel}
-              gradient={CARD_GRADIENTS[i % CARD_GRADIENTS.length]}
-              adults={occupancy.adults}
-              childrenCount={occupancy.children}
-              infants={occupancy.infants}
-              childAges={childBucketAges}
-              agentId={user.id}
-              checkIn={checkIn}
-              checkOut={checkOut}
-              onAddToTrip={addToCart}
-            />
-          ))}
-        </div>
-        </div>
+        {/* Block A -- the three-column working area: choose a hotel on the
+            left, configure the room/meal/transfer in the middle, watch the
+            trip build up on the right, with no scrolling between the three.
+            Columns are explicit widths rather than equal fractions: the
+            hotel list and the cart each need a fixed, modest width, and
+            every remaining pixel belongs to the centre, which carries the
+            actual decisions.
 
-        {/* Requested live: the cart should be permanently visible, not just
-            a floating bubble that only appears once something's in it, and
-            should sit at the TOP of the right column (aligned with the
-            search form above), sticky, rather than starting further down.
-            Below lg, or before/without a completed search, the original
-            single-column layout + floating cart (unchanged) still
-            applies -- CartPanel's own list/remove/checkout logic is
-            identical either way, only the outer positioning differs. */}
-        {showPinnedCart && (
-          <div className="hidden lg:sticky lg:top-4 lg:col-span-1 lg:block">
-            <CartPanel
-              cart={cart}
-              onRemove={removeFromCart}
-              onCheckout={() => setCheckoutOpen(true)}
-              variant="pinned"
-            />
+            Below lg the whole thing collapses to exactly the original
+            layout -- every hotel stacked in one column with the floating
+            cart -- so a laptop/tablet/phone keeps the behaviour that has
+            been verified in real use. That fallback is done with CSS
+            (`lg:hidden` on the non-selected cards) rather than by
+            re-rendering a different tree, so each HotelCard keeps its own
+            expanded-room-type state across a resize instead of silently
+            resetting it. */}
+        <div
+          className={
+            !showColumns
+              ? "mt-6"
+              : showHotelList
+                ? "mt-6 grid items-start gap-6 lg:grid-cols-[220px_minmax(0,1fr)_290px] xl:grid-cols-[280px_minmax(0,1fr)_340px] xl:gap-8"
+                : // Single hotel: two columns only, so the result keeps the
+                  // full standard width instead of sitting in a narrowed
+                  // centre lane with an empty list column beside it.
+                  "mt-6 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_290px] xl:grid-cols-[minmax(0,1fr)_340px] xl:gap-8"
+          }
+        >
+          {showHotelList && (
+            <aside className="hidden lg:block lg:sticky lg:top-4">
+              <div className="rounded-2xl border border-ink/10 bg-white p-2 shadow-card">
+                <p className="px-2 py-2 text-[11px] font-medium uppercase tracking-wide text-slate/50">
+                  {t("hotelList.found", { count: results.length })}
+                </p>
+                <div className="max-h-[calc(100vh-8rem)] space-y-1 overflow-y-auto">
+                  {results.map((hotel, i) => (
+                    <HotelListRow
+                      key={hotel.id}
+                      hotel={hotel}
+                      gradient={CARD_GRADIENTS[i % CARD_GRADIENTS.length]}
+                      selected={selectedHotel?.id === hotel.id}
+                      onSelect={() => setSelectedHotelId(hotel.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            </aside>
+          )}
+
+          <div className={showHotelList ? "space-y-5 lg:space-y-0" : "space-y-5"}>
+            {results.map((hotel, i) => (
+              <div
+                key={hotel.id}
+                className={showHotelList && selectedHotel?.id !== hotel.id ? "lg:hidden" : ""}
+              >
+                <HotelCard
+                  hotel={hotel}
+                  gradient={CARD_GRADIENTS[i % CARD_GRADIENTS.length]}
+                  adults={occupancy.adults}
+                  childrenCount={occupancy.children}
+                  infants={occupancy.infants}
+                  childAges={childBucketAges}
+                  agentId={user.id}
+                  checkIn={checkIn}
+                  checkOut={checkOut}
+                  onAddToTrip={addToCart}
+                  inColumnLayout={showHotelList}
+                />
+              </div>
+            ))}
           </div>
-        )}
+
+          {/* Requested live (Decision 139/140): the cart is permanently
+              visible and sticky, not a bubble that only appears once
+              something is in it. Now simply the third column. */}
+          {showColumns && (
+            <div className="hidden lg:sticky lg:top-4 lg:block">
+              <CartPanel
+                cart={cart}
+                onRemove={removeFromCart}
+                onCheckout={() => setCheckoutOpen(true)}
+                variant="pinned"
+              />
+            </div>
+          )}
         </div>
 
         {/* Floating trip-cart summary -- below lg only now (the lg+ case

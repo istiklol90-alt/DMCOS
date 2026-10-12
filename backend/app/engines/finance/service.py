@@ -41,6 +41,8 @@ from app.engines.finance.models import (
     BookingCommercialLine,
 )
 from app.engines.booking.models import Booking
+from app.engines.booking import repository as booking_repository
+from app.engines.hotel.models import Hotel
 from models.user import User
 from services import email_service
 
@@ -270,6 +272,85 @@ def _attach_review_notes_bulk(db: Session, invoices: list[Invoice]) -> list[Invo
     notes_by_invoice = repository.list_review_notes_by_invoice_ids(db, [inv.id for inv in invoices])
     for inv in invoices:
         inv.review_notes = notes_by_invoice.get(inv.id, [])
+    return invoices
+
+
+def _attach_display_names_bulk(db: Session, invoices: list[Invoice]) -> list[Invoice]:
+    """
+    Decision 182: stamp each invoice with the booking number, hotel name
+    and agent name it refers to.
+
+    The list rendered raw ids -- "#29", "#2" -- which are meaningless to
+    the person reading it; nobody knows hotel 2 by number. Resolved here,
+    in **three bulk queries for the whole page** regardless of its size,
+    rather than the obvious per-row lookup that would scale with rows
+    instead of with catalog size (Decision 151's rule).
+
+    Attributes, not columns: nothing is stored, so a hotel rename shows
+    immediately and the frozen financial figures stay frozen.
+    """
+    if not invoices:
+        return invoices
+    booking_ids = {inv.booking_id for inv in invoices}
+    hotel_ids = {inv.hotel_id for inv in invoices}
+    agent_ids = {inv.agent_id for inv in invoices}
+
+    # Queried directly rather than adding a bulk lookup to two LOCKED
+    # engines for one display concern -- Finance already imports both
+    # models, and these are plain reads with no business logic.
+    numbers = {
+        b.id: b.booking_number
+        for b in db.query(Booking.id, Booking.booking_number).filter(Booking.id.in_(list(booking_ids))).all()
+    }
+    hotels = {
+        h.id: h.hotel_name
+        for h in db.query(Hotel.id, Hotel.hotel_name).filter(Hotel.id.in_(list(hotel_ids))).all()
+    }
+    agents = {
+        u.id: (u.name or u.email)
+        for u in db.query(User).filter(User.id.in_(list(agent_ids))).all()
+    }
+
+    # Decision 182: what the booking costs NOW, so a list row can tell a
+    # money difference from a harmless one without opening the invoice.
+    #
+    # Not derivable from the review notes alone: INV-3A3B7074F568 is 75.45
+    # short of its booking, and every one of its notes predates structured
+    # price snapshots -- judged on the notes it looked identical to an
+    # invoice whose amount never moved. One more bulk query, not one per row.
+    rooms_by_booking: dict[int, list] = {}
+    for room in booking_repository.list_booking_rooms_bulk(db, list(booking_ids)):
+        rooms_by_booking.setdefault(room.booking_id, []).append(room)
+
+    def _money(row) -> float:
+        return (
+            (row.total_amount or 0.0)
+            + (row.transfer_total or 0.0)
+            + (row.mandatory_tax_total or 0.0)
+        )
+
+    booking_rows = {b.id: b for b in db.query(Booking).filter(Booking.id.in_(list(booking_ids))).all()}
+    totals_now: dict[int, float] = {}
+    for bid, booking_row in booking_rows.items():
+        rooms = rooms_by_booking.get(bid)
+        if rooms is None:
+            totals_now[bid] = _money(booking_row)
+        else:
+            totals_now[bid] = sum(
+                _money(r) for r in rooms if r.status not in _NON_BILLABLE_ROOM_STATUSES
+            )
+
+    for inv in invoices:
+        inv.booking_number = numbers.get(inv.booking_id)
+        inv.hotel_name = hotels.get(inv.hotel_id)
+        inv.agent_name = agents.get(inv.agent_id)
+        inv.booking_total_now = totals_now.get(inv.booking_id)
+        # Decision 182: a live invoice on a cancelled booking is a real
+        # problem, but "Amount -1,609.05" is a misleading way to say it --
+        # nothing is owed because the booking is gone, not because the price
+        # dropped. Three such invoices exist today (BK-000021/24/25).
+        row = booking_rows.get(inv.booking_id)
+        inv.booking_status = row.status if row is not None else None
     return invoices
 
 
@@ -543,6 +624,90 @@ def add_cancellation_requested_note(db: Session, booking_id: int) -> Invoice | N
     return _attach_review_notes(db, invoice)
 
 
+def _format_transfer_side(name: str | None, total: float | None, currency: str) -> str:
+    """The human-readable side of a transfer change, for an audit sentence a
+    manager reads months later. Name, not the transfer_type code."""
+    if name is None:
+        return "no transfer"
+    if total is None:
+        return name
+    return f"{name} ({currency} {total:,.2f})"
+
+
+def record_transfer_change(db: Session, change: dict, changed_by_label: str) -> None:
+    """
+    Decision 199: the durable admin-side signal that a booking's transfer
+    was changed after the fact, plus the ledger re-sync that keeps the
+    money consistent with it.
+
+    Called from Booking Engine's API layer inside the SAME request as the
+    change itself — deliberately NOT the best-effort frontend-orchestrated
+    pattern Decisions 080/083/094 use. That pattern exists to avoid a
+    circular import, and here there is none to avoid: booking/api.py may
+    import finance/service.py freely (finance imports booking's *service*,
+    never its api). The owner's requirement is that the notification appear
+    the moment the change is made, and a second call fired from a browser
+    can silently fail in a way this cannot.
+
+    Two effects:
+
+    1. An append-only InvoiceReviewNote against the booking, which is what
+       puts it into the admin panel's "Needs Attention" panel until someone
+       acknowledges it (Decision 108's booking-rooted urgency mechanism,
+       reused unchanged). All 8 price-snapshot columns stay NULL: those
+       columns describe a DATE change, and financeShared.tsx's
+       formatSingleNote picks its rendering tier from them, so populating
+       old_total/new_total here without dates would render this note as a
+       date change with an "Invalid Date" in it.
+    2. The room's `transfer` commercial line is re-synced to the new fare —
+       base_cost/base_price only. Once seeded, that line never re-reads the
+       BookingRoom, so without this the Commercial breakdown and the invoice
+       would keep quoting the old car's price. Any manual adjustment on the
+       line is untouched: adjustment_cost/adjustment_price are a separate,
+       never-merged correction by design, so a re-sync of the system figure
+       cannot silently discard a manager's own entry.
+    """
+    booking_id = change["booking_id"]
+    currency = change["currency"] or "USD"
+    was = _format_transfer_side(change["old_transfer_name"], change["old_transfer_total"], currency)
+    now = _format_transfer_side(change["new_transfer_name"], change["new_transfer_total"], currency)
+    delta = (change["new_transfer_total"] or 0.0) - (change["old_transfer_total"] or 0.0)
+    # Sign before the currency: "-EUR 500.00" reads as money owed back,
+    # whereas "EUR -500.00" reads as a typo.
+    delta_text = (
+        "no change in price"
+        if abs(delta) <= 0.01
+        else f"{'+' if delta > 0 else '-'}{currency} {abs(delta):,.2f}"
+    )
+
+    invoice = repository.get_invoice_by_booking(db, booking_id)
+    next_sequence = len(repository.list_review_notes_by_booking(db, booking_id)) + 1
+    repository.create_review_note(
+        db,
+        booking_id=booking_id,
+        invoice_id=invoice.id if invoice is not None else None,
+        sequence_number=next_sequence,
+        change_description=(
+            f"Transfer changed on room {change['sequence_number']} by {changed_by_label}: "
+            f"{was} → {now} ({delta_text})"
+        ),
+    )
+
+    # Only re-sync a line that already exists. Seeding one here would create
+    # a ledger row for a room nobody has opened, which get_booking_commercial_summary
+    # deliberately avoids doing.
+    for line in repository.list_commercial_lines(db, change["booking_room_id"]):
+        if line.category != "transfer":
+            continue
+        repository.update_commercial_line(
+            db,
+            line,
+            base_cost=change["new_transfer_total"],
+            base_price=change["new_transfer_total"],
+        )
+        break
+
+
 def add_cancellation_confirmed_note(db: Session, booking_id: int) -> Invoice | None:
     """Decision 104: same shape as add_cancellation_requested_note above (including reading cancellation_confirmation_number directly off the booking row, never from the client), called after stage 2 (POST /confirm-cancellation) succeeds -- gives accounting a second, distinct signal that the cancellation is now final, not just requested. Decision 108: always creates the note now (booking-rooted); see add_invoice_review_note's own Decision 108 note for the full reasoning."""
     invoice = repository.get_invoice_by_booking(db, booking_id)
@@ -661,16 +826,51 @@ def list_urgent_bookings(db: Session) -> list[dict]:
     return result
 
 
-def list_invoices(db: Session) -> list[Invoice]:
-    """Admin-wide, unfiltered -- for the Финансы tab's invoice table.
-    No pagination yet, same simplification Pricing Engine's
-    list_exclusive_agents already makes at this project's current data
-    volume."""
-    return _attach_review_notes_bulk(db, repository.list_invoices(db))
+def list_invoices(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    status: str | None = None,
+    agent_id: int | None = None,
+    booking_id: int | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
+) -> list[Invoice]:
+    """Decision 182: the Finance tab's invoice table, filtered/sorted/
+    paginated on the server. Every row also carries the booking number,
+    hotel name and agent name it refers to, so the list stops showing
+    raw ids."""
+    invoices = repository.list_invoices(
+        db, skip=skip, limit=limit, status=status, agent_id=agent_id,
+        booking_id=booking_id, search=search, date_from=date_from, date_to=date_to,
+        sort_by=sort_by, sort_dir=sort_dir,
+    )
+    return _attach_display_names_bulk(db, _attach_review_notes_bulk(db, invoices))
+
+
+def count_invoices(
+    db: Session,
+    status: str | None = None,
+    agent_id: int | None = None,
+    booking_id: int | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> int:
+    """Decision 182: how many match the SAME filters, ignoring pagination."""
+    return repository.count_invoices(
+        db, status=status, agent_id=agent_id, booking_id=booking_id, search=search,
+        date_from=date_from, date_to=date_to,
+    )
 
 
 def list_invoices_by_agent(db: Session, agent_id: int) -> list[Invoice]:
-    return _attach_review_notes_bulk(db, repository.list_invoices_by_agent(db, agent_id))
+    return _attach_display_names_bulk(
+        db, _attach_review_notes_bulk(db, repository.list_invoices_by_agent(db, agent_id))
+    )
 
 
 def list_invoices_by_agent_in_range(db: Session, agent_id: int, start_date: date, end_date: date) -> list[Invoice]:
@@ -680,7 +880,7 @@ def list_invoices_by_agent_in_range(db: Session, agent_id: int, start_date: date
 
 
 def list_urgent_invoices(db: Session) -> list[Invoice]:
-    return _attach_review_notes_bulk(db, repository.list_urgent_invoices(db))
+    return _attach_display_names_bulk(db, _attach_review_notes_bulk(db, repository.list_urgent_invoices(db)))
 
 
 def build_agent_invoice_export(db: Session, agent_id: int, start_date: date, end_date: date) -> bytes:
@@ -1176,11 +1376,15 @@ def create_and_send_voucher_for_room(db: Session, booking_room_id: int, created_
     BookingRoom.confirmation_number to already be set.
     """
     room = booking_service.get_booking_room(db, booking_room_id)
-    if not room.confirmation_number:
-        raise ValueError(
-            f"Booking room {booking_room_id} has no confirmation_number -- nothing to generate a voucher for"
-        )
-
+    # Decision 166: the confirmation number is no longer required. It was,
+    # on the reasoning that it IS the voucher's whole reason to exist -- but
+    # the project owner has decided a manager may also send the voucher at
+    # the moment they approve a room, which is necessarily before the hotel
+    # has replied. Nothing is faked in its place: the document says
+    # "awaiting hotel confirmation" (see build_voucher_download_text), and
+    # the manager is told this in the approve confirmation dialog before
+    # anything is sent, so it is a decision taken knowingly rather than a
+    # missing field discovered later by a guest at a check-in desk.
     booking = booking_service.get_booking(db, room.booking_id)
     agent = db.query(User).filter(User.id == booking.agent_id).first()
     if agent is None or not agent.email:
@@ -1274,7 +1478,10 @@ def build_voucher_download_text(voucher: Voucher) -> str:
         f"ВАУЧЕР {voucher.voucher_number}",
         "",
         f"Отель: {voucher.hotel_name}",
-        f"Номер подтверждения отеля: {voucher.confirmation_number}",
+        # Decision 166: a voucher sent at approval time has no hotel
+        # reference yet. Say so plainly rather than printing an empty field
+        # a guest would read as a system error.
+        f"Номер подтверждения отеля: {voucher.confirmation_number or 'ожидается подтверждение отеля'}",
         f"Заезд: {voucher.arrival_date.isoformat()}",
         f"Выезд: {voucher.departure_date.isoformat()}",
         f"Тип номера: {voucher.room_type_name}",
@@ -1331,6 +1538,214 @@ SEEDED_CATEGORIES = ("room", "transfer", "tax")
 ALL_CATEGORIES = ("room", "transfer", "meal", "tax", "cip", "excursion")
 
 
+def derive_seed_lines(room) -> list[tuple[str, float, float]]:
+    """
+    The (category, cost, price) triples room/transfer/tax would be seeded
+    with, derived purely from BookingRoom's own frozen columns. Returns
+    them; writes nothing.
+
+    Extracted so there is exactly ONE definition of this arithmetic.
+    get_or_seed_commercial_lines persists it; get_booking_commercial_summary
+    reads it without persisting, for a room a manager has never opened. Two
+    copies of the formula would let the summary quietly disagree with the
+    breakdown table it is supposed to be explaining -- which is the whole
+    point of the summary.
+
+    A category whose source column is NULL is omitted entirely (not
+    emitted as 0.0), keeping "no transfer on this booking" distinguishable
+    from "a transfer that costs nothing".
+    """
+    triples: list[tuple[str, float, float]] = []
+    if room.total_amount is not None:
+        markup = room.agent_markup_amount or 0.0
+        discount = room.agent_exclusive_discount_amount or 0.0
+        triples.append(("room", room.total_amount - markup + discount, room.total_amount))
+    if room.transfer_total is not None:
+        triples.append(("transfer", room.transfer_total, room.transfer_total))
+    if room.mandatory_tax_total is not None:
+        triples.append(("tax", room.mandatory_tax_total, room.mandatory_tax_total))
+    return triples
+
+
+def get_booking_commercial_summary(db: Session, booking_id: int) -> dict:
+    """
+    Read-only, whole-application view of the same money the per-room
+    Commercial breakdown table shows: every room, every category, plus the
+    grand total the agent actually booked at.
+
+    Exists because the Rooms block showed only BookingRoom.total_amount --
+    the ROOM line alone, excluding transfer and mandatory tax. On a real
+    two-room booking that read "1466.50" and "3927.00" while the agent had
+    in fact booked at 6700.50, with no total anywhere on the screen.
+
+    **Writes nothing, deliberately.** The per-room GET auto-seeds, which is
+    correct when a manager opens one room's ledger, but a summary rendered
+    for every room of every booking that gets opened must not leave seed
+    rows behind for rooms nobody has looked at -- the same rule
+    compute_bookings_list_financials already follows. Where a room has no
+    persisted lines yet, its figures come from derive_seed_lines, so the
+    number shown is exactly the number seeding would have produced.
+
+    Rooms are all returned, including non-billable (Rejected/Cancelled)
+    ones so a manager can still see what they cost, but only billable rooms
+    count toward the totals -- same _NON_BILLABLE_ROOM_STATUSES convention
+    compute_application_financials uses.
+    """
+    booking = booking_service.get_booking(db, booking_id)
+    rooms = booking_service.list_booking_rooms(db, booking_id)
+    lines_by_room: dict[int, list[BookingCommercialLine]] = {}
+    for line in repository.list_commercial_lines_bulk(db, [r.id for r in rooms]):
+        lines_by_room.setdefault(line.booking_room_id, []).append(line)
+
+    # Decision 191: ONE hotel confirmation for the whole application -- the
+    # hotel bills it once, in one email, whatever it contains.
+    confirmation = repository.get_hotel_confirmation(db, booking_id)
+
+    room_entries = []
+    net_total = 0.0
+    sale_total = 0.0
+    has_manual_adjustment = False
+
+    for room in rooms:
+        persisted = lines_by_room.get(room.id, [])
+        # Decision 178: the PRICE side is always the frozen, agent-facing
+        # figure -- what they saw at booking, transfer included -- never the
+        # ledger's editable price. The ledger governs cost only. Without
+        # this, a manual correction re-priced the agent: BK-000080 read
+        # 6700.50 to the agent and 9273.50 here, and the "Booked by the
+        # agent at" line was quoting the second number.
+        seed_price = {category: price for category, _cost, price in derive_seed_lines(room)}
+        if persisted:
+            entries = [
+                {
+                    "category": line.category,
+                    "cost": (line.base_cost or 0.0) + (line.adjustment_cost or 0.0),
+                    # A category with no frozen source (meal/cip/excursion --
+                    # entered by hand, never part of the quoted price) has no
+                    # agent-facing price at all, which is a real 0.0, not a
+                    # missing number.
+                    "price": seed_price.get(line.category, 0.0),
+                    "adjusted": line.adjusted_by is not None,
+                }
+                for line in persisted
+            ]
+            if any(entry["adjusted"] for entry in entries):
+                has_manual_adjustment = True
+        else:
+            entries = [
+                {"category": category, "cost": cost, "price": price, "adjusted": False}
+                for category, cost, price in derive_seed_lines(room)
+            ]
+
+        # Fixed display order, so the tooltip and the breakdown table below
+        # it never list the same categories in a different sequence.
+        entries.sort(key=lambda e: ALL_CATEGORIES.index(e["category"]))
+        room_net = sum(e["cost"] for e in entries)
+        # Summed from the frozen columns directly rather than from the
+        # entries, so a room whose ledger is missing a seeded category still
+        # reports the full price the agent was quoted.
+        room_sale = compute_booking_financials(room)["sale_total"]
+        billable = room.status not in _NON_BILLABLE_ROOM_STATUSES
+        if billable:
+            net_total += room_net
+            sale_total += room_sale
+
+        room_entries.append(
+            {
+                "booking_room_id": room.id,
+                "sequence_number": room.sequence_number,
+                "room_type_id": room.room_type_id,
+                "status": room.status,
+                "billable": billable,
+                "lines": entries,
+                "net_total": room_net,
+                "sale_total": room_sale,
+            }
+        )
+
+    return {
+        "booking_id": booking.id,
+        "currency": booking.currency,
+        "rooms": room_entries,
+        "net_total": net_total,
+        "sale_total": sale_total,
+        "has_manual_adjustment": has_manual_adjustment,
+        # Decision 191: the hotel's single figure for the whole application,
+        # and the gap against our own incoming total. Computed here so every
+        # surface reading this endpoint gets the same number.
+        "hotel_confirmed_amount": confirmation.confirmed_amount if confirmation else None,
+        "hotel_reference": confirmation.hotel_reference if confirmation else None,
+        "hotel_note": confirmation.note if confirmation else None,
+        "hotel_confirmed_by": confirmation.confirmed_by if confirmation else None,
+        "hotel_confirmed_at": confirmation.confirmed_at if confirmation else None,
+        "hotel_difference": (confirmation.confirmed_amount - net_total) if confirmation else None,
+        "billable_rooms": sum(1 for e in room_entries if e["billable"]),
+    }
+
+
+def get_booking_price_breakdown(db: Session, booking_id: int) -> dict:
+    """
+    Decision 181: the agent-facing counterpart of
+    get_booking_commercial_summary -- the same per-room, per-category
+    shape with **the cost side removed entirely**.
+
+    Not a filtered view of the admin payload: it is built separately and
+    returns fields that do not exist there (`price` only, no `cost`, no
+    margin, no `adjusted` flag), so our cost, our margin and the fact
+    that a manager corrected something never reach an agent's browser at
+    all -- not even unrendered. Same principle as Decision 102's
+    invoice-status endpoint, which returns only a status string.
+
+    Every figure here is the frozen, agent-facing price -- what she saw
+    when booking, transfer and mandatory tax included (Decision 178).
+    Non-billable rooms are listed (she can see a room was declined) but
+    contribute nothing to the total.
+    """
+    booking = booking_service.get_booking(db, booking_id)
+    rooms = booking_service.list_booking_rooms(db, booking_id)
+    # A legacy application with no BookingRoom rows at all (one such booking
+    # exists in this database) is priced from its own frozen columns, exactly
+    # as booking_service.attach_application_totals does. Without this the
+    # loop below simply had nothing to iterate and reported 0.00 for a
+    # booking the agent is billed 1545.00 for -- caught by the reconciliation
+    # check, not by reading the code.
+    if not rooms:
+        rooms = [booking]
+
+    room_entries = []
+    total = 0.0
+    for room in rooms:
+        lines = [
+            {"category": category, "price": price}
+            for category, _cost, price in derive_seed_lines(room)
+        ]
+        lines.sort(key=lambda e: ALL_CATEGORIES.index(e["category"]))
+        billable = room.status not in _NON_BILLABLE_ROOM_STATUSES
+        room_total = compute_booking_financials(room)["sale_total"]
+        if billable:
+            total += room_total
+        room_entries.append(
+            {
+                "booking_room_id": room.id,
+                # A legacy booking standing in for its own single room has no
+                # sequence_number of its own -- it IS room 1.
+                "sequence_number": getattr(room, "sequence_number", 1),
+                "room_type_id": room.room_type_id,
+                "status": room.status,
+                "billable": billable,
+                "lines": lines,
+                "total": room_total,
+            }
+        )
+
+    return {
+        "booking_id": booking.id,
+        "currency": booking.currency,
+        "rooms": room_entries,
+        "total": total,
+    }
+
+
 def get_or_seed_commercial_lines(db: Session, booking_room_id: int) -> list[BookingCommercialLine]:
     """
     Idempotent: seeds room/transfer/tax exactly once per booking_room_id
@@ -1349,37 +1764,20 @@ def get_or_seed_commercial_lines(db: Session, booking_room_id: int) -> list[Book
     existing = repository.list_commercial_lines(db, booking_room_id)
     existing_categories = {line.category for line in existing}
 
-    if "room" not in existing_categories and room.total_amount is not None:
-        markup = room.agent_markup_amount or 0.0
-        discount = room.agent_exclusive_discount_amount or 0.0
-        row = repository.create_commercial_line(
-            db,
-            booking_room_id=booking_room_id,
-            category="room",
-            base_cost=room.total_amount - markup + discount,
-            base_price=room.total_amount,
+    # Same triples get_booking_commercial_summary reads without persisting --
+    # one definition of the arithmetic, so the two can never disagree.
+    for category, base_cost, base_price in derive_seed_lines(room):
+        if category in existing_categories:
+            continue
+        existing.append(
+            repository.create_commercial_line(
+                db,
+                booking_room_id=booking_room_id,
+                category=category,
+                base_cost=base_cost,
+                base_price=base_price,
+            )
         )
-        existing.append(row)
-
-    if "transfer" not in existing_categories and room.transfer_total is not None:
-        row = repository.create_commercial_line(
-            db,
-            booking_room_id=booking_room_id,
-            category="transfer",
-            base_cost=room.transfer_total,
-            base_price=room.transfer_total,
-        )
-        existing.append(row)
-
-    if "tax" not in existing_categories and room.mandatory_tax_total is not None:
-        row = repository.create_commercial_line(
-            db,
-            booking_room_id=booking_room_id,
-            category="tax",
-            base_cost=room.mandatory_tax_total,
-            base_price=room.mandatory_tax_total,
-        )
-        existing.append(row)
 
     return existing
 
@@ -1438,19 +1836,35 @@ def upsert_commercial_line(
     return line
 
 
-def compute_booking_room_commercial_totals(lines: list[BookingCommercialLine]) -> dict:
+def compute_booking_room_commercial_totals(lines: list[BookingCommercialLine], room=None) -> dict:
     """
-    Sums (base_cost + adjustment_cost) / (base_price + adjustment_price)
-    across every commercial line for one room -- the new source for
-    BookingDetail's on-screen Net/Sale/Profit box (owner-confirmed: a
-    manual correction here should be reflected immediately in that
-    figure). Deliberately NOT used by Invoice/InvoiceRoomLine/
-    AgentStatement generation, which stay on compute_booking_financials'
-    frozen-Booking-column formula -- see this module's own top-level
-    docstring note and the model's docstring for why.
+    Decision 178: **cost comes from the commercial ledger, the sale price
+    never does.**
+
+    The sale price is what the agent saw and booked at, frozen on the
+    BookingRoom's own columns. A manual correction in the admin panel is
+    an internal fact about what something cost us -- it must not change
+    what the agent is billed. Project owner, verbatim: *"мы скидку не
+    даём агенту... если сумма вручную уменьшается в админ панели, это
+    только для нас, агент получит invoice сумму, которую видел во время
+    бронирования, с трансфером"*.
+
+    This function used to sum (base_price + adjustment_price) across the
+    lines, so editing a price silently re-priced the agent. Measured on
+    real data: 3 of the 14 most recent bookings had drifted, BK-000077 by
+    3442.00 -> 10546.00, and the Bookings list, the "Booked by the agent
+    at" line and the invoice were showing three different numbers for the
+    same booking.
+
+    `room` is optional only so the one legacy caller with no room in hand
+    keeps working; without it the frozen figure cannot be read and the
+    ledger's own price side is used as before.
     """
     net_total = sum((line.base_cost or 0.0) + (line.adjustment_cost or 0.0) for line in lines)
-    sale_total = sum((line.base_price or 0.0) + (line.adjustment_price or 0.0) for line in lines)
+    if room is not None:
+        sale_total = compute_booking_financials(room)["sale_total"]
+    else:
+        sale_total = sum((line.base_price or 0.0) + (line.adjustment_price or 0.0) for line in lines)
     return {
         "net_total": net_total,
         "sale_total": sale_total,
@@ -1526,7 +1940,9 @@ def compute_bookings_list_financials(db: Session, booking_ids: list[int]) -> dic
         for room in billable:
             room_lines = lines_by_room.get(room.id, [])
             if room_lines:
-                totals = compute_booking_room_commercial_totals(room_lines)
+                # Decision 178: `room` passed, so the sale side comes from
+                # the frozen columns and only the cost side reads the ledger.
+                totals = compute_booking_room_commercial_totals(room_lines, room)
                 net_total += totals["net_total"]
                 sale_total += totals["sale_total"]
                 profit_sum += totals["profit"]
@@ -1558,3 +1974,36 @@ def compute_bookings_list_financials(db: Session, booking_ids: list[int]) -> dic
         }
 
     return result
+
+
+def set_hotel_price_confirmation(
+    db: Session,
+    booking_id: int,
+    confirmed_amount: float,
+    hotel_reference,
+    note,
+    user_id: int,
+):
+    """
+    Decision 191: record what the hotel says this BOOKING costs us -- one
+    figure for the whole application, matching the one email the hotel
+    actually sends.
+
+    Validates the booking exists (same "let ValueError surface as 400"
+    pattern every other function here uses) and takes the currency from the
+    booking itself rather than the caller -- a confirmation in a currency
+    the booking was never priced in is not a fact, it is a typo, and
+    accepting one would put two currencies in a single comparison.
+    """
+    booking = booking_service.get_booking(db, booking_id)
+    if confirmed_amount < 0:
+        raise ValueError("A hotel confirmation cannot be negative")
+    return repository.upsert_hotel_confirmation(
+        db,
+        booking_id,
+        confirmed_amount,
+        booking.currency,
+        hotel_reference,
+        note,
+        user_id,
+    )

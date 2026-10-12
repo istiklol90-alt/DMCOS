@@ -260,9 +260,13 @@ def send_voucher_email(data: dict) -> bool:
     resolves/function-only-formats-and-sends split as every other
     function in this file.
     """
+    # Decision 166: a voucher sent at the moment a manager approves a room
+    # has no hotel reference yet (the hotel hasn't replied). The email says
+    # so, and its opening line stops claiming the hotel confirmed anything.
+    confirmation = data.get("confirmation_number")
     rows = [
         ("Отель", data["hotel_name"]),
-        ("Номер подтверждения отеля", data["confirmation_number"]),
+        ("Номер подтверждения отеля", confirmation or "ожидается подтверждение отеля"),
         ("Бронирование", data["booking_number"]),
         ("Заезд", data["arrival_date"]),
         ("Выезд", data["departure_date"]),
@@ -272,12 +276,55 @@ def send_voucher_email(data: dict) -> bool:
         ("Взрослые / Дети / Младенцы", f"{data['adults']} / {data['children']} / {data['infants']}"),
     ]
 
-    subject = f"Ваучер — {data['hotel_name']} — подтверждение {data['confirmation_number']}"
+    subject = (
+        f"Ваучер — {data['hotel_name']} — подтверждение {confirmation}"
+        if confirmation
+        else f"Ваучер — {data['hotel_name']} — {data['booking_number']}"
+    )
+    opening = (
+        f"Бронирование {data['booking_number']} подтверждено отелем."
+        if confirmation
+        else f"Бронирование {data['booking_number']} принято в работу. Подтверждение отеля ожидается."
+    )
     body = (
         f"Здравствуйте, {data['agent_name']}!\n\n"
-        f"Бронирование {data['booking_number']} подтверждено отелем.\n\n"
+        f"{opening}\n\n"
         f"{_render_text_table(rows)}\n\n"
         "Этот документ подтверждает бронирование для гостя.\n\n"
+        "С уважением,\nDMC OS"
+    )
+    return send_real_email(data["agent_email"], subject, body)
+
+def send_room_rejected_email(data: dict) -> bool:
+    """
+    Decision 167: the agent is told their room could not be confirmed.
+
+    Sent from booking/service.reject_booking_room, which is the only place
+    a manager ever declines a room. Same "caller resolves everything, this
+    function only formats and sends" split, and the same never-raises
+    best-effort contract, as every other function in this file -- with no
+    SMTP configured the message is printed to the console instead.
+
+    Deliberately carries no money at all: which room, for which dates, and
+    why. Whether anything is owed is a separate conversation (the
+    cancellation-terms one), not something to assert inside a rejection
+    notice.
+    """
+    rows = [
+        ("Бронирование", data["booking_number"]),
+        ("Отель", data["hotel_name"]),
+        ("Тип номера", data["room_type_name"]),
+        ("Заезд", data["arrival_date"]),
+        ("Выезд", data["departure_date"]),
+        ("Причина", data["reason"]),
+    ]
+
+    subject = f"Номер не подтверждён — {data['hotel_name']} — {data['booking_number']}"
+    body = (
+        f"Здравствуйте, {data['agent_name']}!\n\n"
+        "К сожалению, номер по этой заявке не подтверждён.\n\n"
+        f"{_render_text_table(rows)}\n\n"
+        "Мы свяжемся с вами по дальнейшим действиям.\n\n"
         "С уважением,\nDMC OS"
     )
     return send_real_email(data["agent_email"], subject, body)

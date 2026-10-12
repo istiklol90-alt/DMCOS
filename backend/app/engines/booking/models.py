@@ -140,6 +140,20 @@ class Booking(Base):
     # Saving a real value here is the trigger Finance Engine's Voucher
     # generation orchestrates off of (frontend-only, no coupling here).
     confirmation_number = Column(String(100), nullable=True)
+    # Decision 155: WHO entered that number, and when.
+    #
+    # This was the one milestone with no actor recorded at all — cancellation
+    # has cancelled_by, a room approval has approved_by, but the single field
+    # that makes a booking count as "confirmed by the hotel" (and triggers the
+    # guest's voucher) was anonymous. Found live on BK-000077: status
+    # "Confirmed", confirmation_number "123", claimed_by NULL, and zero
+    # outbound LPO messages — nobody took it on, the hotel was never asked,
+    # and the system still called it confirmed.
+    #
+    # Plain Integer, not a ForeignKey — same cross-boundary-identity
+    # convention as claimed_by/cancelled_by/created_by above.
+    confirmation_number_by = Column(Integer, nullable=True)
+    confirmation_number_at = Column(DateTime, nullable=True)
     # Decision 104: two-stage cancellation confirmation, mirroring
     # confirmation_number's own shape/precedent exactly but for the
     # hotel's acknowledgment of a *cancellation* rather than the original
@@ -176,6 +190,28 @@ class Guest(Base):
     # (02_Logic_Rules.md #50) instead of a nullable FK on Booking that
     # would need setting after a Guest row already exists.
     is_lead_guest = Column(Boolean, default=False)
+    # Decision 150: this guest's OWN flight, when it differs from the rest
+    # of the party's. Same six-field shape as Booking's own flight columns
+    # (Decision 047), deliberately mirrored rather than reinvented.
+    #
+    # NULL is meaningful and is the normal case: it means "this guest is on
+    # the application's flight" (Booking.arrival_flight_* etc.), not "no
+    # flight known". That makes the whole feature purely additive — every
+    # existing application, and every future one where the party travels
+    # together, keeps exactly the behavior it had, with these columns left
+    # NULL and nothing reading them.
+    #
+    # Deliberately NOT paired with a Booking-level "guests fly separately"
+    # boolean: the real-world case isn't a binary mode but a mix (3 of 5
+    # travellers on the group flight, 2 arriving a day later on their own),
+    # and per-guest NULL-or-value already expresses that exactly. A flag
+    # would be a second source of truth that could contradict the rows.
+    arrival_flight_number = Column(String(50), nullable=True)
+    arrival_flight_date = Column(Date, nullable=True)
+    arrival_flight_time = Column(String(5), nullable=True)
+    departure_flight_number = Column(String(50), nullable=True)
+    departure_flight_date = Column(Date, nullable=True)
+    departure_flight_time = Column(String(5), nullable=True)
 
 
 class BookingRoom(Base):
@@ -272,6 +308,16 @@ class BookingRoom(Base):
     date_change_reason = Column(Text, nullable=True)
     dates_changed_at = Column(DateTime, nullable=True)
 
+    # Decision 199. A transfer choice is revisited long after booking --
+    # the guests decide they want the Lexus rather than the sedan, three
+    # months in -- and that must never mean cancelling and rebooking.
+    # Same shape as the date-change trio directly above, deliberately:
+    # this is the same kind of event (a real, priced change to an existing
+    # booking, made by whoever made it, for a stated reason).
+    transfer_change_reason = Column(Text, nullable=True)
+    transfer_changed_at = Column(DateTime, nullable=True)
+    transfer_changed_by = Column(Integer, nullable=True)
+
     # Room-level cancellation -- used by the admin-only per-room cancel
     # exception (the project owner's explicit instruction: an agent can
     # only cancel the whole application; a manager, via the admin panel,
@@ -346,6 +392,15 @@ class BookingCorrespondence(Base):
     # editable and is recorded as whatever the manager actually used.
     recipient_email = Column(String(255), nullable=True)
     recipient_email_secondary = Column(String(255), nullable=True)
+    # Decision 154: did this message ACTUALLY leave the building?
+    #   True  — SMTP accepted it
+    #   False — recorded only (no SMTP configured, or the send failed)
+    #   NULL  — the 23 rows predating this column, where it is unknowable
+    # Kept separate from `status`, which tracks the CONVERSATION
+    # (sent/replied), not delivery. Before this, pressing "Send" wrote a row
+    # and never contacted a mail server at all, so a manager had no way to
+    # tell a delivered LPO from one that only exists in this database.
+    delivered = Column(Boolean, nullable=True)
     # Plain Integer, not a ForeignKey -- same cross-boundary-identity
     # pattern as Booking.created_by/claimed_by (validated against
     # models.user.User directly, not wrapped behind an Engine boundary).

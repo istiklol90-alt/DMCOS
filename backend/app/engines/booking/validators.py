@@ -13,6 +13,7 @@ All functions raise ValueError on failure and return None on success.
 """
 
 from datetime import date
+from typing import Optional
 
 # 03_Domain_Model.md #39 / 02_Logic_Rules.md #47 "Booking Status".
 # "Cancellation Requested" (Decision 104) is the intermediate stage of the
@@ -131,6 +132,69 @@ def validate_nights_consistency(nights: int, arrival_date: date, departure_date:
             f"nights ({nights}) does not match arrival_date/departure_date "
             f"({arrival_date} to {departure_date} = {expected} nights)"
         )
+
+
+# Decision 153. A flight belonging to a stay cannot be a year away from it:
+# there is no such thing as the transfer for a November 2027 stay running in
+# December 2019. Deliberately generous — the point is to reject the
+# impossible, not to police an unusual-but-real itinerary. Everything inside
+# this bound is accepted by the API and merely *warned about* in the UI when
+# it is more than a few days off (a night flight landing the day before
+# check-in, or a departure flight the morning after check-out, are normal).
+FLIGHT_DATE_MAX_DAYS_FROM_STAY = 365
+
+
+def validate_flight_dates(
+    arrival_date: date,
+    departure_date: date,
+    arrival_flight_date: Optional[date] = None,
+    departure_flight_date: Optional[date] = None,
+) -> None:
+    """
+    Raise ValueError for a flight date that cannot belong to this stay.
+
+    Anchored to the STAY, never to today: bookings are edited long after
+    their travel has happened (a completed August stay still gets its guest
+    list corrected), and anchoring to the current date would make every
+    historical booking un-editable. A stay in the past with flights in the
+    past is perfectly valid; a stay in 2027 with a flight in 2019 is not,
+    and both are judged by the same rule.
+
+    Three impossible cases, all rejected:
+      - the arrival flight more than a year from the arrival date
+      - the departure flight more than a year from the departure date
+      - the departure flight before the arrival flight (you cannot fly home
+        before you have flown out)
+
+    Anything less extreme is accepted here on purpose. Before this existed
+    the API accepted a check-in of 2027-11-22 with an arrival flight of
+    2020-12-20 — 2528 days earlier — silently, which is how nonsense dates
+    reach a hotel's inbox in an LPO.
+    """
+    if arrival_flight_date is not None:
+        gap = abs((arrival_flight_date - arrival_date).days)
+        if gap > FLIGHT_DATE_MAX_DAYS_FROM_STAY:
+            raise ValueError(
+                f"Arrival flight date ({arrival_flight_date}) is {gap} days from the "
+                f"check-in date ({arrival_date}) — a flight cannot be more than "
+                f"{FLIGHT_DATE_MAX_DAYS_FROM_STAY} days away from the stay it belongs to"
+            )
+
+    if departure_flight_date is not None:
+        gap = abs((departure_flight_date - departure_date).days)
+        if gap > FLIGHT_DATE_MAX_DAYS_FROM_STAY:
+            raise ValueError(
+                f"Departure flight date ({departure_flight_date}) is {gap} days from the "
+                f"check-out date ({departure_date}) — a flight cannot be more than "
+                f"{FLIGHT_DATE_MAX_DAYS_FROM_STAY} days away from the stay it belongs to"
+            )
+
+    if arrival_flight_date is not None and departure_flight_date is not None:
+        if departure_flight_date < arrival_flight_date:
+            raise ValueError(
+                f"Departure flight date ({departure_flight_date}) is before the arrival "
+                f"flight date ({arrival_flight_date})"
+            )
 
 
 def validate_can_approve_or_reject_room(current_status: str) -> None:

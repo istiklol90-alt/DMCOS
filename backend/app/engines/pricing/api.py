@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -22,6 +22,7 @@ from app.engines.pricing.schemas import (
     ContractExclusiveDiscountUpdate,
     AgentPriceResponse,
     NightlyPriceResponse,
+    DateScanResultResponse,
 )
 
 router = APIRouter(prefix="/pricing-engine", tags=["Pricing Engine"])
@@ -68,9 +69,23 @@ def _run(operation):
 # ---------------------------------------------------------------------------
 
 @router.get("/settings", response_model=PricingSettingsResponse)
-def get_settings(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+def get_settings(
+    currency: str = "USD", db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """Decision 193: one markup per currency. Defaults to USD, so a caller
+    that predates multi-currency behaves exactly as before."""
     _require_admin(current_user)
-    return service.get_pricing_settings(db)
+    return service.get_pricing_settings(db, currency)
+
+
+@router.get("/settings/all", response_model=list[PricingSettingsResponse])
+def list_settings(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Every configured currency's markup, for the admin screen. MUST stay
+    declared before nothing in particular -- /settings/all does not collide
+    with any parametrized route here, but it is grouped with its sibling
+    deliberately."""
+    _require_admin(current_user)
+    return service.list_pricing_settings(db)
 
 
 @router.put("/settings", response_model=PricingSettingsResponse)
@@ -79,7 +94,8 @@ def update_settings(
 ):
     _require_admin(current_user)
     return _run(lambda: service.update_pricing_settings(
-        db, data.standard_markup_amount_per_night, updated_by=current_user.id
+        db, data.standard_markup_amount_per_night,
+        updated_by=current_user.id, currency=data.currency,
     ))
 
 
@@ -220,4 +236,37 @@ def get_agent_price_nightly(
     """
     return _run(lambda: service.build_nightly_breakdown(
         db, agent_id, contract_id, room_net_total, nights, room_type_id, meal_plan_id, check_in, check_out
+    ))
+
+
+# ---------------------------------------------------------------------------
+# Flexible-date scan (Decision 149)
+# ---------------------------------------------------------------------------
+
+@router.get("/date-scan", response_model=list[DateScanResultResponse])
+def get_date_scan(
+    agent_id: int,
+    nights: int,
+    adults: int,
+    hotel_ids: list[int] = Query(...),
+    check_ins: list[date] = Query(...),
+    children: int = 0,
+    infants: int = 0,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Decision 149: powers HotelSearch.tsx's "Flexible Dates" mode. Not admin
+    gated, same reasoning as /agent-price directly above -- agents call this
+    themselves from the search screen.
+
+    Takes an explicit list of candidate check-in dates (repeated query
+    params) rather than a mode + window, so the frontend can send them in
+    small chunks and fill its price strip in progressively; the whole scan
+    is real pricing work (~0.3-0.5s per hotel per date), not a lookup.
+    Requests above service.MAX_SCAN_UNITS hotel-date pairs are rejected
+    with a 400 rather than silently truncated.
+    """
+    return _run(lambda: service.scan_dates(
+        db, agent_id, hotel_ids, check_ins, nights, adults, children, infants
     ))

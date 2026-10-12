@@ -185,3 +185,33 @@ def apply_sequential_discounts(base_amount: float, promotions: list[Promotion]) 
             amount -= promotion.discount_value
         amount = max(amount, 0.0)
     return amount
+
+
+# ---------------------------------------------------------------------------
+# Transfer pricing basis (Decision 196)
+# ---------------------------------------------------------------------------
+
+TRANSFER_PRICING_BASES = ("per_person", "per_vehicle")
+
+
+def validate_transfer_pricing_basis(pricing_basis: str, price_per_vehicle: float | None) -> None:
+    """
+    A transfer option is priced either per person or per vehicle, and the row
+    must carry the price that its own basis actually reads.
+
+    Deliberately strict in both directions. A "per_vehicle" row with no
+    price_per_vehicle would price the transfer at nothing — silently, since
+    get_transfer_price would find zero. A "per_person" row carrying a
+    price_per_vehicle would suggest a figure that is never read, which is how
+    a contract ends up with a number nobody can explain later.
+    """
+    if pricing_basis not in TRANSFER_PRICING_BASES:
+        raise ValueError(
+            f"Invalid transfer pricing_basis '{pricing_basis}' — must be one of {list(TRANSFER_PRICING_BASES)}"
+        )
+    if pricing_basis == "per_vehicle" and price_per_vehicle is None:
+        raise ValueError("A per_vehicle transfer option requires price_per_vehicle")
+    if pricing_basis == "per_person" and price_per_vehicle is not None:
+        raise ValueError(
+            "price_per_vehicle is only read by a per_vehicle transfer option — leave it unset for per_person"
+        )

@@ -510,7 +510,14 @@ class Voucher(Base):
     booking_room_id = Column(Integer, nullable=True)
     agent_id = Column(Integer, nullable=False)
     hotel_id = Column(Integer, nullable=False)
-    confirmation_number = Column(String(100), nullable=False)
+    # Decision 166: nullable. It was NOT NULL because a voucher only ever
+    # existed as a consequence of the hotel's confirmation number being
+    # entered. The project owner has since decided a manager may also send
+    # one at the moment they approve a room, which happens before the hotel
+    # has replied -- so the field is now genuinely optional, and a voucher
+    # without one says "awaiting hotel confirmation" rather than carrying a
+    # placeholder that would read as a real reference at a check-in desk.
+    confirmation_number = Column(String(100), nullable=True)
     hotel_name = Column(String(200), nullable=False)
     arrival_date = Column(Date, nullable=False)
     departure_date = Column(Date, nullable=False)
@@ -528,3 +535,58 @@ class Voucher(Base):
     # voucher, same as every invoice email -- an honest signal, not a
     # silent failure.
     email_sent_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class HotelPriceConfirmation(Base):
+    """
+    Decision 190: what the HOTEL says this room costs us, recorded by hand
+    against what our own ledger says.
+
+    The invoice screen already carries two sides of the same booking --
+    Incoming (what we owe the hotel) and Outgoing (what the agent pays).
+    Incoming is computed from a contract; the hotel's own invoice is a
+    separate fact that can disagree with it, and until now there was
+    nowhere to put that fact. A manager finding a difference had no way
+    to say "the hotel billed us 1,462.00, here is their reference,
+    here is why" -- so the difference stayed an unexplained number.
+
+    One row per BOOKING, upserted (a hotel correcting itself replaces the
+    figure rather than appending a second contradictory one -- unlike
+    InvoiceReviewNote, which is an audit trail of OUR actions; this is a
+    single external fact with a current value). `confirmed_by`/
+    `confirmed_at` still record who last set it.
+
+    **Per booking, not per room** -- corrected by the project owner against
+    the first version of this table, which keyed on BookingRoom: "если 2
+    номера всё равно будет 1 переписка с отелем... если 1 номер или 8 всё
+    равно всё под один email будет". The hotel bills an application once,
+    in one email, whatever it contains; a per-room key modelled a
+    conversation that does not happen and would have asked a manager to
+    split one hotel invoice across rooms by hand before it could be
+    recorded at all.
+
+    Which room a discrepancy sits in is therefore not something this table
+    answers -- it is answered by the per-room Incoming breakdown beside
+    it, which is where the reader is already looking.
+
+    booking_id is a plain Integer, no ForeignKey -- same cross-engine
+    convention every other table in this Engine uses.
+    """
+
+    __tablename__ = "hotel_price_confirmations"
+
+    id = Column(Integer, primary_key=True)
+    booking_id = Column(Integer, nullable=False, unique=True, index=True)
+    # What the hotel says the whole application costs us, all in. NULL is
+    # impossible: a row exists only because someone recorded a figure.
+    confirmed_amount = Column(Float, nullable=False)
+    currency = Column(String(3), nullable=False)
+    # The hotel's own invoice/reference number, so the figure can be traced
+    # back to a document rather than resting on someone's memory.
+    hotel_reference = Column(String(100), nullable=True)
+    # Why it differs, when it does. Free text on purpose -- the reasons are
+    # real-world (a resort fee, a late checkout, an agreed goodwill
+    # discount) and no enum would survive contact with them.
+    note = Column(Text, nullable=True)
+    confirmed_by = Column(Integer, nullable=False)
+    confirmed_at = Column(DateTime(timezone=True), server_default=func.now())

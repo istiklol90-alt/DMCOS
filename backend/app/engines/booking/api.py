@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,9 +11,15 @@ from app.engines.authentication.constants import ALGORITHM
 from app.engines.authentication.repository import get_user_by_email
 
 from app.engines.booking import service
+# Decision 199: booking/api.py -> finance/service.py is a safe direction --
+# finance imports booking's SERVICE, never its api, so there is no cycle.
+# This is what lets the transfer-change notification be written inside the
+# same request instead of depending on a second call from the browser.
+from app.engines.finance import service as finance_service
 from app.engines.booking.models import Booking
 from app.engines.booking.repository import get_db
 from app.engines.booking.schemas import (
+    RoomTransferChangeRequest,
     BookingCreate,
     BookingUpdate,
     BookingCancelRequest,
@@ -35,6 +42,8 @@ from app.engines.hotel import service as hotel_service
 from app.engines.contract import service as contract_service
 from models.user import User
 from services import email_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/booking-engine", tags=["Booking Engine"])
 
@@ -96,6 +105,50 @@ def _require_owner_or_admin(current_user, booking) -> None:
         return
     if current_user.id != booking.agent_id:
         raise HTTPException(status_code=403, detail="You can only modify bookings you own")
+
+
+def _require_claimed(booking, current_user) -> None:
+    """
+    Decision 163: a booking nobody has taken on accepts exactly one action --
+    claiming it. Everything else is refused until `claimed_by` is set.
+
+    Enforced HERE, on the server, and not merely by hiding buttons: at the
+    volumes this admin panel is built for, a client-side-only guard is not a
+    guard at all. The reason is concrete -- BK-000077 reached "confirmed by
+    the hotel", released a guest voucher and reported profit while
+    claimed_by was NULL, no LPO had been sent and the hotel had never
+    replied. Someone typed a confirmation number and nothing recorded who.
+
+    Deliberately NOT exempting admins (owner, explicitly): an exception would
+    restore exactly the anonymity this removes.
+
+    Deliberately NOT applied to the booking's OWNING AGENT: this is an
+    internal accountability rule for the people processing a booking, not a
+    lock on the customer whose booking it is. An agent editing their own
+    guests must keep working exactly as before.
+
+    Terminal bookings are exempt -- there is nothing left to take on, and
+    blocking them would strand cancelled/rejected rows.
+    """
+    role = (current_user.role or "").strip().lower()
+    if role != "admin":
+        return
+    if booking.claimed_by is not None:
+        return
+    if booking.status in service.TERMINAL_BOOKING_STATUSES:
+        return
+    # Decision 177: the "anything not Pending is exempt" escape hatch is gone.
+    # It existed for one reason -- claim_booking refused any non-Pending
+    # status, so locking such a booking would have bricked it with no legal
+    # way out (found by the verification run, on BK-000077 itself). Now that
+    # any non-terminal booking can be claimed, the exemption would only serve
+    # to leave the exact rows Decision 163 exists for -- Confirmed, voucher
+    # released, nobody's name on it -- as the one category still editable
+    # anonymously.
+    raise HTTPException(
+        status_code=409,
+        detail="This booking has not been taken into work yet — claim it first",
+    )
 
 
 def _require_admin(current_user) -> None:
@@ -236,6 +289,16 @@ def list_bookings(
     created_from: date | None = None,
     created_to: date | None = None,
     search: str | None = None,
+    status: str | None = None,
+    hotel_id: int | None = None,
+    agent_id: int | None = None,
+    arrival_from: date | None = None,
+    arrival_to: date | None = None,
+    date_view: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -247,12 +310,53 @@ def list_bookings(
     total historical volume; it passes search instead (never both) when
     the booking-number search box is active, so a search can find a
     booking outside the currently-selected date window -- a real gap
-    found live after created_from/created_to shipped."""
+    found live after created_from/created_to shipped.
+
+    Decision 152: status/hotel_id/arrival_from/arrival_to/sort_by/sort_dir
+    exist so the admin screen can paginate honestly. Filtering and sorting
+    a single loaded page in the browser would answer "within this page",
+    which looks correct and isn't. All six default to the previous
+    behavior, so no existing caller changes."""
     return _run(
         lambda: service.list_bookings(
-            db, skip=skip, limit=limit, created_from=created_from, created_to=created_to, search=search
+            db, skip=skip, limit=limit, created_from=created_from, created_to=created_to,
+            search=search, status=status, hotel_id=hotel_id, agent_id=agent_id,
+            arrival_from=arrival_from, arrival_to=arrival_to,
+            date_view=date_view, date_from=date_from, date_to=date_to,
+            sort_by=sort_by, sort_dir=sort_dir,
         )
     )
+
+
+# MUST stay above /bookings/{booking_id}: that route's path parameter is an
+# int, and FastAPI matches in declaration order, so a later /bookings/count
+# would be swallowed by it and fail parsing "count" as an integer. This is the
+# exact bug api/routes.py's own /agent-registrations/stats still has (see
+# CLAUDE.md) -- not repeating it here.
+@router.get("/bookings/count")
+def count_bookings(
+    created_from: date | None = None,
+    created_to: date | None = None,
+    search: str | None = None,
+    status: str | None = None,
+    hotel_id: int | None = None,
+    agent_id: int | None = None,
+    arrival_from: date | None = None,
+    arrival_to: date | None = None,
+    date_view: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Decision 152: total matching the SAME filters, ignoring pagination,
+    so the list can say "1-50 of N" instead of silently truncating."""
+    return _run(lambda: {"total": service.count_bookings(
+        db, created_from=created_from, created_to=created_to, search=search,
+        status=status, hotel_id=hotel_id, agent_id=agent_id,
+        arrival_from=arrival_from, arrival_to=arrival_to,
+        date_view=date_view, date_from=date_from, date_to=date_to,
+    )})
 
 
 @router.get("/bookings/{booking_id}", response_model=BookingResponse)
@@ -293,7 +397,11 @@ def update_booking(
     """status cannot be set to "Cancelled" here at the type level (BookingUpdatableStatus excludes it) — use the dedicated /cancel endpoint."""
     existing = _run(lambda: service.get_booking(db, booking_id))
     _require_owner_or_admin(current_user, existing)
-    return _run(lambda: service.update_booking(db, booking_id, data))
+    # Decision 163: this is the endpoint that sets confirmation_number -- the
+    # exact hole BK-000077 went through. Nothing here is writable by an admin
+    # until the booking has an owner.
+    _require_claimed(existing, current_user)
+    return _run(lambda: service.update_booking(db, booking_id, data, acted_by=current_user.id))
 
 
 @router.post("/bookings/{booking_id}/cancel", response_model=BookingResponse)
@@ -313,6 +421,7 @@ def cancel_booking(
     """
     existing = _run(lambda: service.get_booking(db, booking_id))
     _require_owner_or_admin(current_user, existing)
+    _require_claimed(existing, current_user)
     return _run(lambda: service.cancel_booking(db, booking_id, data, cancelled_by=current_user.id))
 
 
@@ -336,6 +445,34 @@ def confirm_cancellation(
     _require_admin(current_user)
     return _run(
         lambda: service.confirm_cancellation(db, booking_id, data, confirmed_by=current_user.id)
+    )
+
+
+@router.post("/bookings/{booking_id}/cancel-free-of-charge", response_model=BookingResponse)
+def cancel_application_free_of_charge(
+    booking_id: int,
+    data: BookingCancelRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Decision 168: closes an application the company could not fulfil, at
+    no cost to the agent — the last step of the reject flow. Admin-only:
+    this is the manager granting a waiver on the company's behalf, not
+    something the owning agent decides for themselves, so deliberately
+    _require_admin rather than _require_owner_or_admin (unlike /cancel,
+    which an agent may legitimately initiate for their own booking).
+
+    Reuses BookingCancelRequest — a reason is required here for exactly
+    the same reason it is there (02_Logic_Rules.md #49).
+    """
+    _require_admin(current_user)
+    existing = _run(lambda: service.get_booking(db, booking_id))
+    _require_claimed(existing, current_user)
+    return _run(
+        lambda: service.cancel_application_free_of_charge(
+            db, booking_id, data.reason, cancelled_by=current_user.id
+        )
     )
 
 
@@ -372,6 +509,7 @@ def change_booking_dates(
     """Dedicated date-change flow (Decision 029, Stage 1): re-validates availability and re-prices for the new dates, reserves the new dates before releasing the old ones, and records the change (reason + timestamp). Requires a reason, same audit precedent as cancellation."""
     existing = _run(lambda: service.get_booking(db, booking_id))
     _require_owner_or_admin(current_user, existing)
+    _require_claimed(existing, current_user)
     return _run(lambda: service.change_booking_dates(db, booking_id, data))
 
 
@@ -473,6 +611,10 @@ def approve_booking_room(
 ):
     """Manager's explicit sign-off on a Pending room — the only path that ever sets a room to "Confirmed" (the system never auto-confirms). Admin-only, same convention as claim_booking/confirm_cancellation."""
     _require_admin(current_user)
+    # Decision 163: approving a room IS the "confirmed without a single
+    # re-check" act this rule exists to stop -- it must have a named owner.
+    room = _run(lambda: service.get_booking_room(db, booking_room_id))
+    _require_claimed(_run(lambda: service.get_booking(db, room.booking_id)), current_user)
     return _run(lambda: service.approve_booking_room(db, booking_room_id, approved_by=current_user.id))
 
 
@@ -485,6 +627,8 @@ def reject_booking_room(
 ):
     """Manager declining a Pending room's approve request — always requires a reason. Releases the allotment this room was holding. Admin-only, same convention as approve."""
     _require_admin(current_user)
+    room = _run(lambda: service.get_booking_room(db, booking_room_id))
+    _require_claimed(_run(lambda: service.get_booking(db, room.booking_id)), current_user)
     return _run(lambda: service.reject_booking_room(db, booking_room_id, data, rejected_by=current_user.id))
 
 
@@ -499,8 +643,63 @@ def update_booking_room(
     room = _run(lambda: service.get_booking_room(db, booking_room_id))
     booking = _run(lambda: service.get_booking(db, room.booking_id))
     _require_owner_or_admin(current_user, booking)
+    # Decision 163: this sets a room's confirmation_number -- the per-room
+    # twin of the exact hole BK-000077 went through on PUT /bookings/{id}.
+    _require_claimed(booking, current_user)
     update_data = data.model_dump(exclude_unset=True)
     return _run(lambda: service.update_booking_room(db, booking_room_id, **update_data))
+
+
+@router.get("/rooms/{booking_room_id}/transfer-options")
+def list_transfer_options_for_room(
+    booking_room_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """Decision 199 — the transfer options this room could switch to, already filtered by its own party size through Contract Engine's capacity rules, so the change screen can never offer a car the change itself would refuse. Read-only, ungated beyond authentication, same as list_guests_for_room."""
+    return _run(lambda: service.list_transfer_options_for_room(db, booking_room_id))
+
+
+@router.put("/rooms/{booking_room_id}/transfer", response_model=BookingRoomResponse)
+def change_room_transfer(
+    booking_room_id: int,
+    data: RoomTransferChangeRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Decision 199 — change or remove one room's transfer after booking,
+    without cancelling anything.
+
+    Admin-or-owning-agent, matching update_booking_room directly above: the
+    project owner's explicit requirement is that the agent makes this change
+    themselves from the agent panel, and it is a normal part of servicing
+    their own booking rather than a manager-only decision.
+
+    The admin-side notification is written in this SAME request, not by a
+    follow-up call from the browser. There is no circular import to dodge
+    here (finance imports booking's *service*, never its api), and the
+    owner's requirement is that the change is noticed — a change can land
+    three months after the application, so a signal that depends on a second
+    browser call succeeding is not good enough. If the note itself fails the
+    change is still real and already committed, so the failure is surfaced in
+    the response header rather than pretending the change did not happen.
+    """
+    room = _run(lambda: service.get_booking_room(db, booking_room_id))
+    booking = _run(lambda: service.get_booking(db, room.booking_id))
+    _require_owner_or_admin(current_user, booking)
+    _require_claimed(booking, current_user)
+
+    change = _run(
+        lambda: service.change_room_transfer(
+            db, booking_room_id, data.new_transfer_type, data.reason, current_user.id
+        )
+    )
+    try:
+        finance_service.record_transfer_change(
+            db, change, changed_by_label=current_user.email or f"user {current_user.id}"
+        )
+    except Exception as exc:  # noqa: BLE001 - the change is already committed
+        logger.exception("Transfer changed on room %s but the audit note failed: %s", booking_room_id, exc)
+    return _run(lambda: service.get_booking_room(db, booking_room_id))
 
 
 @router.get("/rooms/{booking_room_id}/guests", response_model=list[GuestResponse])
@@ -519,6 +718,10 @@ def list_guests_for_room(
 def create_guest(
     data: GuestCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
+    # Decision 163: same rule PUT /guests/{id} already carries -- an admin
+    # adding a guest to a booking nobody has taken on is still an untraceable
+    # edit. The owning agent is unaffected (see _require_claimed).
+    _require_claimed(_run(lambda: service.get_booking(db, data.booking_id)), current_user)
     return _run(lambda: service.create_guest(db, data))
 
 
@@ -544,6 +747,7 @@ def update_guest(
     guest = _run(lambda: service.get_guest(db, guest_id))
     booking = _run(lambda: service.get_booking(db, guest.booking_id))
     _require_owner_or_admin(current_user, booking)
+    _require_claimed(booking, current_user)
     fields = data.model_dump(exclude_unset=True)
     return _run(lambda: service.update_guest(db, guest_id, **fields))
 
@@ -572,8 +776,10 @@ def send_correspondence(
     current_user=Depends(get_current_user),
 ):
     """
-    Records an outbound message (typically the Decision 046 LPO text) --
-    no real email is sent (record-only, see service.py). Deliberately
+    Records an outbound message (typically the Decision 046 LPO text) AND
+    attempts to actually send it (Decision 154 -- this was record-only
+    before, so an LPO could look sent and never have left). The stored
+    row's `delivered` says which actually happened. Deliberately
     NOT wrapped in _require_owner_or_admin: same reasoning as Decision
     045's claim_booking -- this is a manager/admin communicating with a
     hotel on the company's behalf, not the owning agent editing their
@@ -584,6 +790,9 @@ def send_correspondence(
     sending is ever wired up, independent of today's record-only state).
     """
     _require_admin(current_user)
+    # Decision 163: an LPO is outbound content sent to a hotel under the
+    # company's name. It must carry the name of whoever took the booking on.
+    _require_claimed(_run(lambda: service.get_booking(db, booking_id)), current_user)
     return _run(
         lambda: service.send_correspondence(
             db,
@@ -610,6 +819,7 @@ def add_correspondence_reply(
 ):
     """Manually log a hotel's reply -- no real IMAP integration yet (Decision 029 Stage 3+). Same authorization note as send_correspondence above; also gated by _require_admin (Decision 103)."""
     _require_admin(current_user)
+    _require_claimed(_run(lambda: service.get_booking(db, booking_id)), current_user)
     return _run(
         lambda: service.add_correspondence_reply(db, booking_id, data.subject, data.body, current_user.id)
     )

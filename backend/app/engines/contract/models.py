@@ -132,6 +132,38 @@ class ContractTransferOption(Base):
     price_adult = Column(Float, nullable=False)
     price_child = Column(Float, nullable=False)
     price_infant = Column(Float, nullable=True)
+    # Decision 196. Every transfer until Mauritius was sold per person: a
+    # seaplane seat costs what it costs per passenger. A road transfer is
+    # sold per VEHICLE — a sedan to Le Morne is 220 EUR round trip whether
+    # one guest rides in it or three — so charging it through price_adult
+    # would bill a couple twice for one car.
+    #
+    # "per_person" (the default, and what every pre-existing row is) reads
+    # price_adult/price_child/price_infant exactly as before; "per_vehicle"
+    # reads price_per_vehicle and ignores the three per-person columns,
+    # which are set to 0.0 on such a row because "0 per person" is literally
+    # true when the charge is per car.
+    pricing_basis = Column(String(20), nullable=False, default="per_person")
+    price_per_vehicle = Column(Float, nullable=True)
+    # Decision 197. How many guests this option can actually carry. NULL
+    # means no stated limit — the honest value for a seaplane or a scheduled
+    # flight, where the contract caps nothing per booking.
+    #
+    # Counted as adults + children + INFANTS, deliberately unlike Hotel
+    # Engine's max_occupancy, which excludes infants: a bed can be shared,
+    # a seat belt cannot. Over-counting sends a family to the larger car;
+    # under-counting sends five bodies to a four-seat one.
+    max_passengers = Column(Integer, nullable=True)
+    # Decision 198. A car's real limit is TWO numbers, not one. A sedan seats
+    # four bodies but only two of them adult-sized: 2 adults + 2 children is
+    # fine, 3 adults is not, and 1 adult + 3 children is fine again — the
+    # owner's own examples. A single total could not express that.
+    #
+    # NULL means no separate adult limit (a V-Class: any 8 people). "Adult"
+    # here means anyone 12 or older, which is already how the search page
+    # buckets a party (deriveOccupancy promotes a 12-year-old into `adults`),
+    # so a teenager counts against this limit without any extra handling.
+    max_adults = Column(Integer, nullable=True)
     status = Column(String(20), default="Active")
 
 

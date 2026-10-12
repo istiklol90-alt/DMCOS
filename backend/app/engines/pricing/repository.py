@@ -19,12 +19,20 @@ def get_db():
 # PricingSettings (single row, id=1)
 # ---------------------------------------------------------------------------
 
-def get_pricing_settings(db: Session) -> Optional[PricingSettings]:
-    return db.query(PricingSettings).filter(PricingSettings.id == 1).first()
+def get_pricing_settings(db: Session, currency: str = "USD") -> Optional[PricingSettings]:
+    """Decision 193: one row PER CURRENCY, not one row full stop. The markup
+    is an absolute amount per night, so a single global figure applied to a
+    EUR contract would have charged 10 EUR where 10 USD was configured --
+    a different amount, silently."""
+    return db.query(PricingSettings).filter(PricingSettings.currency == currency).first()
+
+
+def list_pricing_settings(db: Session) -> list[PricingSettings]:
+    return db.query(PricingSettings).order_by(PricingSettings.currency).all()
 
 
 def create_pricing_settings(db: Session, **kwargs) -> PricingSettings:
-    settings = PricingSettings(id=1, **kwargs)
+    settings = PricingSettings(**kwargs)
     db.add(settings)
     db.commit()
     db.refresh(settings)

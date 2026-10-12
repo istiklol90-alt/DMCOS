@@ -83,13 +83,25 @@ const Balance = () => {
     }
   }
 
-  const currency = invoices[0]?.currency ?? "USD";
-  const totalAmount = invoices.reduce((sum, inv) => sum + inv.total, 0);
+  // Decision 193: totalled PER CURRENCY. It used to sum every invoice into
+  // one number and label it with the FIRST invoice's currency -- fine while
+  // every contract was in USD, and silently wrong the moment a EUR contract
+  // exists: EUR and USD would have been added together and stamped "USD".
+  // No conversion is involved and none is wanted; each currency is its own
+  // line, which is the honest answer without exchange rates.
+  //
   // Decision 101: not-computed invoices (pre-Decision-069) contribute 0
   // to this aggregate -- same precedent generate_agent_statement's own
   // total_profit already uses on the backend (distinct from a single
   // invoice's own null, which stays "—" wherever shown individually).
-  const totalProfit = invoices.reduce((sum, inv) => sum + (invoiceProfit(inv) ?? 0), 0);
+  const amountByCurrency: Record<string, number> = {};
+  const profitByCurrency: Record<string, number> = {};
+  invoices.forEach((inv) => {
+    amountByCurrency[inv.currency] = (amountByCurrency[inv.currency] ?? 0) + inv.total;
+    profitByCurrency[inv.currency] = (profitByCurrency[inv.currency] ?? 0) + (invoiceProfit(inv) ?? 0);
+  });
+  const amountEntries = Object.entries(amountByCurrency).sort(([a], [b]) => a.localeCompare(b));
+  const profitEntries = Object.entries(profitByCurrency).sort(([a], [b]) => a.localeCompare(b));
   const byStatus: Record<string, number> = {};
   invoices.forEach((inv) => {
     byStatus[inv.status] = (byStatus[inv.status] ?? 0) + 1;
@@ -139,15 +151,27 @@ const Balance = () => {
           </Card>
           <Card padding="none" className="px-4 py-3">
             <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Amount</p>
-            <p className="mt-1 font-display text-2xl font-semibold text-ink">
-              {invoices.length > 0 ? formatMoney(totalAmount, currency) : "—"}
-            </p>
+            {amountEntries.length === 0 ? (
+              <p className="mt-1 font-display text-2xl font-semibold text-ink">—</p>
+            ) : (
+              amountEntries.map(([cur, amount]) => (
+                <p key={cur} className="mt-1 font-display text-2xl font-semibold text-ink">
+                  {formatMoney(amount, cur)}
+                </p>
+              ))
+            )}
           </Card>
           <Card padding="none" className="px-4 py-3">
             <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Profit</p>
-            <p className="mt-1 font-display text-2xl font-semibold text-ink">
-              {invoices.length > 0 ? formatMoney(totalProfit, currency) : "—"}
-            </p>
+            {profitEntries.length === 0 ? (
+              <p className="mt-1 font-display text-2xl font-semibold text-ink">—</p>
+            ) : (
+              profitEntries.map(([cur, amount]) => (
+                <p key={cur} className="mt-1 font-display text-2xl font-semibold text-ink">
+                  {formatMoney(amount, cur)}
+                </p>
+              ))
+            )}
           </Card>
           {Object.entries(byStatus).map(([status, count]) => (
             <Card key={status} padding="none" className="px-4 py-3">

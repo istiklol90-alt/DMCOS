@@ -25,6 +25,7 @@ from app.engines.contract.schemas import (
     ContractMealPlanCreate,
     ContractMealPlanResponse,
     ContractTransferOptionCreate,
+    ContractTransferOptionUpdate,
     ContractTransferOptionResponse,
     RateCreate,
     RateUpdate,
@@ -294,6 +295,27 @@ def create_contract_transfer_option(
     return _run(lambda: service.create_contract_transfer_option(db, data))
 
 
+@router.put(
+    "/contract-transfer-options/{option_id}", response_model=ContractTransferOptionResponse
+)
+def update_contract_transfer_option(
+    option_id: int,
+    data: ContractTransferOptionUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Decision 196 — edit a transfer option. Partial: only the fields sent are changed, and the row is normalised so its pricing basis and its prices always agree."""
+    return _run(lambda: service.update_contract_transfer_option(db, option_id, data))
+
+
+@router.delete("/contract-transfer-options/{option_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_contract_transfer_option(
+    option_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """Decision 196 — remove a transfer option. Existing bookings are unaffected: each froze its own transfer_type/transfer_total at booking time."""
+    _run(lambda: service.delete_contract_transfer_option(db, option_id))
+
+
 @router.get(
     "/contracts/{contract_id}/transfer-options", response_model=list[ContractTransferOptionResponse]
 )
@@ -309,10 +331,14 @@ def list_contract_transfer_options(
     response_model=list[ContractTransferOptionResponse],
 )
 def get_transfer_options(
-    contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+    contract_id: int,
+    guests: int | None = None,
+    adults: int | None = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
-    """Interface Contract function — only Active transfer options, the set an agent can actually select for a booking (see /contracts/{contract_id}/transfer-options for the full CRUD list)."""
-    return _run(lambda: service.get_transfer_options(db, contract_id))
+    """Interface Contract function — only Active transfer options, the set an agent can actually select for a booking (see /contracts/{contract_id}/transfer-options for the full CRUD list). Decision 197/198: pass `guests` (adults + children + infants) and/or `adults` (guests aged 12+) to exclude options that cannot carry that party."""
+    return _run(lambda: service.get_transfer_options(db, contract_id, guests, adults))
 
 
 @router.get("/contracts/{contract_id}/transfer-price")

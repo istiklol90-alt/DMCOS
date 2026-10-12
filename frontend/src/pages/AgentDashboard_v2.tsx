@@ -5,6 +5,7 @@ import BookingsList from "./Reservations";
 import AgentTopNav from "../components/layout/AgentTopNav";
 import type { SessionUser } from "../components/layout/AgentTopNav";
 import { API_URL } from "../config";
+import { handleSessionExpired } from "../session";
 
 // ---------------------------------------------------------------------------
 // DMC OS design system, Phase 1. Full restructure -- sidebar layout replaced
@@ -42,6 +43,13 @@ interface FeaturedHotel {
 
 async function fetchJson<T>(path: string, token: string): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  // A 30-minute token simply expires while a tab sits open; every request
+  // then fails with 401 "Invalid token". Handled once, centrally, instead of
+  // each panel rendering that raw string or hanging on a spinner forever.
+  if (response.status === 401) {
+    handleSessionExpired();
+    throw new Error("Session expired");
+  }
   if (!response.ok) throw new Error(`Request error (${response.status})`);
   return response.json() as Promise<T>;
 }

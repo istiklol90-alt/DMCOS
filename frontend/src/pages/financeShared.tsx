@@ -1,5 +1,8 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { API_URL } from "../config";
+import { handleSessionExpired } from "../session";
+// Decision 183: one collapsible-section design across the admin panel.
+import { SectionCard, ActionInfo } from "./Reservations";
 
 // ---------------------------------------------------------------------------
 // Shared across the Finance feature cluster (Invoices / Balance / Cashback,
@@ -29,6 +32,14 @@ export interface InvoiceReviewNote {
   created_at: string;
 }
 
+export interface InvoiceRoomLine {
+  booking_room_id: number | null;
+  sequence_number: number;
+  room_sale: number;
+  transfer_amount: number | null;
+  tax_amount: number | null;
+}
+
 export interface Invoice {
   id: number;
   invoice_number: string;
@@ -44,6 +55,19 @@ export interface Invoice {
   total: number;
   status: string;
   email_sent_at: string | null;
+  // The row's real creation timestamp, distinct from issue_date (the
+  // document's own date). Decision 182 -- see the "Created" line below.
+  created_at: string | null;
+  // Stage 4: the per-room split frozen at issue time. Absent on invoices
+  // issued before it existed (43 of 53 today).
+  room_breakdown?: InvoiceRoomLine[] | null;
+  // Decision 182: resolved for display by the server, never stored.
+  booking_number?: string | null;
+  hotel_name?: string | null;
+  agent_name?: string | null;
+  // Decision 182: what the booking costs now, for the money/info split.
+  booking_total_now?: number | null;
+  booking_status?: string | null;
   review_notes: InvoiceReviewNote[];
   flag_acknowledged_at: string | null;
   flag_acknowledged_by: number | null;
@@ -156,14 +180,21 @@ export interface BookingCommercialLine {
 // manual correction here should be reflected immediately in that
 // figure), deliberately NOT used by Invoice/AgentStatement generation,
 // which stay on computeBookingFinancials' frozen-Booking-column formula.
-export function computeCommercialLineTotals(lines: BookingCommercialLine[]): {
+// Decision 178: cost from the ledger, sale price never. `frozenSaleTotal` is
+// what the agent saw and booked at; a manual correction in the admin panel is
+// an internal fact about our cost and must not re-price the agent. Passing it
+// is how this mirror stays equal to the backend's own
+// compute_booking_room_commercial_totals(lines, room).
+export function computeCommercialLineTotals(
+  lines: BookingCommercialLine[],
+  frozenSaleTotal: number,
+): {
   netTotal: number;
   saleTotal: number;
   profit: number;
 } {
   const netTotal = lines.reduce((sum, l) => sum + (l.base_cost ?? 0) + (l.adjustment_cost ?? 0), 0);
-  const saleTotal = lines.reduce((sum, l) => sum + (l.base_price ?? 0) + (l.adjustment_price ?? 0), 0);
-  return { netTotal, saleTotal, profit: saleTotal - netTotal };
+  return { netTotal, saleTotal: frozenSaleTotal, profit: frozenSaleTotal - netTotal };
 }
 
 export async function fetchJson<T>(path: string, token: string, options: RequestInit = {}): Promise<T> {
@@ -175,6 +206,13 @@ export async function fetchJson<T>(path: string, token: string, options: Request
       ...(options.headers || {}),
     },
   });
+  // A 30-minute token simply expires while a tab sits open; every request
+  // then fails with 401 "Invalid token". Handled once, centrally, instead of
+  // each panel rendering that raw string or hanging on a spinner forever.
+  if (response.status === 401) {
+    handleSessionExpired();
+    throw new Error("Session expired");
+  }
   if (!response.ok) {
     let detail = `Request error (${response.status})`;
     try {
@@ -193,8 +231,22 @@ export function formatMoney(amount: number, currency: string) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(amount);
 }
 
+// Decision 182: dd.mm.yyyy, matching every other date in the admin panel.
+// It was en-US ("7/20/2026") on the finance screens alone -- and 7/20 vs
+// 20/7 is exactly the ambiguity a financial screen cannot afford.
 export function formatDate(dateStr: string) {
-  return new Date(dateStr).toLocaleDateString("en-US");
+  return new Date(dateStr).toLocaleDateString("en-GB").replace(/\//g, ".");
+}
+
+// Date plus time. Creation and approval can be seconds apart (they were,
+// on the invoice that surfaced this), and a date alone cannot show which
+// came first.
+export function formatDateTime(value: string) {
+  const d = new Date(value);
+  return `${d.toLocaleDateString("en-GB").replace(/\//g, ".")} ${d.toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
 }
 
 const statusBadgeClasses: Record<string, string> = {
@@ -224,6 +276,11 @@ interface UrgentFlaggable {
   status: string;
   review_notes: InvoiceReviewNote[];
   flag_acknowledged_at: string | null;
+  // Decision 182: needed by flagKind/flagAmountDelta. Optional so the
+  // panels that build a lighter object for isUrgentFlag still typecheck.
+  total?: number;
+  booking_total_now?: number | null;
+  booking_status?: string | null;
 }
 
 // Decision 093: urgency is computed from the latest review note's
@@ -239,6 +296,64 @@ export function isUrgentFlag(inv: UrgentFlaggable): boolean {
   if (!inv.flag_acknowledged_at) return true;
   const latestNote = inv.review_notes[inv.review_notes.length - 1];
   return new Date(latestNote.created_at) > new Date(inv.flag_acknowledged_at);
+}
+
+// Decision 182: not every flag is a money problem, and treating them alike
+// made the ones that are impossible to spot.
+//
+// A booking can change after its invoice was issued without the amount
+// moving at all -- INV-5E0847DAC701 carries FOUR date-change notes and its
+// total is 2,412.50 both before and after. That sat in exactly the same red
+// as INV-3A3B7074F568, which really is 75.45 short. One of those needs a
+// credit note; the other needs someone to glance at it.
+//
+// "money" wins over "info" when both are present, since the amount is the
+// part that costs something to get wrong.
+export type FlagKind = "money" | "info";
+
+// A live invoice whose booking was cancelled or rejected. Its own state, not
+// a price difference: nothing is owed because the booking is gone, and
+// reporting that as "Amount -1,609.05" describes it wrongly.
+export function invoiceOnCancelledBooking(inv: UrgentFlaggable): boolean {
+  return (
+    inv.status !== "Void" &&
+    (inv.booking_status === "Cancelled" || inv.booking_status === "Rejected")
+  );
+}
+
+export function flagKind(inv: UrgentFlaggable): FlagKind {
+  if (invoiceOnCancelledBooking(inv)) return "money";
+  // The decisive test: does the invoice still equal what the booking costs?
+  // Judging on the notes alone was not enough -- INV-3A3B7074F568 is 75.45
+  // short and every one of its notes predates structured price snapshots, so
+  // it read as harmless.
+  if (inv.total != null && inv.booking_total_now != null &&
+      Math.abs(inv.booking_total_now - inv.total) > 0.01) {
+    return "money";
+  }
+  for (const note of inv.review_notes) {
+    if (note.old_total !== null && note.new_total !== null &&
+        Math.abs(note.new_total - note.old_total) > 0.01) {
+      return "money";
+    }
+  }
+  return "info";
+}
+
+// The size of the money move across every note on the invoice, oldest to
+// newest -- null when no note recorded both sides of a price.
+export function flagAmountDelta(inv: UrgentFlaggable): number | null {
+  // The gap that actually matters: invoice vs booking now. Falls back to the
+  // notes' own snapshots for an invoice whose booking total we don't have.
+  if (inv.total != null && inv.booking_total_now != null &&
+      Math.abs(inv.booking_total_now - inv.total) > 0.01) {
+    return inv.booking_total_now - inv.total;
+  }
+  const withPrice = inv.review_notes.filter((n) => n.old_total !== null && n.new_total !== null);
+  if (withPrice.length === 0) return null;
+  const first = withPrice[0];
+  const last = withPrice[withPrice.length - 1];
+  return (last.new_total as number) - (first.old_total as number);
 }
 
 // Decision 094: a note has a structured price snapshot (both old_total
@@ -515,28 +630,331 @@ interface DetailBooking {
   mandatory_tax_total: number | null;
 }
 
-interface RoomPriceBreakdown {
-  base_total: number;
-  supplements_total: number;
-  price_before_promotions: number;
-  applied_promotions: number[];
-  final_total: number;
+// Decision 190: the two sides of one booking, each per room.
+//
+// "Incoming" is what WE owe the hotel; "Outgoing" is what the AGENT pays us.
+// They were previously one blended pair of numbers, so the question a manager
+// actually asks -- "the hotel billed us more than we expected, which room, and
+// why" -- had nowhere to be asked. Per room, because a hotel confirms a
+// multi-room application room by room and a single booking-level figure
+// cannot say where a discrepancy is.
+interface SummaryRoom {
+  booking_room_id: number;
+  sequence_number: number;
+  status: string;
+  billable: boolean;
+  lines: { category: string; cost: number; price: number; adjusted: boolean }[];
+  net_total: number;
+  sale_total: number;
+}
+interface Summary {
   currency: string;
+  rooms: SummaryRoom[];
+  net_total: number;
+  sale_total: number;
+  // Decision 191: ONE confirmation for the whole application.
+  hotel_confirmed_amount: number | null;
+  hotel_reference: string | null;
+  hotel_note: string | null;
+  hotel_difference: number | null;
+  billable_rooms: number;
 }
 
-interface TransferPriceBreakdown {
-  transfer_name: string;
-  total: number;
+const CATEGORY_LABEL: Record<string, string> = {
+  room: "Accommodation",
+  transfer: "Transfer",
+  meal: "Meal",
+  tax: "Mandatory tax",
+  cip: "CIP (airport)",
+  excursion: "Excursion",
+};
+
+// Decision 191: one editor for the whole application. It was one per room,
+// which modelled a conversation that does not happen -- the owner: "если 2
+// номера всё равно будет 1 переписка с отелем... всё под один email будет".
+// A per-room form would have asked a manager to split one hotel invoice
+// across rooms by hand before they could record it at all.
+function HotelConfirmationEditor({
+  bookingId,
+  summary,
+  currency,
+  onSaved,
+}: {
+  bookingId: number;
+  summary: Summary;
   currency: string;
+  onSaved: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [amount, setAmount] = useState(
+    summary.hotel_confirmed_amount !== null ? String(summary.hotel_confirmed_amount) : "",
+  );
+  const [reference, setReference] = useState(summary.hotel_reference ?? "");
+  const [note, setNote] = useState(summary.hotel_note ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    const value = parseFloat(amount);
+    if (Number.isNaN(value)) {
+      setError("Enter the amount the hotel billed");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem("token") || "";
+      await fetchJson(`/finance-engine/bookings/${bookingId}/hotel-confirmation`, token, {
+        method: "PUT",
+        body: JSON.stringify({
+          confirmed_amount: value,
+          hotel_reference: reference.trim() || null,
+          note: note.trim() || null,
+        }),
+      });
+      setEditing(false);
+      onSaved();
+    } catch (err: any) {
+      setError(err.message || "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
+        {summary.hotel_confirmed_amount === null ? (
+          <span className="text-slate/50">
+            The hotel has not confirmed this booking
+            {summary.billable_rooms > 1 && <> ({summary.billable_rooms} rooms, one invoice)</>}
+          </span>
+        ) : (
+          <>
+            <span className="text-slate/60">
+              Hotel billed <strong className="text-ink">{formatMoney(summary.hotel_confirmed_amount, currency)}</strong>
+              {summary.hotel_reference && <span className="ml-1 text-slate/50">· {summary.hotel_reference}</span>}
+            </span>
+            {summary.hotel_difference !== null && Math.abs(summary.hotel_difference) > 0.01 && (
+              <span className="rounded-full bg-danger/10 px-1.5 py-0.5 font-semibold text-danger">
+                {summary.hotel_difference > 0 ? "+" : ""}
+                {formatMoney(summary.hotel_difference, currency)} vs our figure
+              </span>
+            )}
+          </>
+        )}
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className="rounded border border-ink/20 bg-white px-2 py-0.5 text-[11px] font-medium text-ink/70 hover:bg-sand"
+        >
+          {summary.hotel_confirmed_amount === null ? "Record" : "Edit"}
+        </button>
+        {summary.hotel_note && <span className="basis-full text-slate/50">{summary.hotel_note}</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-1.5 flex flex-wrap items-end gap-2">
+      <label className="flex flex-col text-[11px] text-slate/50">
+        Hotel billed, {currency}
+        <input
+          type="number"
+          step="0.01"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          className="w-28 rounded border border-ink/15 bg-white px-2 py-1 text-xs text-ink focus:border-gold focus:outline-none"
+        />
+      </label>
+      <label className="flex flex-col text-[11px] text-slate/50">
+        Hotel reference
+        <input
+          value={reference}
+          onChange={(e) => setReference(e.target.value)}
+          placeholder="their invoice #"
+          className="w-36 rounded border border-ink/15 bg-white px-2 py-1 text-xs text-ink focus:border-gold focus:outline-none"
+        />
+      </label>
+      <label className="flex min-w-[180px] flex-1 flex-col text-[11px] text-slate/50">
+        Why it differs
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="resort fee, late checkout, agreed discount…"
+          className="rounded border border-ink/15 bg-white px-2 py-1 text-xs text-ink focus:border-gold focus:outline-none"
+        />
+      </label>
+      <button
+        type="button"
+        onClick={save}
+        disabled={saving}
+        className="rounded bg-ink px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50"
+      >
+        {saving ? "Saving…" : "Save"}
+      </button>
+      <button
+        type="button"
+        onClick={() => setEditing(false)}
+        disabled={saving}
+        className="rounded border border-ink/15 bg-white px-2.5 py-1 text-xs font-medium text-slate/70"
+      >
+        Cancel
+      </button>
+      {error && <p className="basis-full text-xs text-danger">{error}</p>}
+    </div>
+  );
 }
 
-interface MandatoryTaxBreakdown {
-  label: string | null;
-  rate_per_person_per_night: number;
-  chargeable_guests: number;
-  nights: number;
-  total: number;
-  currency: string;
+function SideBySide({
+  bookingId,
+  summary,
+  onReload,
+}: {
+  bookingId: number;
+  summary: Summary;
+  onReload: () => void;
+}) {
+  const cur = summary.currency;
+  const cell = "border-b border-r border-ink/20 px-3 py-2 align-middle text-ink";
+  return (
+    <div className="grid gap-3 lg:grid-cols-2">
+      {/* INCOMING -- our cost. Every category, per room, plus whatever the
+          hotel itself says, so a difference is visible where it happens
+          rather than only in a blended total. */}
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
+          Incoming — what we owe the hotel
+        </p>
+        <div className="mt-2 overflow-x-auto rounded-lg border border-ink/25 bg-white">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="text-ink">
+                <th className="border-b-2 border-r border-ink/25 px-3 py-2 text-left font-semibold">Item</th>
+                <th className="border-b-2 border-ink/25 px-3 py-2 text-right font-semibold">Cost, {cur}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.rooms.map((room) => (
+                <Fragment key={room.booking_room_id}>
+                  <tr className="bg-sand/40">
+                    <td colSpan={2} className="border-b border-ink/20 px-3 py-1.5 text-xs font-semibold text-ink">
+                      Room {room.sequence_number}
+                      {!room.billable && (
+                        <span className="ml-1.5 font-normal text-slate/50">· {room.status.toLowerCase()}, not charged</span>
+                      )}
+                    </td>
+                  </tr>
+                  {room.lines.map((l) => (
+                    <tr key={`in-${room.booking_room_id}-${l.category}`}>
+                      <td className={cell}>
+                        {CATEGORY_LABEL[l.category] ?? l.category}
+                        {l.adjusted && <span className="ml-1 text-xs text-gold">· corrected</span>}
+                      </td>
+                      <td className={`${cell} border-r-0 whitespace-nowrap text-right tabular-nums`}>
+                        {formatMoney(l.cost, cur)}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="font-medium">
+                    <td className={cell}>Room {room.sequence_number} subtotal</td>
+                    <td className={`${cell} border-r-0 whitespace-nowrap text-right tabular-nums`}>
+                      {formatMoney(room.net_total, cur)}
+                    </td>
+                  </tr>
+                </Fragment>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="font-semibold text-ink">
+                <td className="border-t-2 border-r border-ink/25 px-3 py-2">Total incoming</td>
+                <td className="border-t-2 border-ink/25 px-3 py-2 text-right tabular-nums">
+                  {formatMoney(summary.net_total, cur)}
+                </td>
+              </tr>
+              {summary.hotel_confirmed_amount !== null && (
+                <tr className={summary.hotel_difference && Math.abs(summary.hotel_difference) > 0.01 ? "text-danger" : "text-ink/70"}>
+                  <td className="border-r border-ink/25 px-3 py-2 text-xs">Hotel's own invoice</td>
+                  <td className="px-3 py-2 text-right text-xs tabular-nums">
+                    {formatMoney(summary.hotel_confirmed_amount, cur)}
+                  </td>
+                </tr>
+              )}
+            </tfoot>
+          </table>
+        </div>
+        {/* Decision 191: one confirmation, under the table it is compared
+            against -- the hotel invoices this application once, in one
+            email, whether it holds 1 room or 8. */}
+        <HotelConfirmationEditor
+          bookingId={bookingId}
+          summary={summary}
+          currency={cur}
+          onSaved={onReload}
+        />
+      </div>
+
+      {/* OUTGOING -- the agent's price. Frozen at booking (Decision 178), so
+          a correction on the incoming side never moves it. */}
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">
+          Outgoing — what the agent pays
+        </p>
+        <div className="mt-2 overflow-x-auto rounded-lg border border-ink/25 bg-white">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="text-ink">
+                <th className="border-b-2 border-r border-ink/25 px-3 py-2 text-left font-semibold">Item</th>
+                <th className="border-b-2 border-ink/25 px-3 py-2 text-right font-semibold">Price, {cur}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.rooms.map((room) => (
+                <Fragment key={room.booking_room_id}>
+                  <tr className="bg-sand/40">
+                    <td colSpan={2} className="border-b border-ink/20 px-3 py-1.5 text-xs font-semibold text-ink">
+                      Room {room.sequence_number}
+                      {!room.billable && (
+                        <span className="ml-1.5 font-normal text-slate/50">· {room.status.toLowerCase()}, not charged</span>
+                      )}
+                    </td>
+                  </tr>
+                  {room.lines.map((l) => (
+                    <tr key={`out-${room.booking_room_id}-${l.category}`}>
+                      <td className={cell}>{CATEGORY_LABEL[l.category] ?? l.category}</td>
+                      <td className={`${cell} border-r-0 whitespace-nowrap text-right tabular-nums`}>
+                        {formatMoney(l.price, cur)}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="font-medium">
+                    <td className={cell}>Room {room.sequence_number} subtotal</td>
+                    <td className={`${cell} border-r-0 whitespace-nowrap text-right tabular-nums`}>
+                      {formatMoney(room.sale_total, cur)}
+                    </td>
+                  </tr>
+                </Fragment>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="font-semibold text-ink">
+                <td className="border-t-2 border-r border-ink/25 px-3 py-2">Total outgoing</td>
+                <td className="border-t-2 border-ink/25 px-3 py-2 text-right tabular-nums">
+                  {formatMoney(summary.sale_total, cur)}
+                </td>
+              </tr>
+              <tr className={summary.sale_total - summary.net_total < 0 ? "text-danger" : "text-ink/70"}>
+                <td className="border-r border-ink/25 px-3 py-2 text-xs">Margin (outgoing − incoming)</td>
+                <td className="px-3 py-2 text-right text-xs tabular-nums">
+                  {formatMoney(summary.sale_total - summary.net_total, cur)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function InvoiceDetailModal({
@@ -566,9 +984,11 @@ export function InvoiceDetailModal({
   const [booking, setBooking] = useState<DetailBooking | null>(null);
   const [roomTypeName, setRoomTypeName] = useState<string>("");
   const [mealPlanLabel, setMealPlanLabel] = useState<string>("");
-  const [roomBreakdown, setRoomBreakdown] = useState<RoomPriceBreakdown | null>(null);
-  const [transferBreakdown, setTransferBreakdown] = useState<TransferPriceBreakdown | null>(null);
-  const [taxBreakdown, setTaxBreakdown] = useState<MandatoryTaxBreakdown | null>(null);
+  // Decision 182: the three live Contract Engine re-pricing calls that used
+  // to feed the right-hand column are gone. That column now reads the
+  // agent-facing price breakdown instead, which is the same figure the agent
+  // sees -- so the modal makes two or three fewer cross-engine calls per open
+  // AND can no longer show a number the agent's own screen disagrees with.
   const [actorNames, setActorNames] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -615,47 +1035,6 @@ export function InvoiceDetailModal({
         const mealPlan = mealPlans.find((mp) => mp.id === b.meal_plan_id);
         setMealPlanLabel(mealPlan?.meal_name || mealPlan?.meal_code || `#${b.meal_plan_id}`);
 
-        const roomPriceParams = new URLSearchParams({
-          check_in: b.arrival_date,
-          check_out: b.departure_date,
-          meal_plan: mealPlan?.meal_code || "",
-          adults: String(b.adults),
-          children: String(b.children),
-          infants: String(b.infants),
-        });
-        const mandatoryTaxParams = new URLSearchParams({
-          nights: String(b.nights),
-          adults: String(b.adults),
-          children: String(b.children),
-        });
-
-        const promises: Promise<void>[] = [
-          fetchJson<RoomPriceBreakdown>(
-            `/contract-engine/contracts/${b.contract_id}/room-types/${b.room_type_id}/price?${roomPriceParams}`,
-            token
-          ).then(setRoomBreakdown),
-          fetchJson<MandatoryTaxBreakdown>(
-            `/contract-engine/contracts/${b.contract_id}/mandatory-tax?${mandatoryTaxParams}`,
-            token
-          ).then(setTaxBreakdown),
-        ];
-        if (b.transfer_type) {
-          const transferParams = new URLSearchParams({
-            transfer_type: b.transfer_type,
-            check_in: b.arrival_date,
-            check_out: b.departure_date,
-            adults: String(b.adults),
-            children: String(b.children),
-            infants: String(b.infants),
-          });
-          promises.push(
-            fetchJson<TransferPriceBreakdown>(
-              `/contract-engine/contracts/${b.contract_id}/transfer-price?${transferParams}`,
-              token
-            ).then(setTransferBreakdown)
-          );
-        }
-        await Promise.all(promises);
       })
       .catch((err: any) => setError(err.message || "Failed to load booking details"))
       .finally(() => setLoading(false));
@@ -664,20 +1043,127 @@ export function InvoiceDetailModal({
   // Decision 101: liveFinancials.saleTotal replaces what used to be a
   // separately hand-written liveTotal formula -- same numbers, one
   // source of truth instead of two copies of the same arithmetic.
-  const liveFinancials = booking ? computeBookingFinancials(booking) : null;
-  const liveTotal = liveFinancials ? liveFinancials.saleTotal : null;
+
+
+  // Decision 182: the two comparison columns, on one basis.
+  //
+  // Frozen side: built from the invoice's own InvoiceRoomLine rows, which
+  // were snapshotted at issue time and reconcile to `total` exactly --
+  // verified on all 10 invoices that have them. Older invoices (43 of 53)
+  // never recorded the split, so this is null for them and the column shows
+  // the total alone rather than a split reverse-engineered from aggregates.
+  const frozenLines = (() => {
+    const lines = invoice.room_breakdown ?? [];
+    if (lines.length === 0) return null;
+    return {
+      room: lines.reduce((sum, l) => sum + (l.room_sale ?? 0), 0),
+      transfer: lines.reduce((sum, l) => sum + (l.transfer_amount ?? 0), 0),
+      tax: lines.reduce((sum, l) => sum + (l.tax_amount ?? 0), 0),
+    };
+  })();
+
+  // Current side: the agent-facing price breakdown (Decision 181), the same
+  // endpoint the agent's own screen reads, so the invoice's "now" column and
+  // what the agent is actually looking at cannot disagree.
+  // Decision 190: the two sides, per room, plus the hotel's own figures.
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [summaryReload, setSummaryReload] = useState(0);
+  useEffect(() => {
+    const token = localStorage.getItem("token") || "";
+    let cancelled = false;
+    fetchJson<Summary>(`/finance-engine/bookings/${invoice.booking_id}/commercial-summary`, token)
+      .then((d) => {
+        if (!cancelled) setSummary(d);
+      })
+      .catch(() => {
+        if (!cancelled) setSummary(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [invoice.booking_id, summaryReload]);
+
+  const [currentLines, setCurrentLines] = useState<
+    { room: number; transfer: number; tax: number; total: number; currency: string } | null
+  >(null);
+  useEffect(() => {
+    const token = localStorage.getItem("token") || "";
+    let cancelled = false;
+    setCurrentLines(null);
+    fetchJson<{
+      currency: string;
+      total: number;
+      rooms: { billable: boolean; lines: { category: string; price: number }[] }[];
+    }>(`/finance-engine/bookings/${invoice.booking_id}/price-breakdown`, token)
+      .then((d) => {
+        if (cancelled) return;
+        const pick = (category: string) =>
+          d.rooms
+            .filter((r) => r.billable)
+            .reduce((sum, r) => sum + (r.lines.find((l) => l.category === category)?.price ?? 0), 0);
+        setCurrentLines({
+          room: pick("room"),
+          transfer: pick("transfer"),
+          tax: pick("tax"),
+          total: d.total,
+          currency: d.currency,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setCurrentLines(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [invoice.booking_id]);
+
+  // Decision 192: "what the booking costs now" is the total across EVERY
+  // billable room -- the same figure the "Booking now" column beside it
+  // already shows, read from the same endpoint.
+  //
+  // It used to be computeBookingFinancials(booking), which reads the parent
+  // Booking row -- and on a multi-room application those columns hold the
+  // REPRESENTATIVE FIRST ROOM only. On BK-000080 that made this section
+  // compare 1,964.50 (room #1) against an invoice for 6,700.50 and raise
+  // "the price differs" while the column two centimetres away correctly
+  // showed 6,700.50 = 6,700.50. Two answers to one question on one screen,
+  // and the wrong one was the one shouting.
+  //
+  // Same bug class Decision 178 fixed for the list and the breakdown; this
+  // was the one place it survived.
+  const liveTotal = currentLines ? currentLines.total : null;
   const mismatch = liveTotal !== null && Math.abs(liveTotal - invoice.total) > 0.01;
-  const frozenProfit = invoiceProfit(invoice);
+  // Decision 182: profit is no longer shown inside the invoice block -- an
+  // invoice is what the agent pays, our margin belongs in the booking's
+  // commercial breakdown. invoiceProfit() itself stays; Balance still uses it.
+  // Decision 183: the same collapsible sections the booking detail uses --
+  // one design across the admin panel instead of a modal that stacks five
+  // permanently-open panels. Opens on "Amounts", the reason anyone opens an
+  // invoice; everything else is one click away.
+  const [openSection, setOpenSection] = useState<string | null>("amounts");
+  const toggleSection = (key: string) => setOpenSection((cur) => (cur === key ? null : key));
+
   const latestNote = invoice.review_notes.length > 0 ? invoice.review_notes[invoice.review_notes.length - 1] : undefined;
   const changeHighlights = booking ? deriveChangeHighlights(latestNote, booking.arrival_date, booking.departure_date) : [];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4" onClick={onClose}>
+    // Decision 184: ONE size, always large. It was max-w-2xl (672px) with a
+    // height that followed its content, so a draft with three lines and an
+    // issued invoice with a change history opened as two visibly different
+    // windows -- and both too narrow for the two side-by-side money columns
+    // they carry.
+    //
+    // Now 1400px wide, the same as the booking detail (owner: "как в
+    // booking"), and a FIXED 85vh tall rather than a max-height: a max grows
+    // with content, which is exactly what made two invoices look like two
+    // different windows. The header stays put and only the body scrolls, so
+    // every invoice opens identically whatever it contains.
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4 py-6" onClick={onClose}>
       <div
-        className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-xl"
+        className="flex h-[85vh] w-full max-w-[1400px] flex-col overflow-hidden rounded-2xl bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between">
+        <div className="flex shrink-0 items-center justify-between border-b border-ink/10 px-6 py-4">
           <h3 className="flex items-center gap-2 font-display text-lg font-semibold text-ink">
             Invoice {invoice.invoice_number}
             <StatusBadge
@@ -694,17 +1180,207 @@ export function InvoiceDetailModal({
           </button>
         </div>
 
-        <div className="mt-3 space-y-0.5 text-xs text-slate/50">
-          <p>Created: {actorNames[invoice.created_by] ?? `#${invoice.created_by}`}, {formatDate(invoice.issue_date)}</p>
-          {invoice.approved_by !== null && invoice.approved_at && (
-            <p>Approved: {actorNames[invoice.approved_by] ?? `#${invoice.approved_by}`}, {formatDate(invoice.approved_at)}</p>
+        {/* Only this scrolls -- the title and Close stay visible however long
+            the change history gets. */}
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+        {/* Section 1: the money. Open by default. */}
+        <div>
+        <SectionCard
+          sectionKey="amounts"
+          number={1}
+          openSection={openSection}
+          onToggleSection={toggleSection}
+          title={
+            <span className="inline-flex items-center gap-1.5">
+              Amounts
+              {/* Decision 192: the owner could not tell what this section was
+                  for, which is a fair complaint -- it looks like the money
+                  again, and it is not. It answers one question. */}
+              <ActionInfo
+                text={
+                  "Has the booking changed since this invoice was issued? Left: the amount frozen " +
+                  "into the invoice. Right: what the booking costs today, across every billable room. " +
+                  "Equal means the invoice is still correct and safe to approve or send. Different " +
+                  "means the booking moved after invoicing — check what changed before approving, and " +
+                  "issue a credit note or a new invoice if the agent is owed a different amount."
+                }
+              />
+            </span>
+          }
+          summary={formatMoney(invoice.total, invoice.currency)}
+        >
+        {invoice.review_notes.length > 0 && !loading && !error && liveTotal !== null && (
+          <div className="rounded-lg border border-ink/10 bg-sand/40 p-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-slate/70">
+                Was: <strong className="text-ink">{formatMoney(invoice.total, invoice.currency)}</strong>{" "}
+                <span className="text-slate/50">(frozen {formatDate(invoice.issue_date)})</span>
+              </span>
+              <span className="text-slate/40">→</span>
+              <span className="text-slate/70">
+                Now: <strong className="text-ink">{formatMoney(liveTotal, invoice.currency)}</strong>{" "}
+                <span className="text-slate/50">(current)</span>
+              </span>
+            </div>
+            <div className="mt-1">
+              {Math.abs(liveTotal - invoice.total) <= 0.01 ? (
+                <span className="text-slate/50">No change in amount</span>
+              ) : (
+                <span className={liveTotal > invoice.total ? "font-medium text-coral" : "font-medium text-teal"}>
+                  Difference: {liveTotal > invoice.total ? "+" : ""}
+                  {formatMoney(liveTotal - invoice.total, invoice.currency)}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {loading && <p className="mt-6 text-center text-sm text-slate/60">Loading...</p>}
+        {error && <p className="mt-6 text-center text-sm text-red-600">Error: {error}</p>}
+
+        {!loading && !error && booking && (
+          <>
+            {/* Decision 192: room type, dates and guests here come from the
+                parent Booking row, which on a multi-room application holds
+                the FIRST room's values -- so they describe one room while
+                reading like the whole booking. Not recomputed (the per-room
+                truth is in section 2, one click away); said out loud
+                instead, which is the part that was missing. */}
+            {summary && summary.billable_rooms > 1 && (
+              <p className="mt-2 rounded-lg bg-sand/60 px-3 py-1.5 text-xs text-slate/70">
+                This booking has {summary.billable_rooms} rooms. The details below describe room 1 only —
+                see <strong className="text-ink">Incoming &amp; outgoing</strong> for every room.
+              </p>
+            )}
+            <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-slate/70">
+              <span>Booking: <strong className="text-ink">{booking.booking_number}</strong></span>
+              <span>Room type: <strong className="text-ink">{roomTypeName}</strong></span>
+              <span>
+                Dates: <strong className="text-ink">{formatDate(booking.arrival_date)} — {formatDate(booking.departure_date)} ({booking.nights} night{booking.nights === 1 ? "" : "s"})</strong>
+              </span>
+              <span>Meal plan: <strong className="text-ink">{mealPlanLabel}</strong></span>
+              <span>Guests: <strong className="text-ink">{booking.adults} adult{booking.adults === 1 ? "" : "s"} / {booking.children} child{booking.children === 1 ? "" : "ren"} / {booking.infants} infant{booking.infants === 1 ? "" : "s"}</strong></span>
+            </div>
+
+            {/* Decision 182: like for like. The two columns used to be built
+                on different bases and stacked as if they were addends -- the
+                right one listed "Base rate (net)", "Supplements", "Discount",
+                "Commission", "Profit", then a Total that none of them added
+                up to. On BK-000025 it read 1,509 + 828 + 72 above a total of
+                1,684.50, because the base rate is a contract-side net figure
+                and the total is the agent's price.
+
+                Both sides now carry the SAME three agent-facing rows and both
+                add up: what the invoice froze, and what the booking says now.
+                Cost, commission and profit are gone from here -- an invoice is
+                what the agent pays; our margin belongs in the booking's
+                commercial breakdown, not inside the document. */}
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div className="rounded-xl border border-ink/10 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Frozen in invoice — what the agent was billed</p>
+                {frozenLines ? (
+                  <div className="mt-2 space-y-1 text-sm">
+                    <div className="flex justify-between"><span className="text-slate/60">Accommodation</span><span className="text-ink">{formatMoney(frozenLines.room, invoice.currency)}</span></div>
+                    <div className="flex justify-between"><span className="text-slate/60">Transfer</span><span className="text-ink">{formatMoney(frozenLines.transfer, invoice.currency)}</span></div>
+                    <div className="flex justify-between"><span className="text-slate/60">Mandatory tax</span><span className="text-ink">{formatMoney(frozenLines.tax, invoice.currency)}</span></div>
+                    <div className="flex justify-between border-t border-ink/10 pt-1 font-medium"><span className="text-ink">Total</span><span className="text-ink">{formatMoney(invoice.total, invoice.currency)}</span></div>
+                  </div>
+                ) : (
+                  /* Invoices issued before per-room lines were frozen (43 of
+                     53 today) never recorded the split. Showing the total
+                     alone is honest; inventing a split from the aggregate
+                     columns would be a guess presented as a record. */
+                  <div className="mt-2 space-y-1 text-sm">
+                    <div className="flex justify-between border-t border-ink/10 pt-1 font-medium"><span className="text-ink">Total</span><span className="text-ink">{formatMoney(invoice.total, invoice.currency)}</span></div>
+                    <p className="pt-1 text-xs text-slate/50">
+                      Issued before the per-line split was recorded — only the total was frozen.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className={`rounded-xl border p-3 ${mismatch ? "border-coral/40 bg-coral/5" : "border-ink/10"}`}>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Booking now — all rooms</p>
+                {changeHighlights.map((h, i) => (
+                  <div key={i} className="mt-2 rounded-lg bg-coral/10 px-2 py-1.5 text-sm font-medium text-coral">
+                    {h.label}: {h.newValue}{" "}
+                    <span className="font-normal text-coral/70">(was: {h.oldValue}, {h.delta})</span>
+                  </div>
+                ))}
+                {currentLines ? (
+                  <div className="mt-2 space-y-1 text-sm">
+                    <div className="flex justify-between"><span className="text-slate/60">Accommodation</span><span className="text-ink">{formatMoney(currentLines.room, currentLines.currency)}</span></div>
+                    <div className="flex justify-between"><span className="text-slate/60">Transfer</span><span className="text-ink">{formatMoney(currentLines.transfer, currentLines.currency)}</span></div>
+                    <div className="flex justify-between"><span className="text-slate/60">Mandatory tax</span><span className="text-ink">{formatMoney(currentLines.tax, currentLines.currency)}</span></div>
+                    <div className="flex justify-between border-t border-ink/10 pt-1 font-medium"><span className="text-ink">Total now</span><span className="text-ink">{formatMoney(currentLines.total, currentLines.currency)}</span></div>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm text-slate/50">Loading…</p>
+                )}
+              </div>
+            </div>
+
+            {/* Decision 192: it now says so either way. Silence on the good
+                case is what made the warning unreadable -- there was no
+                "checked and fine" state to contrast it against. */}
+            {liveTotal !== null && (
+              mismatch ? (
+                <div className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-sm font-medium text-coral">
+                  ⚠ The booking has changed since this invoice was issued: it now costs{" "}
+                  {formatMoney(liveTotal, invoice.currency)} against the invoice's{" "}
+                  {formatMoney(invoice.total, invoice.currency)} ({liveTotal > invoice.total ? "+" : ""}
+                  {formatMoney(liveTotal - invoice.total, invoice.currency)}). Review before approving.
+                </div>
+              ) : (
+                <div className="mt-3 rounded-lg bg-success/10 px-3 py-2 text-sm font-medium text-success">
+                  ✓ The invoice still matches the booking — {formatMoney(invoice.total, invoice.currency)}.
+                </div>
+              )
+            )}
+          </>
+        )}
+        </SectionCard>
+        </div>
+        {/* Section 2: the two sides of the money, each per room. */}
+        <div className="mt-2">
+        <SectionCard
+          sectionKey="sides"
+          number={2}
+          openSection={openSection}
+          onToggleSection={toggleSection}
+          title="Incoming & outgoing"
+          summary={
+            summary
+              ? `${formatMoney(summary.net_total, summary.currency)} → ${formatMoney(summary.sale_total, summary.currency)}`
+              : "…"
+          }
+        >
+          {summary ? (
+            <SideBySide
+              bookingId={invoice.booking_id}
+              summary={summary}
+              onReload={() => setSummaryReload((n) => n + 1)}
+            />
+          ) : (
+            <p className="text-sm text-slate/50">Loading…</p>
           )}
-          {invoice.voided_by !== null && invoice.voided_at && (
-            <p>Voided: {actorNames[invoice.voided_by] ?? `#${invoice.voided_by}`}, {formatDate(invoice.voided_at)}</p>
-          )}
+        </SectionCard>
         </div>
 
+        {/* Section 3: the change history. Auto-opens while it is still
+            unreviewed, since that is the one case where it is the reason the
+            invoice was opened at all. */}
         {invoice.review_notes.length > 0 && (
+        <div className="mt-2">
+        <SectionCard
+          sectionKey="changes"
+          number={3}
+          openSection={isUrgentFlag(invoice) && openSection === "amounts" ? "changes" : openSection}
+          onToggleSection={toggleSection}
+          title="Changes since this invoice"
+          summary={`${invoice.review_notes.length} note${invoice.review_notes.length === 1 ? "" : "s"}`}
+        >
+        {(
           isUrgentFlag(invoice) ? (
             <div className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-sm font-medium text-coral">
               <div className="space-y-1.5">
@@ -742,95 +1418,38 @@ export function InvoiceDetailModal({
             </div>
           )
         )}
-
-        {invoice.review_notes.length > 0 && !loading && !error && liveTotal !== null && (
-          <div className="mt-3 rounded-lg border border-ink/10 bg-sand/40 p-3 text-sm">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-slate/70">
-                Was: <strong className="text-ink">{formatMoney(invoice.total, invoice.currency)}</strong>{" "}
-                <span className="text-slate/50">(frozen {formatDate(invoice.issue_date)})</span>
-              </span>
-              <span className="text-slate/40">→</span>
-              <span className="text-slate/70">
-                Now: <strong className="text-ink">{formatMoney(liveTotal, invoice.currency)}</strong>{" "}
-                <span className="text-slate/50">(current)</span>
-              </span>
-            </div>
-            <div className="mt-1">
-              {Math.abs(liveTotal - invoice.total) <= 0.01 ? (
-                <span className="text-slate/50">No change in amount</span>
-              ) : (
-                <span className={liveTotal > invoice.total ? "font-medium text-coral" : "font-medium text-teal"}>
-                  Difference: {liveTotal > invoice.total ? "+" : ""}
-                  {formatMoney(liveTotal - invoice.total, invoice.currency)}
-                </span>
-              )}
-            </div>
-          </div>
+        </SectionCard>
+        </div>
         )}
 
-        {loading && <p className="mt-6 text-center text-sm text-slate/60">Loading...</p>}
-        {error && <p className="mt-6 text-center text-sm text-red-600">Error: {error}</p>}
+        {/* Section 4: who did what, when. Collapsed by default -- it is the
+            answer to "who approved this", not something to read every time. */}
+        <div className="mt-3">
+        <SectionCard
+          sectionKey="audit"
+          number={4}
+          openSection={openSection}
+          onToggleSection={toggleSection}
+          title="Audit trail"
+          summary={invoice.approved_at ? "approved" : invoice.voided_at ? "voided" : "created"}
+        >
+        <div className="space-y-0.5 text-xs text-slate/50">
+          {/* Decision 182: created_at, not issue_date. Showing the issue
+              date under the word "Created" made INV-5E0847DAC701 read
+              "Created 7/20, Approved 7/19" -- approved before it existed.
+              It was created 19.07 19:09:12 and approved 24 seconds later. */}
+          <p>Created: {actorNames[invoice.created_by] ?? `#${invoice.created_by}`}, {invoice.created_at ? formatDateTime(invoice.created_at) : formatDate(invoice.issue_date)}</p>
+          {invoice.approved_by !== null && invoice.approved_at && (
+            <p>Approved: {actorNames[invoice.approved_by] ?? `#${invoice.approved_by}`}, {formatDateTime(invoice.approved_at)}</p>
+          )}
+          {invoice.voided_by !== null && invoice.voided_at && (
+            <p>Voided: {actorNames[invoice.voided_by] ?? `#${invoice.voided_by}`}, {formatDate(invoice.voided_at)}</p>
+          )}
+        </div>
+        </SectionCard>
+        </div>
+        </div>
 
-        {!loading && !error && booking && (
-          <>
-            <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-slate/70">
-              <span>Booking: <strong className="text-ink">{booking.booking_number}</strong></span>
-              <span>Room type: <strong className="text-ink">{roomTypeName}</strong></span>
-              <span>
-                Dates: <strong className="text-ink">{formatDate(booking.arrival_date)} — {formatDate(booking.departure_date)} ({booking.nights} night{booking.nights === 1 ? "" : "s"})</strong>
-              </span>
-              <span>Meal plan: <strong className="text-ink">{mealPlanLabel}</strong></span>
-              <span>Guests: <strong className="text-ink">{booking.adults} adult{booking.adults === 1 ? "" : "s"} / {booking.children} child{booking.children === 1 ? "" : "ren"} / {booking.infants} infant{booking.infants === 1 ? "" : "s"}</strong></span>
-            </div>
-
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <div className="rounded-xl border border-ink/10 p-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Frozen in invoice</p>
-                <div className="mt-2 space-y-1 text-sm">
-                  <div className="flex justify-between"><span className="text-slate/60">Room amount (net+transfer)</span><span className="text-ink">{formatMoney(invoice.subtotal, invoice.currency)}</span></div>
-                  <div className="flex justify-between"><span className="text-slate/60">Discount</span><span className="text-ink">{invoice.discount !== null ? formatMoney(invoice.discount, invoice.currency) : "—"}</span></div>
-                  <div className="flex justify-between"><span className="text-slate/60">Commission</span><span className="text-ink">{invoice.commission !== null ? formatMoney(invoice.commission, invoice.currency) : "—"}</span></div>
-                  <div className="flex justify-between"><span className="text-slate/60">Profit</span><span className="text-ink">{frozenProfit !== null ? formatMoney(frozenProfit, invoice.currency) : "—"}</span></div>
-                  <div className="flex justify-between"><span className="text-slate/60">Tax</span><span className="text-ink">{invoice.tax !== null ? formatMoney(invoice.tax, invoice.currency) : "—"}</span></div>
-                  <div className="flex justify-between border-t border-ink/10 pt-1 font-medium"><span className="text-ink">Total</span><span className="text-ink">{formatMoney(invoice.total, invoice.currency)}</span></div>
-                </div>
-              </div>
-
-              <div className={`rounded-xl border p-3 ${mismatch ? "border-coral/40 bg-coral/5" : "border-ink/10"}`}>
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate/50">Current booking state</p>
-                {changeHighlights.map((h, i) => (
-                  <div key={i} className="mt-2 rounded-lg bg-coral/10 px-2 py-1.5 text-sm font-medium text-coral">
-                    {h.label}: {h.newValue}{" "}
-                    <span className="font-normal text-coral/70">(was: {h.oldValue}, {h.delta})</span>
-                  </div>
-                ))}
-                {roomBreakdown && booking && (
-                  <div className="mt-2 space-y-1 text-sm">
-                    <div className="flex justify-between"><span className="text-slate/60">Base rate (net)</span><span className="text-ink">{formatMoney(roomBreakdown.base_total, roomBreakdown.currency)}</span></div>
-                    <div className="flex justify-between"><span className="text-slate/60">Supplements</span><span className="text-ink">{formatMoney(roomBreakdown.supplements_total, roomBreakdown.currency)}</span></div>
-                    <div className="flex justify-between"><span className="text-slate/60">Discount</span><span className="text-ink">{booking.agent_exclusive_discount_amount !== null ? formatMoney(booking.agent_exclusive_discount_amount, booking.currency) : "—"}</span></div>
-                    <div className="flex justify-between"><span className="text-slate/60">Commission</span><span className="text-ink">{booking.agent_markup_amount !== null ? formatMoney(booking.agent_markup_amount, booking.currency) : "—"}</span></div>
-                    <div className="flex justify-between"><span className="text-slate/60">Profit</span><span className="text-ink">{liveFinancials && liveFinancials.profit !== null ? formatMoney(liveFinancials.profit, booking.currency) : "—"}</span></div>
-                    {transferBreakdown && (
-                      <div className="flex justify-between"><span className="text-slate/60">Transfer ({transferBreakdown.transfer_name})</span><span className="text-ink">{formatMoney(transferBreakdown.total, transferBreakdown.currency)}</span></div>
-                    )}
-                    {taxBreakdown && (
-                      <div className="flex justify-between"><span className="text-slate/60">{taxBreakdown.label || "Tax"}</span><span className="text-ink">{formatMoney(taxBreakdown.total, taxBreakdown.currency)}</span></div>
-                    )}
-                    <div className="flex justify-between border-t border-ink/10 pt-1 font-medium"><span className="text-ink">Total now</span><span className="text-ink">{liveTotal !== null ? formatMoney(liveTotal, booking.currency) : "—"}</span></div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {mismatch && (
-              <div className="mt-3 rounded-lg bg-coral/10 px-3 py-2 text-sm font-medium text-coral">
-                ⚠ The booking's current price differs from what's frozen in the invoice — review before approving.
-              </div>
-            )}
-          </>
-        )}
       </div>
     </div>
   );

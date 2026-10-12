@@ -33,6 +33,17 @@ const COLLAPSE_KEY = "admin_sidebar_collapsed";
 // means leaving that section entirely.
 // ---------------------------------------------------------------------------
 
+// Decision 187: the nav's own label for a key, so a tab and the sidebar item
+// that opened it can never say different things.
+export function navLabelFor(tab: string): string {
+  for (const item of NAV_STRUCTURE) {
+    if (item.key === tab) return item.label;
+    const child = item.children?.find((c) => c.key === tab);
+    if (child) return child.label;
+  }
+  return tab;
+}
+
 function findParentGroupKey(tab: string): string | null {
   for (const item of NAV_STRUCTURE) {
     if (item.children?.some((c) => c.key === tab)) return item.key;
@@ -62,9 +73,22 @@ interface AdminShellProps {
   userLabel: string;
   onLogout: () => void;
   children: ReactNode;
+  // Decision 187: the pages currently open, in the order they were opened.
+  // Picking a nav item no longer replaces what you were looking at -- it
+  // opens alongside it, and you switch between them here.
+  openTabs?: string[];
+  onCloseTab?: (key: string) => void;
 }
 
-export default function AdminShell({ activeTab, onSelect, userLabel, onLogout, children }: AdminShellProps) {
+export default function AdminShell({
+  activeTab,
+  onSelect,
+  userLabel,
+  onLogout,
+  children,
+  openTabs = [],
+  onCloseTab,
+}: AdminShellProps) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSE_KEY) === "true");
   // Whichever group's children currently contain the active tab starts
   // open (so loading straight into e.g. "Arrival" doesn't hide the very
@@ -106,10 +130,14 @@ export default function AdminShell({ activeTab, onSelect, userLabel, onLogout, c
                 <button
                   key={item.key}
                   type="button"
-                  onClick={() => {
-                    onSelect(item.key);
-                    setOpenGroup(null);
-                  }}
+                  // Decision 187: the open group STAYS open. It used to close
+                  // whenever you navigated to a top-level page, on the theory
+                  // that leaving the section means leaving it entirely -- but
+                  // with pages now living side by side as tabs, going to
+                  // Invoices and back to Bookings should not have collapsed
+                  // the Bookings group in between. Owner: "не надо закрывать
+                  // booking menu, пусть он будет открыт".
+                  onClick={() => onSelect(item.key)}
                   className={navItemClass(isActive)}
                 >
                   {item.label}
@@ -180,6 +208,49 @@ export default function AdminShell({ activeTab, onSelect, userLabel, onLogout, c
                 rather than building a mobile drawer nobody asked for yet. */}
             <span className="font-display text-base text-ink md:hidden">DMC OS</span>
             <span className="hidden text-sm text-slate/50 md:inline">Admin</span>
+
+            {/* Decision 187: the pages you have open. Picking Invoices while
+                Bookings is open no longer throws Bookings away -- both stay
+                here and you switch between them, each closable with its own
+                ×. The nav's own labels are reused (navLabelFor), so a tab and
+                the sidebar item that opened it cannot say different things. */}
+            {openTabs.length > 1 && (
+              <div className="hidden items-center gap-1 overflow-x-auto md:flex">
+                {openTabs.map((key) => {
+                  const active = key === activeTab;
+                  return (
+                    <span
+                      key={key}
+                      className={`inline-flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                        active
+                          ? "border-ink/20 bg-ink text-white"
+                          : "border-ink/15 bg-white text-slate/70 hover:bg-sand"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => onSelect(key)}
+                        className="appearance-none border-0 bg-transparent p-0 text-inherit"
+                      >
+                        {navLabelFor(key)}
+                      </button>
+                      {onCloseTab && (
+                        <button
+                          type="button"
+                          aria-label={`Close ${navLabelFor(key)}`}
+                          onClick={() => onCloseTab(key)}
+                          className={`appearance-none border-0 bg-transparent p-0 leading-none ${
+                            active ? "text-white/60 hover:text-white" : "text-slate/40 hover:text-ink"
+                          }`}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-3">
             <span className="text-sm text-ink">{userLabel}</span>
@@ -189,9 +260,14 @@ export default function AdminShell({ activeTab, onSelect, userLabel, onLogout, c
           </div>
         </header>
 
-        <main className="flex-1 px-5 py-4">
-          <div className="mx-auto max-w-[1400px]">{children}</div>
-        </main>
+        {/* Full width. The 1400px cap was fine for forms and short lists, but
+            the bookings list carries 14+ columns and was being squeezed into
+            the middle of the screen with empty margins on both sides while
+            its own cells wrapped -- the manager's own report. Nothing here
+            reads as prose, so there is no line-length argument for the cap;
+            every child is a table, a card grid or a toolbar, all of which use
+            whatever width they are given. */}
+        <main className="flex-1 px-5 py-4">{children}</main>
       </div>
     </div>
   );

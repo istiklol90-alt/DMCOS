@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { API_URL } from "../config";
+import { handleSessionExpired } from "../session";
 
 // ---------------------------------------------------------------------------
 // Types (only the fields this screen actually reads)
@@ -57,6 +58,13 @@ async function fetchJson<T>(path: string, token: string, init?: RequestInit): Pr
       ...init?.headers,
     },
   });
+  // A 30-minute token simply expires while a tab sits open; every request
+  // then fails with 401 "Invalid token". Handled once, centrally, instead of
+  // each panel rendering that raw string or hanging on a spinner forever.
+  if (response.status === 401) {
+    handleSessionExpired();
+    throw new Error("Session expired");
+  }
   if (!response.ok) {
     let detail = `Request error (${response.status})`;
     try {

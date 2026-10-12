@@ -64,6 +64,31 @@ const AdminPanel = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [filterType, setFilterType] = useState("all");
   const [activeTab, setActiveTab] = useState<AdminTab>("users");
+  // Decision 187: which pages are open, oldest first. Selecting a nav item
+  // adds it rather than replacing what you were on, so switching to Invoices
+  // to check something and coming back to Bookings is two clicks, not a
+  // reload of a screen you had already filtered.
+  const [openTabs, setOpenTabs] = useState<AdminTab[]>(["users"]);
+
+  function openTab(key: AdminTab) {
+    setActiveTab(key);
+    setOpenTabs((tabs) => (tabs.includes(key) ? tabs : [...tabs, key]));
+  }
+
+  function closeTab(key: AdminTab) {
+    setOpenTabs((tabs) => {
+      const next = tabs.filter((t) => t !== key);
+      // Closing the page you are looking at has to land you somewhere: the
+      // one to its left, or the first remaining. Never an empty screen --
+      // if it was the last tab it simply stays open.
+      if (next.length === 0) return tabs;
+      if (key === activeTab) {
+        const i = tabs.indexOf(key);
+        setActiveTab(next[Math.max(0, i - 1)]);
+      }
+      return next;
+    });
+  }
 
   const loadData = async () => {
     try {
@@ -196,7 +221,9 @@ const AdminPanel = () => {
     <I18nextProvider i18n={adminI18n}>
       <AdminShell
         activeTab={activeTab}
-        onSelect={(key) => setActiveTab(key as AdminTab)}
+        onSelect={(key) => openTab(key as AdminTab)}
+        openTabs={openTabs}
+        onCloseTab={(key) => closeTab(key as AdminTab)}
         userLabel={userLabel}
         onLogout={handleLogout}
       >

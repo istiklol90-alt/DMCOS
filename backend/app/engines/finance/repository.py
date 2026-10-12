@@ -2,11 +2,13 @@ from datetime import date, datetime
 from typing import Optional
 import uuid
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from database.db import SessionLocal
+from app.engines.booking.models import Booking
 from app.engines.finance.models import (
+    HotelPriceConfirmation,
     Invoice,
     InvoiceReviewNote,
     InvoiceRoomLine,
@@ -42,8 +44,142 @@ def get_invoice_by_booking(db: Session, booking_id: int) -> Optional[Invoice]:
     return db.query(Invoice).filter(Invoice.booking_id == booking_id).first()
 
 
-def list_invoices(db: Session) -> list[Invoice]:
-    return db.query(Invoice).all()
+def _apply_invoice_filters(
+    db, query, status=None, agent_id=None, booking_id=None, search=None, date_from=None, date_to=None
+):
+    """
+    Decision 182: one filter definition, shared by the page query and the
+    count. Decision 152 established the rule after the Bookings list shipped
+    a count and a page built from two different predicates -- a screen that
+    says "1-50 of N" is lying the moment those drift apart.
+
+    Decision 183: date-scoped, with **Drafts carried forward**. At 100
+    invoices a day an all-time list is unreadable within a fortnight, so the
+    screen opens on a date range like the Bookings list does. But a Draft is
+    money that has not been sent to anybody -- dropping out of view because
+    it was raised last Tuesday is exactly how it stays unsent. So while an
+    invoice is still Draft it appears in any range that contains today,
+    whenever it was raised; the moment it is approved it returns to its own
+    issue date and stops floating. Same rule, same reasoning as Decision
+    164's unclaimed bookings.
+    """
+    # Decision 189: a search ignores the date scope. Typing "80" while the
+    # screen sat on today returned nothing -- BK-000080's invoice was issued
+    # on the 16th and is Issued, so it neither falls in today's range nor
+    # carries forward. A search box that silently only searches the current
+    # window is worse than no search box: it answers "not found" for
+    # something that exists.
+    #
+    # Applied HERE, in the shared helper, rather than by having the caller
+    # omit the dates -- the page and the count are two separate requests, and
+    # one of them forgetting is exactly how "1-25 of 0" happens. The bookings
+    # list solved the same gap caller-side (Decision 152); this is the same
+    # rule enforced where it cannot be got wrong.
+    if search:
+        date_from = date_to = None
+
+    if date_from is not None and date_to is not None:
+        in_range = and_(Invoice.issue_date >= date_from, Invoice.issue_date <= date_to)
+        today = date.today()
+        if date_from <= today <= date_to:
+            # Decision 186: two kinds of invoice refuse to leave today's
+            # list -- a Draft (money nobody has been sent) and one whose
+            # booking has changed and nobody has looked (money that may be
+            # wrong). Those are exactly the two the old separate "Needs
+            # attention" panel existed to surface, so with them carried
+            # forward the panel has nothing left to say that this list
+            # doesn't. Same urgency source as everywhere else
+            # (list_urgent_booking_ids), never a second computation.
+            urgent_ids = list_urgent_booking_ids(db)
+            needs_attention = and_(
+                Invoice.status != "Void", Invoice.booking_id.in_(urgent_ids)
+            ) if urgent_ids else False
+            query = query.filter(
+                or_(in_range, Invoice.status == "Draft", needs_attention)
+                if urgent_ids
+                else or_(in_range, Invoice.status == "Draft")
+            )
+        else:
+            # A historical window must still answer "what was issued that
+            # week", not have today's unsent backlog float into it.
+            query = query.filter(in_range)
+    if status:
+        query = query.filter(Invoice.status == status)
+    if agent_id is not None:
+        query = query.filter(Invoice.agent_id == agent_id)
+    if booking_id is not None:
+        query = query.filter(Invoice.booking_id == booking_id)
+    if search:
+        # Decision 185: one box, both numbers. The screen used to carry a
+        # separate "By booking number" search in its own section at the
+        # bottom; a person looking for a booking's invoice should not have to
+        # know which of two fields to type it into. Matched by subquery so
+        # this stays one SQL statement -- the filter is shared with the count,
+        # and a second round trip would be a second chance to disagree.
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                Invoice.invoice_number.ilike(term),
+                Invoice.booking_id.in_(
+                    select(Booking.id).where(Booking.booking_number.ilike(term))
+                ),
+            )
+        )
+    return query
+
+
+_INVOICE_SORTS = {
+    "issue_date": Invoice.issue_date,
+    "total": Invoice.total,
+    "status": Invoice.status,
+    "invoice_number": Invoice.invoice_number,
+}
+
+
+def list_invoices(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    status: Optional[str] = None,
+    agent_id: Optional[int] = None,
+    booking_id: Optional[int] = None,
+    search: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
+) -> list[Invoice]:
+    """
+    Decision 182: filtered, sorted and paginated on the SERVER. It used to
+    be `db.query(Invoice).all()` in no order at all -- fine at 53 rows,
+    not at the 100-bookings-a-day this admin panel is built for, and the
+    unordered result meant "the newest invoice" had no defined position.
+
+    Every argument defaults to the previous behaviour, so nothing that
+    already called this changes.
+    """
+    query = _apply_invoice_filters(
+        db, db.query(Invoice), status, agent_id, booking_id, search, date_from, date_to
+    )
+    column = _INVOICE_SORTS.get(sort_by or "", Invoice.created_at)
+    query = query.order_by(column.asc() if (sort_dir or "desc") == "asc" else column.desc())
+    return query.offset(skip).limit(limit).all()
+
+
+def count_invoices(
+    db: Session,
+    status: Optional[str] = None,
+    agent_id: Optional[int] = None,
+    booking_id: Optional[int] = None,
+    search: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> int:
+    """How many match, ignoring pagination -- from the same helper the page
+    itself uses."""
+    return _apply_invoice_filters(
+        db, db.query(Invoice), status, agent_id, booking_id, search, date_from, date_to
+    ).count()
 
 
 def list_invoices_by_agent(db: Session, agent_id: int) -> list[Invoice]:
@@ -465,3 +601,39 @@ def update_commercial_line(db: Session, line: BookingCommercialLine, **fields) -
     db.commit()
     db.refresh(line)
     return line
+
+
+# ---------------------------------------------------------------------------
+# HotelPriceConfirmation (Decision 190) -- one row per room, upserted.
+# ---------------------------------------------------------------------------
+
+def get_hotel_confirmation(db: Session, booking_id: int):
+    return (
+        db.query(HotelPriceConfirmation)
+        .filter(HotelPriceConfirmation.booking_id == booking_id)
+        .first()
+    )
+
+
+def upsert_hotel_confirmation(
+    db: Session,
+    booking_id: int,
+    confirmed_amount: float,
+    currency: str,
+    hotel_reference,
+    note,
+    confirmed_by: int,
+) -> HotelPriceConfirmation:
+    row = get_hotel_confirmation(db, booking_id)
+    if row is None:
+        row = HotelPriceConfirmation(booking_id=booking_id)
+        db.add(row)
+    row.confirmed_amount = confirmed_amount
+    row.currency = currency
+    row.hotel_reference = hotel_reference
+    row.note = note
+    row.confirmed_by = confirmed_by
+    row.confirmed_at = datetime.utcnow()
+    db.commit()
+    db.refresh(row)
+    return row

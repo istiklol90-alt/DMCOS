@@ -32,6 +32,9 @@ from app.engines.finance.schemas import (
     VoucherResponse,
     BookingCommercialLineResponse,
     BookingCommercialLineUpsert,
+    HotelPriceConfirmationUpsert,
+    BookingCommercialSummaryResponse,
+    BookingPriceBreakdownResponse,
     BookingListFinancialsResponse,
 )
 
@@ -114,9 +117,50 @@ def create_invoice(booking_id: int, db: Session = Depends(get_db), current_user=
 
 
 @router.get("/invoices", response_model=list[InvoiceResponse])
-def get_all_invoices(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+def get_all_invoices(
+    skip: int = 0,
+    limit: int = 50,
+    status: str | None = None,
+    agent_id: int | None = None,
+    booking_id: int | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Decision 182: filtered/sorted/paginated server-side. All arguments
+    optional; omitting them returns the newest page, which is what the
+    unordered `.all()` this replaces never guaranteed."""
     _require_admin(current_user)
-    return service.list_invoices(db)
+    return service.list_invoices(
+        db, skip=skip, limit=limit, status=status, agent_id=agent_id,
+        booking_id=booking_id, search=search, date_from=date_from, date_to=date_to,
+        sort_by=sort_by, sort_dir=sort_dir,
+    )
+
+
+@router.get("/invoices/count")
+def get_invoices_count(
+    status: str | None = None,
+    agent_id: int | None = None,
+    booking_id: int | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """MUST stay declared before /invoices/{invoice_id} -- that parameter is
+    an int and FastAPI matches in declaration order, the same trap Decision
+    087 documented for /invoices/urgent."""
+    _require_admin(current_user)
+    return {"total": service.count_invoices(
+        db, status=status, agent_id=agent_id, booking_id=booking_id, search=search,
+        date_from=date_from, date_to=date_to,
+    )}
 
 
 @router.get("/invoices/urgent", response_model=list[InvoiceResponse])
@@ -166,6 +210,39 @@ def get_bookings_list_financials(
     booking_ids = [int(x) for x in ids.split(",") if x.strip()]
     result = service.compute_bookings_list_financials(db, booking_ids)
     return list(result.values())
+
+
+@router.get(
+    "/bookings/{booking_id}/commercial-summary",
+    response_model=BookingCommercialSummaryResponse,
+)
+def get_booking_commercial_summary(
+    booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """Whole-application cost/price per room and per category, plus the
+    grand total the agent booked at. Read-only -- unlike the per-room
+    /commercial-lines GET below, this never seeds rows (see the service
+    function's own docstring)."""
+    _require_admin(current_user)
+    return _run(lambda: service.get_booking_commercial_summary(db, booking_id))
+
+
+@router.get(
+    "/bookings/{booking_id}/price-breakdown",
+    response_model=BookingPriceBreakdownResponse,
+)
+def get_booking_price_breakdown(
+    booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    """Decision 181: the agent's own price, per room and per category.
+    Admin OR the booking's own agent -- the same boundary Decision 102
+    drew for the voucher/invoice downloads, and the reason this is a
+    separate endpoint from /commercial-summary rather than a flag on it:
+    that one carries our cost and margin, this one has no field for
+    them."""
+    booking = _run(lambda: booking_service.get_booking(db, booking_id))
+    _require_admin_or_owning_agent(current_user, booking)
+    return _run(lambda: service.get_booking_price_breakdown(db, booking_id))
 
 
 @router.get("/bookings/{booking_id}/invoice", response_model=InvoiceResponse)
@@ -556,6 +633,25 @@ def download_invoice(booking_id: int, db: Session = Depends(get_db), current_use
 # manual adjustment mechanism (see service.py's own section docstring).
 # Admin-only, same boundary as the rest of this router's money endpoints.
 # ---------------------------------------------------------------------------
+
+@router.put("/bookings/{booking_id}/hotel-confirmation")
+def put_hotel_confirmation(
+    booking_id: int,
+    data: HotelPriceConfirmationUpsert,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Decision 191: record what the hotel says this BOOKING costs us -- one
+    figure for the whole application, matching the single email the hotel
+    sends whether it covers 1 room or 8. Admin-only: this is our cost side."""
+    _require_admin(current_user)
+    return _run(
+        lambda: service.set_hotel_price_confirmation(
+            db, booking_id, data.confirmed_amount,
+            data.hotel_reference, data.note, current_user.id,
+        )
+    )
+
 
 @router.get(
     "/booking-rooms/{booking_room_id}/commercial-lines",

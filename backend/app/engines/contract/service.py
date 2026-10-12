@@ -60,6 +60,7 @@ from app.engines.contract.schemas import (
     ContractAgeCategoryCreate,
     ContractMealPlanCreate,
     ContractTransferOptionCreate,
+    ContractTransferOptionUpdate,
     RateCreate,
     RateUpdate,
     RateSupplementCreate,
@@ -95,6 +96,7 @@ from app.engines.contract.validators import (
     validate_rate_season_matches_contract,
     validate_allotment_capacity,
     validate_promotion_stacking,
+    validate_transfer_pricing_basis,
     apply_sequential_discounts,
 )
 
@@ -372,14 +374,70 @@ def update_contract_meal_plan(db: Session, meal_plan_id: int, **fields) -> Contr
 def create_contract_transfer_option(
     db: Session, data: ContractTransferOptionCreate
 ) -> ContractTransferOption:
-    """Add a transfer option to a contract. Raises ValueError if the contract doesn't exist."""
+    """Add a transfer option to a contract. Raises ValueError if the contract doesn't exist, or if the pricing basis and the prices supplied don't agree (Decision 196)."""
     _require_contract(db, data.contract_id)
+    validate_transfer_pricing_basis(data.pricing_basis, data.price_per_vehicle)
     return repository.create_contract_transfer_option(db, **data.model_dump())
 
 
 def list_contract_transfer_options(db: Session, contract_id: int) -> list[ContractTransferOption]:
     """Return every transfer option defined for one contract (any status)."""
     return repository.list_contract_transfer_options(db, contract_id)
+
+
+def _require_transfer_option(db: Session, option_id: int) -> ContractTransferOption:
+    option = repository.get_contract_transfer_option(db, option_id)
+    if option is None:
+        raise ValueError(f"Transfer option {option_id} does not exist")
+    return option
+
+
+def update_contract_transfer_option(
+    db: Session, option_id: int, data: ContractTransferOptionUpdate
+) -> ContractTransferOption:
+    """
+    Edit an existing transfer option (Decision 196).
+
+    Merged against the stored row before validating, so a partial edit is
+    judged on the real resulting state — the same discipline
+    validate_flight_dates already follows in Booking Engine.
+
+    The row is then normalised so it can never describe itself two ways at
+    once: a per_person option drops price_per_vehicle, and a per_vehicle
+    option zeroes the three per-person prices. Without this, switching an
+    option's basis in the admin panel would leave the old figures behind as
+    numbers nobody reads and nobody can explain a year later.
+    """
+    option = _require_transfer_option(db, option_id)
+    fields = data.model_dump(exclude_unset=True)
+
+    basis = fields.get("pricing_basis", option.pricing_basis)
+    if basis == "per_vehicle":
+        fields["price_adult"] = 0.0
+        fields["price_child"] = 0.0
+        fields["price_infant"] = None
+        price_per_vehicle = fields.get("price_per_vehicle", option.price_per_vehicle)
+    else:
+        fields["price_per_vehicle"] = None
+        price_per_vehicle = None
+    fields["pricing_basis"] = basis
+
+    validate_transfer_pricing_basis(basis, price_per_vehicle)
+    return repository.update_contract_transfer_option(db, option, **fields)
+
+
+def delete_contract_transfer_option(db: Session, option_id: int) -> None:
+    """
+    Remove a transfer option (Decision 196).
+
+    Deliberately a real delete rather than a status flip: the row carries no
+    history of its own, and a booking that used it already froze its own
+    transfer_total and transfer_type at booking time, so removing the option
+    cannot change what any existing booking was charged. Setting status to
+    something other than "Active" remains available through update for an
+    option a destination wants to keep on file but stop selling.
+    """
+    repository.delete_contract_transfer_option(db, _require_transfer_option(db, option_id))
 
 
 # ---------------------------------------------------------------------------
@@ -1234,11 +1292,37 @@ def get_meal_plans(db: Session, contract_id: int, room_type_id: int) -> list[Con
     return [mp for mp in all_meal_plans if mp.id in priced_ids]
 
 
-def get_transfer_options(db: Session, contract_id: int) -> list[ContractTransferOption]:
-    """Return every Active transfer option configured for this contract."""
-    return [
+def get_transfer_options(
+    db: Session,
+    contract_id: int,
+    guests: int | None = None,
+    adults: int | None = None,
+) -> list[ContractTransferOption]:
+    """
+    Return every Active transfer option configured for this contract.
+
+    Decision 197/198: pass `guests` (adults + children + infants) and/or
+    `adults` (guests aged 12+) to get only the options that can actually
+    carry that party. Both optional and defaulting to None, so every existing
+    caller keeps the full list it has always received.
+
+    A NULL limit on an option states "no limit" and is always included — it
+    is never read as zero. The two limits are independent: a sedan capped at
+    4 total and 2 adults excludes 3 adults on the adult limit alone, even
+    though 3 is under its total.
+    """
+    active = [
         o for o in repository.list_contract_transfer_options(db, contract_id) if o.status == "Active"
     ]
+
+    def fits(o: ContractTransferOption) -> bool:
+        if guests is not None and o.max_passengers is not None and o.max_passengers < guests:
+            return False
+        if adults is not None and o.max_adults is not None and o.max_adults < adults:
+            return False
+        return True
+
+    return [o for o in active if fits(o)]
 
 
 def get_transfer_price(
@@ -1253,10 +1337,21 @@ def get_transfer_price(
 ) -> dict:
     """
     Compute the one-time round-trip transfer cost for a specific
-    transfer_type on this contract: price_adult * adults + price_child *
-    children + (price_infant or 0) * infants. Not multiplied by nights —
+    transfer_type on this contract. Not multiplied by nights —
     unlike RateSupplement's per_person_per_night pattern, a transfer is a
-    single round-trip charge, not a recurring nightly one. Currency comes
+    single round-trip charge, not a recurring nightly one.
+
+    Decision 196: the arithmetic depends on the option's own pricing_basis.
+    "per_person" (every option that existed before Mauritius) is
+    price_adult * adults + price_child * children + (price_infant or 0) *
+    infants. "per_vehicle" is the flat price_per_vehicle, once — a road
+    transfer is sold by the car, not by the seat, so party size does not
+    enter it at all. **One option selected means one vehicle**: nothing here
+    consults a vehicle capacity, because no contract states one. A party too
+    large for one car is a real case this does not yet model — see Decision
+    196's "known gap".
+
+    Currency comes
     from the contract itself; ContractTransferOption has no currency column
     of its own, since nothing so far suggests a transfer needs a currency
     independent of its contract's.
@@ -1295,9 +1390,46 @@ def get_transfer_price(
         )
     option = options[0]
 
-    adult_total = option.price_adult * adults
-    child_total = option.price_child * children
-    infant_total = (option.price_infant or 0) * infants
+    # Decision 197: refuse an option that cannot carry the party. Checked
+    # here, not only in the UI, so a stale screen or a direct API call can
+    # never book six people into a four-seat car. Infants ARE counted --
+    # unlike Hotel Engine's max_occupancy, which excludes them, because a bed
+    # can be shared and a seat belt cannot. NULL means the contract states no
+    # limit (a seaplane), and is never treated as zero.
+    # Decision 198: two independent limits, both checked. A sedan seats four
+    # bodies but only two adult-sized ones, so 2+2 fits, 3 adults does not,
+    # and 1 adult + 3 children fits again.
+    label = option.transfer_name or option.transfer_type
+    if option.max_passengers is not None:
+        party = adults + children + infants
+        if party > option.max_passengers:
+            raise ValueError(
+                f"'{label}' carries up to {option.max_passengers} guests — "
+                f"this booking has {party}"
+            )
+    if option.max_adults is not None and adults > option.max_adults:
+        raise ValueError(
+            f"'{label}' takes up to {option.max_adults} guests aged 12 or over — "
+            f"this booking has {adults}"
+        )
+
+    # Decision 196: a per_vehicle option is one flat charge for the car, so
+    # the three per-person buckets are a real, computed 0.00 -- the party
+    # size genuinely does not enter the arithmetic. Kept as 0.00 rather than
+    # folding the fare into adult_total, because the frontend renders those
+    # buckets as "N adults x price" lines and a car's fare shown as an adult
+    # fare would be a false statement about how it was charged.
+    per_vehicle = option.pricing_basis == "per_vehicle"
+    if per_vehicle:
+        vehicle_total = option.price_per_vehicle or 0.0
+        adult_total = 0.0
+        child_total = 0.0
+        infant_total = 0.0
+    else:
+        vehicle_total = 0.0
+        adult_total = option.price_adult * adults
+        child_total = option.price_child * children
+        infant_total = (option.price_infant or 0) * infants
 
     nights = (check_out - check_in).days
     transfer_discount = _find_active_special_offer_transfer_discount(
@@ -1311,12 +1443,20 @@ def get_transfer_price(
     # a single hardcoded behavior for all contracts).
     if transfer_discount is not None:
         factor = 1 - (transfer_discount.discount_percent / 100)
-        adult_total *= factor
-        if transfer_discount.applies_to_children:
-            child_total *= factor
-            infant_total *= factor
+        # A per_vehicle fare has no adult/child split for applies_to_children
+        # to divide, so the discount simply reduces the whole car fare. No
+        # real offer discounts a road transfer today; this is here so a
+        # per_vehicle row can never be silently exempt from a discount that
+        # a per_person row on the same contract would have honoured.
+        if per_vehicle:
+            vehicle_total *= factor
+        else:
+            adult_total *= factor
+            if transfer_discount.applies_to_children:
+                child_total *= factor
+                infant_total *= factor
 
-    total = adult_total + child_total + infant_total
+    total = vehicle_total + adult_total + child_total + infant_total
 
     return {
         "contract_id": contract_id,
@@ -1327,6 +1467,14 @@ def get_transfer_price(
         "price_adult": option.price_adult,
         "price_child": option.price_child,
         "price_infant": option.price_infant,
+        # Decision 196: how this fare was actually arrived at. A caller
+        # rendering a breakdown must branch on this rather than assume the
+        # per-person buckets tell the whole story -- on a per_vehicle option
+        # they are all a real 0.00 and vehicle_total carries the fare.
+        "pricing_basis": option.pricing_basis,
+        "price_per_vehicle": option.price_per_vehicle,
+        "vehicle_total": vehicle_total,
+        "max_passengers": option.max_passengers,
         # Decision 059: real post-discount subtotals per bucket -- the
         # frontend must use these directly, not reverse-engineer a
         # discount factor from `total` (that reconstruction assumed a

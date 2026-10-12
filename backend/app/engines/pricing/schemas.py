@@ -17,6 +17,9 @@ class PricingSettingsResponse(BaseModel):
 
 class PricingSettingsUpdate(BaseModel):
     standard_markup_amount_per_night: float
+    # Decision 193: which currency's markup this sets. Defaults to USD so
+    # the existing caller keeps working unchanged.
+    currency: str = "USD"
 
 
 class AgentSummary(BaseModel):
@@ -92,6 +95,35 @@ class AgentPriceResponse(BaseModel):
     markup_amount_per_night: float
     markup_amount: float
     agent_room_total: float
+
+
+class DateScanResultResponse(BaseModel):
+    """
+    Decision 149: one row per (hotel, candidate check-in date) scanned,
+    carrying the cheapest bookable room-type/meal-plan combination for that
+    stay. min_total is the agent-facing ROOM total only -- transfer and
+    mandatory tax are excluded by design (see service.scan_dates).
+
+    min_total/room_type_id/... are all None when nothing could be priced
+    for that date; unavailable_reason then carries a machine-readable code
+    ("no_active_contract" / "no_priceable_rooms") for the frontend to
+    translate, never a ready-made sentence.
+    """
+    hotel_id: int
+    hotel_name: str
+    check_in: date
+    check_out: date
+    nights: int
+    contract_id: Optional[int] = None
+    currency: Optional[str] = None
+    min_total: Optional[float] = None
+    room_type_id: Optional[int] = None
+    room_name: Optional[str] = None
+    meal_code: Optional[str] = None
+    meal_name: Optional[str] = None
+    available: Optional[bool] = None
+    combinations_priced: int
+    unavailable_reason: Optional[str] = None
 
 
 class NightlyPriceResponse(BaseModel):

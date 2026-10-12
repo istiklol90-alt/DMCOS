@@ -62,6 +62,7 @@ from app.engines.booking.validators import (
     validate_nights_consistency,
     validate_occupancy,
     validate_can_approve_or_reject_room,
+    validate_flight_dates,
     TERMINAL_STATUSES,
 )
 
@@ -75,6 +76,7 @@ from app.engines.contract import service as contract_service
 from app.engines.pricing import service as pricing_service
 
 from models.user import User
+from services import email_service
 
 
 # ---------------------------------------------------------------------------
@@ -303,8 +305,13 @@ def create_booking(db: Session, data: BookingCreate) -> Booking:
 
 
 def get_booking(db: Session, booking_id: int) -> Booking:
-    """Fetch one booking by id, or raise ValueError if it doesn't exist."""
-    return _require_booking(db, booking_id)
+    """Fetch one booking by id, or raise ValueError if it doesn't exist.
+
+    Decision 178: stamped with application_total, same as the list -- the
+    detail screen refetches this after every write, and a booking whose
+    price differed depending on which endpoint returned it would be the
+    same class of bug this decision exists to close."""
+    return attach_application_totals(db, [_require_booking(db, booking_id)])[0]
 
 
 def get_booking_by_number(db: Session, booking_number: str) -> Booking:
@@ -322,16 +329,112 @@ def list_bookings(
     created_from: date_type | None = None,
     created_to: date_type | None = None,
     search: str | None = None,
+    status: str | None = None,
+    hotel_id: int | None = None,
+    agent_id: int | None = None,
+    arrival_from: date_type | None = None,
+    arrival_to: date_type | None = None,
+    date_view: str | None = None,
+    date_from: date_type | None = None,
+    date_to: date_type | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
 ) -> list[Booking]:
-    """Return a page of bookings across all agents/hotels, optionally scoped to a created_at date range and/or a booking_number search."""
-    return repository.list_bookings(
-        db, skip=skip, limit=limit, created_from=created_from, created_to=created_to, search=search
+    """Return a page of bookings across all agents/hotels, optionally scoped
+    to a created_at date range, an arrival_date range, a status, a hotel,
+    and/or a booking_number search, in a chosen order (Decision 152).
+
+    Decision 178: each row is stamped with `application_total` -- see
+    attach_application_totals."""
+    bookings = repository.list_bookings(
+        db, skip=skip, limit=limit, created_from=created_from, created_to=created_to,
+        search=search, status=status, hotel_id=hotel_id, agent_id=agent_id,
+        arrival_from=arrival_from, arrival_to=arrival_to,
+        date_view=date_view, date_from=date_from, date_to=date_to,
+        sort_by=sort_by, sort_dir=sort_dir,
+    )
+    return attach_application_totals(db, bookings)
+
+
+# Room statuses that are not charged. Same set Finance Engine's own
+# _NON_BILLABLE_ROOM_STATUSES uses -- a room the agent is not paying for
+# must not be added into the price they are shown.
+_NON_BILLABLE_ROOM_STATUSES = {"Rejected", "Cancelled", "Cancellation Requested"}
+
+
+def attach_application_totals(db: Session, bookings: list[Booking]) -> list[Booking]:
+    """
+    Decision 178: stamp every booking with the price of the WHOLE
+    application -- each billable room's room + transfer + tax.
+
+    `Booking.total_amount` is the representative first room's figure (the
+    multi-room design's own convention), so any screen rendering it as
+    "the price" understates a multi-room booking. Measured on real data,
+    the Bookings list showed 1964.50 for BK-000080 while the agent pays
+    6700.50, and the same for five other multi-room bookings -- the
+    largest understated by 7442.00.
+
+    Set as a plain attribute on the ORM object, which Pydantic's
+    from_attributes picks up. **One bulk query for the whole page**, never
+    one per row -- the load-shape rule Decision 151 established.
+
+    A booking with no BookingRoom rows (one legacy row in this database)
+    gets its own frozen columns instead, so it is never left blank.
+    """
+    if not bookings:
+        return bookings
+    rooms_by_booking: dict[int, list] = {}
+    for room in repository.list_booking_rooms_bulk(db, [b.id for b in bookings]):
+        rooms_by_booking.setdefault(room.booking_id, []).append(room)
+
+    def money(row) -> float:
+        return (
+            (row.total_amount or 0.0)
+            + (row.transfer_total or 0.0)
+            + (row.mandatory_tax_total or 0.0)
+        )
+
+    for booking in bookings:
+        rooms = rooms_by_booking.get(booking.id)
+        if rooms is None:
+            booking.application_total = money(booking)
+            continue
+        billable = [r for r in rooms if r.status not in _NON_BILLABLE_ROOM_STATUSES]
+        # Every room rejected/cancelled -- nothing is owed, a real 0.0.
+        booking.application_total = sum(money(r) for r in billable)
+    return bookings
+
+
+def count_bookings(
+    db: Session,
+    created_from: date_type | None = None,
+    created_to: date_type | None = None,
+    search: str | None = None,
+    status: str | None = None,
+    hotel_id: int | None = None,
+    agent_id: int | None = None,
+    arrival_from: date_type | None = None,
+    arrival_to: date_type | None = None,
+    date_view: str | None = None,
+    date_from: date_type | None = None,
+    date_to: date_type | None = None,
+) -> int:
+    """Decision 152: how many bookings match the same filters, ignoring
+    pagination -- so a paginated screen can say "1-50 of N" truthfully
+    instead of silently hiding whatever fell past its limit."""
+    return repository.count_bookings(
+        db, created_from=created_from, created_to=created_to, search=search,
+        status=status, hotel_id=hotel_id, agent_id=agent_id,
+        arrival_from=arrival_from, arrival_to=arrival_to,
+        date_view=date_view, date_from=date_from, date_to=date_to,
     )
 
 
 def list_bookings_by_agent(db: Session, agent_id: int) -> list[Booking]:
-    """Return every booking made by one agent."""
-    return repository.list_bookings_by_agent(db, agent_id)
+    """Return every booking made by one agent. Decision 178: same
+    application_total stamp as list_bookings -- this is the agent's own
+    list, the surface where an understated price is most visible."""
+    return attach_application_totals(db, repository.list_bookings_by_agent(db, agent_id))
 
 
 def list_bookings_by_hotel(db: Session, hotel_id: int) -> list[Booking]:
@@ -339,7 +442,9 @@ def list_bookings_by_hotel(db: Session, hotel_id: int) -> list[Booking]:
     return repository.list_bookings_by_hotel(db, hotel_id)
 
 
-def update_booking(db: Session, booking_id: int, data: BookingUpdate) -> Booking:
+def update_booking(
+    db: Session, booking_id: int, data: BookingUpdate, acted_by: Optional[int] = None
+) -> Booking:
     """
     Update a booking's editable fields (special_requests, flight numbers)
     and/or status from a single BookingUpdate payload. status is split
@@ -349,6 +454,40 @@ def update_booking(db: Session, booking_id: int, data: BookingUpdate) -> Booking
     """
     booking = _require_booking(db, booking_id)
     update_data = data.model_dump(exclude_unset=True)
+
+    # Decision 153: only fields actually present in this payload are checked,
+    # against the values already stored for whatever the payload omits — so a
+    # partial edit is judged on the booking's real resulting state, not on
+    # nulls the caller never sent.
+    if "arrival_flight_date" in update_data or "departure_flight_date" in update_data:
+        validate_flight_dates(
+            booking.arrival_date,
+            booking.departure_date,
+            update_data.get("arrival_flight_date", booking.arrival_flight_date),
+            update_data.get("departure_flight_date", booking.departure_flight_date),
+        )
+
+    # Decision 155: entering the hotel's confirmation number is the single
+    # action that makes a booking count as confirmed and triggers the guest's
+    # voucher, and it was the only milestone with no actor recorded at all.
+    # Stamped here, where the value actually changes, rather than trusting a
+    # caller to pass it -- and only when the value genuinely changed, so
+    # re-saving an unrelated field doesn't rewrite who confirmed it.
+    if "confirmation_number" in update_data and acted_by is not None:
+        new_number = (update_data.get("confirmation_number") or "").strip()
+        old_number = (booking.confirmation_number or "").strip()
+        if new_number and new_number != old_number:
+            update_data["confirmation_number_by"] = acted_by
+            update_data["confirmation_number_at"] = datetime.utcnow()
+            # ...and take responsibility for it. A booking that reached
+            # "confirmed by the hotel" while nobody had it in hand is exactly
+            # what was found in production (BK-000077). Auto-claiming rather
+            # than refusing is deliberate: blocking the save would leave a
+            # real hotel reply unrecorded, which is worse than recording it
+            # under the name of whoever entered it.
+            if booking.claimed_by is None:
+                update_data["claimed_by"] = acted_by
+                update_data["claimed_at"] = datetime.utcnow()
 
     new_status = update_data.pop("status", None)
 
@@ -446,17 +585,90 @@ def confirm_cancellation(
     )
 
 
+# Room statuses that still represent something the company owes the agent.
+# Anything outside this set has already been settled one way or the other.
+_LIVE_ROOM_STATUSES = {"Pending", "Confirmed", "Partially Confirmed", "Waiting Hotel"}
+
+# Decision 177: booking statuses with nothing left to take on. The same set
+# Decision 164's carry-forward filter excludes and _require_claimed exempts --
+# named once here so "can this be claimed", "does it float into today's list"
+# and "is it locked until claimed" cannot answer differently.
+TERMINAL_BOOKING_STATUSES = {"Cancelled", "Rejected", "Completed"}
+
+
+def cancel_application_free_of_charge(
+    db: Session, booking_id: int, reason: str, cancelled_by: int
+) -> Booking:
+    """
+    Decision 168: the manager's own sign-off closing an application the
+    company could not fulfil, at no cost to the agent. Reached only after
+    every room has been declined -- the last step of the reject flow the
+    project owner specified, and the reason the record stays visible as
+    "Cancelled" rather than being deleted (his explicit answer: an
+    application must remain readable, and invoices/vouchers/statements
+    reference it).
+
+    Two guards, both real rather than defensive decoration:
+
+    1. **Refuses while any room is still live.** On a multi-room
+       application, declining one room must never cancel the ones that
+       were confirmed. Only when nothing is left to deliver is there an
+       application to close.
+
+    2. **Never releases allotment.** reject_booking_room already released
+       each room's own reservation as it was declined. Releasing again
+       here would hand the same inventory back twice and silently
+       overstate availability -- the single most damaging thing this
+       function could get wrong, and invisible until a room oversells.
+       Deliberately different from confirm_cancellation, which DOES
+       release, because there nothing has been released yet.
+    """
+    booking = _require_booking(db, booking_id)
+    if booking.status == "Cancelled":
+        raise ValueError(f"Booking {booking_id} is already cancelled")
+
+    rooms = repository.list_booking_rooms(db, booking_id)
+    live = [r for r in rooms if r.status in _LIVE_ROOM_STATUSES]
+    if live:
+        raise ValueError(
+            "This application still has "
+            f"{len(live)} room(s) that have not been declined "
+            f"(#{', #'.join(str(r.sequence_number) for r in live)}) -- "
+            "a free-of-charge cancellation would close rooms that are still live"
+        )
+
+    return repository.cancel_free_of_charge(db, booking, reason, cancelled_by)
+
+
 def claim_booking(db: Session, booking_id: int, claimed_by: int) -> Booking:
     """
     "Взято в работу" (Decision 045) -- marks a booking as being actively
-    handled, independent of its business status. Restricted to
-    status == "Pending": claiming only means something for a booking
-    nobody has looked at yet, so any other status raises. Also raises if
-    already claimed, rather than silently overwriting who claimed it --
-    the caller should check claimed_by is None before offering this
-    action (the frontend does), but this re-validates independently
-    rather than trusting that check, same discipline as every other
-    write in this file.
+    handled, independent of its business status. Raises if already
+    claimed, rather than silently overwriting who claimed it -- the
+    caller should check claimed_by is None before offering this action
+    (the frontend does), but this re-validates independently rather than
+    trusting that check, same discipline as every other write in this
+    file.
+
+    **Decision 177: no longer restricted to status == "Pending".** That
+    restriction (Decision 045: "claiming only means something for a
+    booking nobody has looked at yet") turned out to be exactly backwards
+    once Decision 163 made ownership an accountability rule rather than a
+    queue convenience. A Confirmed booking with claimed_by NULL is not a
+    booking that needs no owner -- it is the precise failure Decision 163
+    was written about: BK-000077 reached "Confirmed by the hotel",
+    released a guest voucher and reported profit with nobody's name on
+    it. Under the old rule it could never be given one.
+
+    It was also unresolvable in practice. Decision 164 floats every
+    unclaimed non-terminal booking into today's list until someone takes
+    it; a Confirmed unclaimed booking could not be taken, so it sat in
+    the daily queue permanently, reported live by the project owner
+    ("нельзя взять в работу, ошибка даёт already confirmed").
+
+    Terminal bookings stay unclaimable: Cancelled/Rejected/Completed have
+    nothing left to take on, and Decision 164 does not float them either,
+    so the two rules agree.
 
     claimed_by is a plain user id, not necessarily a human manager's --
     see models.py's Booking.claimed_by docstring on why this is
@@ -464,8 +676,11 @@ def claim_booking(db: Session, booking_id: int, claimed_by: int) -> Booking:
     Stage 4/5) to claim bookings the identical way.
     """
     booking = _require_booking(db, booking_id)
-    if booking.status != "Pending":
-        raise ValueError(f"Cannot claim booking {booking_id}: status is '{booking.status}', not 'Pending'")
+    if booking.status in TERMINAL_BOOKING_STATUSES:
+        raise ValueError(
+            f"Cannot claim booking {booking_id}: status is '{booking.status}' -- "
+            "there is nothing left to take on"
+        )
     if booking.claimed_by is not None:
         raise ValueError(f"Booking {booking_id} is already claimed (by user {booking.claimed_by})")
     return repository.update_booking(db, booking, claimed_by=claimed_by, claimed_at=datetime.utcnow())
@@ -664,8 +879,14 @@ def change_booking_dates(db: Session, booking_id: int, data: BookingDateChangeRe
 
 
 def create_guest(db: Session, data: GuestCreate) -> Guest:
-    """Add a guest to a booking. Raises ValueError if the booking doesn't exist."""
-    _require_booking(db, data.booking_id)
+    """Add a guest to a booking. Raises ValueError if the booking doesn't exist,
+    or if this guest's own flight dates couldn't belong to that booking's stay
+    (Decision 153)."""
+    booking = _require_booking(db, data.booking_id)
+    validate_flight_dates(
+        booking.arrival_date, booking.departure_date,
+        data.arrival_flight_date, data.departure_flight_date,
+    )
     return repository.create_guest(db, **data.model_dump())
 
 
@@ -680,8 +901,17 @@ def list_guests(db: Session, booking_id: int) -> list[Guest]:
 
 
 def update_guest(db: Session, guest_id: int, **fields) -> Guest:
-    """Update an existing guest's fields."""
+    """Update an existing guest's fields. Decision 153: a guest's own flight
+    dates are validated against their booking's stay, using the stored value
+    for whichever of the two the caller didn't send."""
     guest = _require_guest(db, guest_id)
+    if "arrival_flight_date" in fields or "departure_flight_date" in fields:
+        booking = _require_booking(db, guest.booking_id)
+        validate_flight_dates(
+            booking.arrival_date, booking.departure_date,
+            fields.get("arrival_flight_date", guest.arrival_flight_date),
+            fields.get("departure_flight_date", guest.departure_flight_date),
+        )
     return repository.update_guest(db, guest, **fields)
 
 
@@ -877,6 +1107,22 @@ def create_booking_application(db: Session, data: BookingApplicationCreate) -> B
                 f"— '{first_hotel.country}' vs '{hotel.country}'"
             )
 
+    # Decision 153: reject impossible flight dates BEFORE any pricing or
+    # inventory work — the application-level flight first, then each guest's
+    # own override, so a nonsense date can never reach a hotel's LPO.
+    # Anchored to the first room's stay, the same row whose dates become the
+    # Booking's own arrival_date/departure_date below.
+    _first = data.rooms[0]
+    validate_flight_dates(
+        _first.arrival_date, _first.departure_date,
+        data.arrival_flight_date, data.departure_flight_date,
+    )
+    for _g in data.guests:
+        validate_flight_dates(
+            _first.arrival_date, _first.departure_date,
+            _g.arrival_flight_date, _g.departure_flight_date,
+        )
+
     # Phase 1: read-only pricing for every room. Any fatal ValueError here
     # propagates immediately — nothing has been written yet.
     resolved = [_price_application_room(db, data.agent_id, room_data) for room_data in data.rooms]
@@ -935,6 +1181,14 @@ def create_booking_application(db: Session, data: BookingApplicationCreate) -> B
         )
 
     # Guests -- entered once per application, not per room.
+    #
+    # Decision 150: a guest's own six flight fields are written straight
+    # through, unvalidated against the application-level ones on purpose.
+    # Left NULL (the normal case, and every application created before this
+    # decision) the guest travels on the application's flight; set, they
+    # override it for that guest only. Nothing here forces the two to
+    # agree, because a party genuinely splitting across flights is the
+    # exact case this exists for.
     created_guests = [
         repository.create_guest(
             db,
@@ -948,6 +1202,12 @@ def create_booking_application(db: Session, data: BookingApplicationCreate) -> B
             passport_expiry=g.passport_expiry,
             special_requests=g.special_requests,
             is_lead_guest=g.is_lead_guest,
+            arrival_flight_number=g.arrival_flight_number,
+            arrival_flight_date=g.arrival_flight_date,
+            arrival_flight_time=g.arrival_flight_time,
+            departure_flight_number=g.departure_flight_number,
+            departure_flight_date=g.departure_flight_date,
+            departure_flight_time=g.departure_flight_time,
         )
         for g in data.guests
     ]
@@ -1062,6 +1322,135 @@ def get_booking_room(db: Session, booking_room_id: int) -> BookingRoom:
     return _require_booking_room(db, booking_room_id)
 
 
+def change_room_transfer(
+    db: Session,
+    booking_room_id: int,
+    new_transfer_type: str | None,
+    reason: str | None,
+    acted_by: int,
+) -> dict:
+    """
+    Change (or remove) one room's transfer after the booking exists —
+    Decision 199.
+
+    The real case this exists for: the guests picked a sedan at booking and
+    decide on the Lexus three months later. Before this, the only way to
+    record that was to cancel and rebook, losing the booking's whole history
+    for what is a change of car.
+
+    Deliberately scoped to ONE room, not the whole application: transfer is
+    a BookingRoom column, a multi-room party can genuinely split across
+    vehicles, and the per-room shape is the one every other real change on
+    this model already uses (dates, confirmation number, cancellation).
+
+    new_transfer_type=None means "no transfer" — the guests will make their
+    own way. That is a real choice (Decision 196), so it is expressible here
+    too, and it clears transfer_total to NULL rather than writing 0.0, which
+    would read as "a transfer that costs nothing".
+
+    Everything that can refuse does so BEFORE any write:
+
+    - a terminal room (Cancelled/Rejected) cannot have its transfer changed;
+      there is no trip left to transfer anyone to.
+    - a room mid-cancellation likewise, same guard change_booking_dates
+      already applies for the same reason.
+    - get_transfer_price validates that the option exists, is Active on this
+      booking's contract, and can actually carry this room's party — so
+      Decision 197/198's capacity limits apply here with no extra code. A
+      party of three adults is refused the sedan on a change exactly as it
+      would have been at booking.
+
+    Returns the before/after facts (type and total on both sides) rather
+    than just the updated row, because the caller has to record them in the
+    audit note and they are gone from the row once written.
+    """
+    room = _require_booking_room(db, booking_room_id)
+    if room.status in ("Cancelled", "Rejected"):
+        raise ValueError(
+            f"Room {room.sequence_number} is {room.status.lower()} — its transfer cannot be changed"
+        )
+    if room.status == "Cancellation Requested":
+        raise ValueError(
+            f"Room {room.sequence_number} is awaiting cancellation — "
+            "resolve that before changing its transfer"
+        )
+
+    booking = _require_booking(db, room.booking_id)
+    if booking.status in TERMINAL_BOOKING_STATUSES:
+        raise ValueError(
+            f"This application is {booking.status.lower()} — its transfer cannot be changed"
+        )
+
+    old_type = room.transfer_type
+    old_total = room.transfer_total
+    if new_transfer_type == old_type:
+        raise ValueError("That is already this room's transfer — nothing to change")
+
+    # The human names, resolved once here. The audit note is read by whoever
+    # opens the booking months later, and "sedan_standard -> lexus_es" makes
+    # them look up two codes to understand a sentence about a car.
+    names = {
+        o.transfer_type: (o.transfer_name or o.transfer_type)
+        for o in contract_service.list_contract_transfer_options(db, room.contract_id)
+    }
+
+    new_total = None
+    if new_transfer_type is not None:
+        # Priced against the room's OWN contract and dates, not the
+        # application's, since a multi-room application can legitimately
+        # hold rooms on different dates.
+        new_total = contract_service.get_transfer_price(
+            db,
+            room.contract_id,
+            new_transfer_type,
+            room.arrival_date,
+            room.departure_date,
+            room.adults,
+            room.children,
+            room.infants,
+        )["total"]
+
+    repository.update_booking_room(
+        db,
+        room,
+        transfer_type=new_transfer_type,
+        transfer_total=new_total,
+        transfer_change_reason=reason,
+        transfer_changed_at=datetime.utcnow(),
+        transfer_changed_by=acted_by,
+    )
+
+    return {
+        "booking_id": room.booking_id,
+        "booking_room_id": room.id,
+        "sequence_number": room.sequence_number,
+        "currency": room.currency,
+        "old_transfer_type": old_type,
+        "old_transfer_name": names.get(old_type, old_type) if old_type else None,
+        "old_transfer_total": old_total,
+        "new_transfer_type": new_transfer_type,
+        "new_transfer_name": names.get(new_transfer_type, new_transfer_type) if new_transfer_type else None,
+        "new_transfer_total": new_total,
+    }
+
+
+def list_transfer_options_for_room(db: Session, booking_room_id: int) -> list:
+    """
+    The transfer options this room could actually switch to — Decision 199.
+
+    Filtered by the room's own party size through Contract Engine's own
+    capacity rules (Decisions 197/198), so the change screen can never offer
+    a car that the change itself would then refuse.
+    """
+    room = _require_booking_room(db, booking_room_id)
+    return contract_service.get_transfer_options(
+        db,
+        room.contract_id,
+        guests=room.adults + room.children + room.infants,
+        adults=room.adults,
+    )
+
+
 def list_guests_for_room(db: Session, booking_room_id: int) -> list[Guest]:
     """Return the guests assigned to one specific room within an application."""
     _require_booking_room(db, booking_room_id)
@@ -1097,6 +1486,19 @@ def _recompute_application_status(db: Session, booking_id: int) -> None:
     rooms = repository.list_booking_rooms(db, booking_id)
     if not rooms:
         return
+
+    # Decision 168: an application closed by a manager's free-of-charge
+    # cancellation is a decision, not a rollup -- its rooms are all
+    # "Rejected", so recomputing would quietly relabel it "Rejected" and
+    # erase the fact that someone signed off on cancelling it at no cost.
+    # Unreachable today (a Cancelled application has no Pending room left
+    # to approve or reject, and those are the only two callers), but the
+    # invariant belongs here rather than in the memory of whoever adds the
+    # third caller.
+    booking_now = repository.get_booking(db, booking_id)
+    if booking_now is not None and booking_now.status == "Cancelled":
+        return
+
     statuses = {r.status for r in rooms}
     if statuses == {"Cancelled"}:
         new_status = "Cancelled"
@@ -1157,6 +1559,36 @@ def reject_booking_room(
         db, room, status="Rejected", rejection_reason=data.reason, rejected_by=rejected_by
     )
     _recompute_application_status(db, room.booking_id)
+
+    # Decision 167: tell the agent. A rejection means the room could not be
+    # held for their guest -- previously it only changed a status they had to
+    # notice on their own, which is the one outcome that genuinely cannot
+    # wait to be discovered. Best-effort by the same contract as every other
+    # email in this project: send_real_email never raises, and the rejection
+    # itself has already been committed above, so a mail failure must not
+    # undo it or surface as a failed rejection.
+    try:
+        booking = repository.get_booking(db, room.booking_id)
+        agent = db.query(User).filter(User.id == booking.agent_id).first()
+        if agent is not None and agent.email:
+            hotel = hotel_service.get_hotel(db, room.hotel_id)
+            room_type = hotel_service.get_room_type(db, room.room_type_id)
+            email_service.send_room_rejected_email(
+                {
+                    "agent_name": agent.name,
+                    "agent_email": agent.email,
+                    "booking_number": booking.booking_number,
+                    "hotel_name": hotel.hotel_name,
+                    "room_type_name": room_type.room_name,
+                    "arrival_date": room.arrival_date,
+                    "departure_date": room.departure_date,
+                    "reason": data.reason,
+                }
+            )
+    except Exception:
+        # Notification is never allowed to fail the rejection.
+        pass
+
     return room
 
 
@@ -1202,6 +1634,25 @@ def send_correspondence(
 ) -> BookingCorrespondence:
     """Record an outbound message (typically the Decision 046 LPO text, possibly edited by the manager before sending) against a booking's thread. status="sent" -- "awaiting_reply" is a computed UI label (latest row is outbound/sent with no inbound row after it), never written here. recipient_email/recipient_email_secondary (Decision 050) are recorded as given -- not required, since this is still record-only, no real send happens."""
     _require_booking(db, booking_id)
+
+    # Decision 154: actually try to send it. This was record-only — the row
+    # was written and no mail server was ever contacted — so an LPO the
+    # manager believed had gone to the hotel had simply never left.
+    # send_real_email cannot raise (it returns False and prints when SMTP
+    # isn't configured), but the call is wrapped anyway: an email problem
+    # must never destroy the record of what was composed.
+    delivered = False
+    recipients = [e.strip() for e in (recipient_email, recipient_email_secondary) if e and e.strip()]
+    if recipients:
+        try:
+            results = [email_service.send_real_email(to, subject or "", body) for to in recipients]
+            # Keyed to the PRIMARY recipient only: a secondary copy going out
+            # while the hotel's own address failed is not a delivered LPO.
+            delivered = bool(results[0])
+        except Exception as exc:
+            print(f"LPO send failed for booking {booking_id}: {exc}")
+            delivered = False
+
     return repository.create_booking_correspondence(
         db,
         booking_id=booking_id,
@@ -1213,6 +1664,7 @@ def send_correspondence(
         recipient_email=recipient_email,
         recipient_email_secondary=recipient_email_secondary,
         created_by=created_by,
+        delivered=delivered,
     )
 
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { API_URL } from "../config";
+import { sessionJustExpired } from "../session";
 import Card from "../components/ui/Card";
 import Input from "../components/ui/Input";
 import Button from "../components/ui/Button";
@@ -67,6 +68,16 @@ function Login() {
         <p className="text-xs font-semibold uppercase tracking-widest text-gold-deep">DMC Operating System</p>
         <h1 className="mt-2 font-display text-3xl font-semibold text-ink">Welcome Back</h1>
         <p className="mt-2 text-sm text-slate/70">Login to access your DMC OS account.</p>
+
+        {/* Sent here by session.ts after a 401. Without this the user simply
+            finds themselves on an empty login form with no explanation --
+            which is exactly how a 30-minute token expiry used to read as "the
+            app broke". */}
+        {sessionJustExpired() && !error && (
+          <div className="mt-5 rounded-lg bg-warning/10 px-4 py-3 text-sm font-medium text-warning">
+            Your session has expired. Please log in again — nothing was lost.
+          </div>
+        )}
 
         {error && (
           <div className="mt-5 rounded-lg bg-danger/10 px-4 py-3 text-sm font-medium text-danger">

@@ -205,6 +205,35 @@ class ContractTransferOptionCreate(BaseModel):
     price_adult: float = Field(..., ge=0)
     price_child: float = Field(..., ge=0)
     price_infant: Optional[float] = Field(None, ge=0)
+    # Decision 196. Defaults keep every existing caller byte-identical: omit
+    # both and you get the per-person row this endpoint has always created.
+    pricing_basis: str = Field("per_person", min_length=1, max_length=20)
+    price_per_vehicle: Optional[float] = Field(None, ge=0)
+    # Decision 197: None means no stated limit (a seaplane), not "unknown".
+    max_passengers: Optional[int] = Field(None, ge=1)
+    # Decision 198: separate cap on guests aged 12+. None = no adult-specific
+    # limit, only the total above.
+    max_adults: Optional[int] = Field(None, ge=1)
+
+
+class ContractTransferOptionUpdate(BaseModel):
+    """
+    Decision 196. Every field optional — a partial edit is judged on the
+    resulting state, not on the payload alone, so changing only a price
+    never re-opens the pricing_basis question and changing only the basis
+    picks up the prices already stored.
+    """
+
+    transfer_type: Optional[str] = Field(None, min_length=1, max_length=50)
+    transfer_name: Optional[str] = None
+    price_adult: Optional[float] = Field(None, ge=0)
+    price_child: Optional[float] = Field(None, ge=0)
+    price_infant: Optional[float] = Field(None, ge=0)
+    pricing_basis: Optional[str] = Field(None, min_length=1, max_length=20)
+    price_per_vehicle: Optional[float] = Field(None, ge=0)
+    max_passengers: Optional[int] = Field(None, ge=1)
+    max_adults: Optional[int] = Field(None, ge=1)
+    status: Optional[str] = None
 
 
 class ContractTransferOptionResponse(BaseModel):
@@ -215,6 +244,10 @@ class ContractTransferOptionResponse(BaseModel):
     price_adult: float
     price_child: float
     price_infant: Optional[float] = None
+    pricing_basis: str = "per_person"
+    price_per_vehicle: Optional[float] = None
+    max_passengers: Optional[int] = None
+    max_adults: Optional[int] = None
     status: str
 
     class Config:

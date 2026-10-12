@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { API_URL } from "../config";
+import { handleSessionExpired } from "../session";
 import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
 import Input from "../components/ui/Input";
@@ -47,6 +48,13 @@ async function fetchJson<T>(path: string, token: string, options: RequestInit = 
       ...(options.headers || {}),
     },
   });
+  // A 30-minute token simply expires while a tab sits open; every request
+  // then fails with 401 "Invalid token". Handled once, centrally, instead of
+  // each panel rendering that raw string or hanging on a spinner forever.
+  if (response.status === 401) {
+    handleSessionExpired();
+    throw new Error("Session expired");
+  }
   if (!response.ok) {
     let detail = `Request error (${response.status})`;
     try {
@@ -66,9 +74,10 @@ function formatDate(dateStr: string) {
 }
 
 const Counteragents = () => {
-  const [settings, setSettings] = useState<PricingSettings | null>(null);
-  const [markupInput, setMarkupInput] = useState("");
-  const [savingSettings, setSavingSettings] = useState(false);
+  // Decision 193: one markup row per currency, keyed by currency code.
+  const [settings, setSettings] = useState<PricingSettings[]>([]);
+  const [markupInputs, setMarkupInputs] = useState<Record<string, string>>({});
+  const [savingCurrency, setSavingCurrency] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
 
   const [subTab, setSubTab] = useState<SubTab>("standard");
@@ -88,12 +97,18 @@ const Counteragents = () => {
       setLoading(true);
       setListError(null);
       const [settingsData, standardData, exclusiveData] = await Promise.all([
-        fetchJson<PricingSettings>("/pricing-engine/settings", token),
+        fetchJson<PricingSettings[]>("/pricing-engine/settings/all", token),
         fetchJson<AgentSummary[]>("/pricing-engine/agents/standard", token),
         fetchJson<ExclusiveAgent[]>("/pricing-engine/agents/exclusive", token),
       ]);
       setSettings(settingsData);
-      setMarkupInput(String(settingsData.standard_markup_amount_per_night));
+      // Decision 193: one markup per currency, so the form holds one input
+      // per currency rather than a single global figure.
+      setMarkupInputs(
+        Object.fromEntries(
+          settingsData.map((row) => [row.currency, String(row.standard_markup_amount_per_night)]),
+        ),
+      );
       setStandardAgents(standardData);
       setExclusiveAgents(exclusiveData);
     } catch (err: any) {
@@ -107,26 +122,29 @@ const Counteragents = () => {
     loadAll();
   }, []);
 
-  async function handleSaveSettings() {
-    const value = parseFloat(markupInput);
+  async function handleSaveSettings(currency: string) {
+    const value = parseFloat(markupInputs[currency] ?? "");
     if (isNaN(value) || value < 0) {
       setSettingsError("Enter a valid amount (0 or greater)");
       return;
     }
     const token = localStorage.getItem("token") || "";
     try {
-      setSavingSettings(true);
+      setSavingCurrency(currency);
       setSettingsError(null);
       const updated = await fetchJson<PricingSettings>("/pricing-engine/settings", token, {
         method: "PUT",
-        body: JSON.stringify({ standard_markup_amount_per_night: value }),
+        body: JSON.stringify({ standard_markup_amount_per_night: value, currency }),
       });
-      setSettings(updated);
-      setMarkupInput(String(updated.standard_markup_amount_per_night));
+      setSettings((prev) => prev.map((r) => (r.currency === updated.currency ? updated : r)));
+      setMarkupInputs((prev) => ({
+        ...prev,
+        [updated.currency]: String(updated.standard_markup_amount_per_night),
+      }));
     } catch (err: any) {
       setSettingsError(err.message || "Failed to save setting");
     } finally {
-      setSavingSettings(false);
+      setSavingCurrency(null);
     }
   }
 
@@ -176,26 +194,51 @@ const Counteragents = () => {
         <h3 className="font-display text-lg font-semibold text-ink">Global markup</h3>
         <p className="mt-1 text-sm text-slate/60">
           A flat per-night amount added to the room price (Net from Contract Engine) for all agents.
+          {/* Decision 193: one figure per currency. The markup is an absolute
+              amount, not a percentage, so a single global number applied to a
+              EUR contract would charge 10 EUR where 10 USD was configured --
+              a different amount, silently. A contract's own currency decides
+              which row applies. */}
+          <span className="mt-1 block text-slate/50">
+            Set per currency — the contract's own currency decides which one applies. No conversion
+            happens anywhere: a booking priced in EUR is invoiced and paid in EUR.
+          </span>
         </p>
-        <div className="mt-3 flex flex-wrap items-center gap-2.5">
-          <Input
-            type="number"
-            min={0}
-            step="0.01"
-            value={markupInput}
-            onChange={(e) => setMarkupInput(e.target.value)}
-            scale="lg"
-            className="w-40"
-          />
-          <span className="text-sm text-slate/60">{settings?.currency ?? "USD"} / night</span>
-          <Button onClick={handleSaveSettings} disabled={savingSettings}>
-            {savingSettings ? "Saving..." : "Save"}
-          </Button>
+        <div className="mt-3 space-y-2">
+          {settings.length === 0 ? (
+            <p className="text-sm text-slate/50">Loading…</p>
+          ) : (
+            settings.map((row) => (
+              <div key={row.currency} className="flex flex-wrap items-center gap-2.5">
+                <span className="w-12 text-sm font-semibold text-ink">{row.currency}</span>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={markupInputs[row.currency] ?? ""}
+                  onChange={(e) =>
+                    setMarkupInputs((prev) => ({ ...prev, [row.currency]: e.target.value }))
+                  }
+                  scale="lg"
+                  className="w-40"
+                />
+                <span className="text-sm text-slate/60">{row.currency} / night</span>
+                <Button
+                  onClick={() => handleSaveSettings(row.currency)}
+                  disabled={savingCurrency !== null}
+                >
+                  {savingCurrency === row.currency ? "Saving..." : "Save"}
+                </Button>
+                {row.updated_at && (
+                  <span className="text-xs text-slate/50">
+                    Updated {new Date(row.updated_at).toLocaleString()}
+                  </span>
+                )}
+              </div>
+            ))
+          )}
         </div>
         {settingsError && <p className="mt-2 text-sm text-red-600">{settingsError}</p>}
-        {settings?.updated_at && (
-          <p className="mt-2 text-xs text-slate/50">Updated: {new Date(settings.updated_at).toLocaleString()}</p>
-        )}
       </Card>
 
       {/* ===== Sub-tabs ===== */}

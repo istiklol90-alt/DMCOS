@@ -2,6 +2,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Optional
 import uuid
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from database.db import SessionLocal
@@ -60,6 +61,16 @@ def list_bookings(
     created_from: date | None = None,
     created_to: date | None = None,
     search: str | None = None,
+    status: str | None = None,
+    hotel_id: int | None = None,
+    agent_id: int | None = None,
+    arrival_from: date | None = None,
+    arrival_to: date | None = None,
+    date_view: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
 ) -> list[Booking]:
     """Return a page of bookings across all agents/hotels, for admin listing screens.
 
@@ -79,15 +90,160 @@ def list_bookings(
     combinable with created_from/created_to at the query-builder level
     (both are just additional .filter() calls), even though the admin
     Bookings screen's own frontend wiring chooses to only ever send one
-    or the other at a time -- see Reservations.tsx's fetch effect."""
-    query = db.query(Booking)
+    or the other at a time -- see Reservations.tsx's fetch effect.
+
+    Decision 152 adds status/hotel_id/arrival_from/arrival_to filtering and
+    an explicit sort, so the admin screen can paginate for real: with only
+    a page in memory, filtering and sorting client-side would silently mean
+    "within this page" -- an answer that looks right and isn't. Every new
+    parameter is optional and defaults to the previous behavior, so every
+    existing caller is unaffected."""
+    query = _apply_booking_filters(
+        db.query(Booking), created_from, created_to, search, status, hotel_id, agent_id,
+        arrival_from, arrival_to, date_view, date_from, date_to,
+    )
+    return query.order_by(*_booking_order_by(sort_by, sort_dir)).offset(skip).limit(limit).all()
+
+
+# Whitelist, not a passthrough: sort_by arrives from a query string, and
+# handing an arbitrary attribute name to getattr(Booking, ...) would let a
+# caller order by anything on the model.
+_SORTABLE = {
+    "created_at": Booking.created_at,
+    "arrival_date": Booking.arrival_date,
+    "status": Booking.status,
+}
+
+
+def _booking_order_by(sort_by: str | None, sort_dir: str | None) -> tuple:
+    """Default stays Booking.id.desc() -- newest-first, exactly as before.
+    Booking.id is appended as a tiebreaker for every other sort so a page
+    boundary can never show the same row twice or skip one because two rows
+    share an arrival_date.
+
+    Always returns a TUPLE, and callers must splat it into order_by(*...):
+    order_by() takes criteria as separate arguments, and handing it a single
+    tuple raises at query time (found by the pagination test, not in review).
+    """
+    column = _SORTABLE.get((sort_by or "").strip())
+    if column is None:
+        return (Booking.id.desc(),)
+    descending = (sort_dir or "desc").strip().lower() != "asc"
+    return (column.desc() if descending else column.asc(), Booking.id.desc())
+
+
+def _apply_booking_filters(
+    query,
+    created_from: date | None,
+    created_to: date | None,
+    search: str | None,
+    status: str | None,
+    hotel_id: int | None,
+    agent_id: int | None,
+    arrival_from: date | None,
+    arrival_to: date | None,
+    date_view: str | None,
+    date_from: date | None,
+    date_to: date | None,
+):
+    """Shared by list_bookings and count_bookings so the page and its total
+    can never be computed from different filter sets -- the classic way a
+    paginated list ends up claiming "1-50 of 400" while only 120 rows exist."""
     if created_from is not None:
         query = query.filter(Booking.created_at >= datetime.combine(created_from, time.min))
     if created_to is not None:
         query = query.filter(Booking.created_at < datetime.combine(created_to, time.min) + timedelta(days=1))
     if search:
         query = query.filter(Booking.booking_number.ilike(f"%{search}%"))
-    return query.order_by(Booking.id.desc()).offset(skip).limit(limit).all()
+    if status:
+        query = query.filter(Booking.status == status)
+    if hotel_id is not None:
+        query = query.filter(Booking.hotel_id == hotel_id)
+    if agent_id is not None:
+        query = query.filter(Booking.agent_id == agent_id)
+    # arrival_* filter on a plain Date column, so both bounds are inclusive
+    # -- unlike created_to above, which has to span a whole day of a DateTime.
+    if arrival_from is not None:
+        query = query.filter(Booking.arrival_date >= arrival_from)
+    if arrival_to is not None:
+        query = query.filter(Booking.arrival_date <= arrival_to)
+
+    # Decision 152: the admin screen's three "By date" views, moved here
+    # verbatim from Reservations.tsx's client-side filter. They are three
+    # genuinely different questions and each keeps its exact original
+    # semantics; the point of moving them is that they were being answered
+    # from whatever slice happened to be loaded, so "who is staying next
+    # week" silently excluded anyone booked before the newest N rows.
+    if date_view and date_from is not None and date_to is not None:
+        if date_view == "staying":
+            # A stay occupies [arrival_date, departure_date); it belongs in
+            # the range if that interval overlaps [date_from, date_to] at
+            # all. Cancelled/Rejected were never really staying.
+            query = query.filter(
+                Booking.arrival_date <= date_to,
+                Booking.departure_date > date_from,
+                Booking.status.notin_(("Cancelled", "Rejected")),
+            )
+        elif date_view == "created":
+            in_range = and_(
+                Booking.created_at >= datetime.combine(date_from, time.min),
+                Booking.created_at < datetime.combine(date_to, time.min) + timedelta(days=1),
+            )
+            # Decision 164: a booking nobody has taken on carries forward to
+            # TODAY, every day, until someone takes it.
+            #
+            # Without this the default admin view ("created today") silently
+            # drops yesterday's untouched bookings: not cancelled, not
+            # rejected, nobody working them, and never seen again. At this
+            # volume a quietly lost booking is the most expensive failure the
+            # screen has.
+            #
+            # Scoped to a range that actually CONTAINS today -- browsing a
+            # historical window must still answer "what came in that week",
+            # not have today's backlog float into it.
+            today = date.today()
+            if date_from <= today <= date_to:
+                query = query.filter(
+                    or_(
+                        in_range,
+                        and_(
+                            Booking.claimed_by.is_(None),
+                            Booking.status.notin_(("Cancelled", "Rejected", "Completed")),
+                        ),
+                    )
+                )
+            else:
+                query = query.filter(in_range)
+        elif date_view == "cancellations":
+            query = query.filter(
+                Booking.arrival_date >= date_from,
+                Booking.arrival_date <= date_to,
+                Booking.status == "Cancelled",
+            )
+    return query
+
+
+def count_bookings(
+    db: Session,
+    created_from: date | None = None,
+    created_to: date | None = None,
+    search: str | None = None,
+    status: str | None = None,
+    hotel_id: int | None = None,
+    agent_id: int | None = None,
+    arrival_from: date | None = None,
+    arrival_to: date | None = None,
+    date_view: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> int:
+    """How many bookings match the same filters list_bookings would apply,
+    ignoring skip/limit -- what a paginated screen needs to say "of N"."""
+    query = _apply_booking_filters(
+        db.query(Booking), created_from, created_to, search, status, hotel_id, agent_id,
+        arrival_from, arrival_to, date_view, date_from, date_to,
+    )
+    return query.count()
 
 
 def list_bookings_by_agent(db: Session, agent_id: int) -> list[Booking]:
@@ -160,6 +316,39 @@ def confirm_cancellation(
     booking.cancellation_confirmed_at = datetime.utcnow()
     booking.cancellation_confirmed_by = confirmed_by
     booking.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(booking)
+    return booking
+
+
+def cancel_free_of_charge(db: Session, booking: Booking, reason: str, cancelled_by: int) -> Booking:
+    """
+    Decision 168: a one-step cancellation with no fee, for an application
+    the company itself could not fulfil (every room declined).
+
+    Deliberately NOT routed through request_cancellation + confirm_
+    cancellation: that pair models the agent asking and the hotel
+    acknowledging, and stage 2 requires the hotel's own cancellation
+    reference. There is no such reference here -- nobody is cancelling
+    against the hotel; the rooms were already declined and released. It
+    writes the same audit fields both stages do (who, when, why) so the
+    record is no thinner, and fills the confirmation-stage fields with
+    the same actor and moment, because in this flow the decision and its
+    confirmation genuinely ARE the same act.
+
+    cancellation_fee is a real, computed 0.0 -- the manager granting a
+    free-of-charge cancellation -- never NULL, which throughout this
+    project means "not computed".
+    """
+    now = datetime.utcnow()
+    booking.status = "Cancelled"
+    booking.cancellation_reason = reason
+    booking.cancelled_at = now
+    booking.cancellation_fee = 0.0
+    booking.cancelled_by = cancelled_by
+    booking.cancellation_confirmed_at = now
+    booking.cancellation_confirmed_by = cancelled_by
+    booking.updated_at = now
     db.commit()
     db.refresh(booking)
     return booking

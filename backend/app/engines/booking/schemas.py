@@ -89,6 +89,23 @@ class BookingDateChangeRequest(BaseModel):
     reason: str = Field(..., min_length=2)
 
 
+class RoomTransferChangeRequest(BaseModel):
+    """
+    Decision 199. `new_transfer_type` is deliberately Optional with no
+    default: None is a real, meaningful value ("no transfer — the guests
+    make their own way", Decision 196), so it must be sendable explicitly,
+    while omitting the field entirely is a malformed request rather than a
+    silent removal of the transfer.
+
+    A reason is required, same as a date change: a change made months after
+    booking, which moves money, needs to say why. Whoever reads the audit
+    trail later is usually not the person who made it.
+    """
+
+    new_transfer_type: Optional[str] = Field(...)
+    reason: str = Field(..., min_length=2)
+
+
 class BookingResponse(BaseModel):
     id: int
     booking_number: str
@@ -133,9 +150,20 @@ class BookingResponse(BaseModel):
     claimed_by: Optional[int] = None
     claimed_at: Optional[datetime] = None
     confirmation_number: Optional[str] = None
+    # Decision 155: who entered the hotel's confirmation number, and when.
+    confirmation_number_by: Optional[int] = None
+    confirmation_number_at: Optional[datetime] = None
     created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime
+    # Decision 178: the whole application's price -- every billable room's
+    # room + transfer + tax. `total_amount` above is the REPRESENTATIVE
+    # first room only, so a list rendering it as "the price" understated
+    # every multi-room booking: BK-000080 showed 1964.50 for a booking the
+    # agent pays 6700.50 on. Attached by the list/get endpoints; None only
+    # for a legacy application with no BookingRoom rows, where the caller
+    # falls back to the frozen columns exactly as before.
+    application_total: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -146,7 +174,28 @@ class BookingResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class GuestCreate(BaseModel):
+class GuestFlightFields(BaseModel):
+    """
+    Decision 150: one guest's OWN flight, when it differs from the rest of
+    the party's. All six are optional everywhere and NULL means "this guest
+    is on the application's flight" (Booking.arrival_flight_* etc.), NOT
+    "unknown" — see Guest's model docstring for why that NULL-or-value
+    shape is the whole mechanism and no separate mode flag exists.
+
+    Shared by every guest schema below so the four of them cannot drift
+    apart field-by-field, which is exactly how Booking's own flight fields
+    ended up spelled out four separate times in this file.
+    """
+
+    arrival_flight_number: Optional[str] = None
+    arrival_flight_date: Optional[date] = None
+    arrival_flight_time: Optional[str] = Field(None, max_length=5)
+    departure_flight_number: Optional[str] = None
+    departure_flight_date: Optional[date] = None
+    departure_flight_time: Optional[str] = Field(None, max_length=5)
+
+
+class GuestCreate(GuestFlightFields):
     booking_id: int
     first_name: str = Field(..., min_length=1, max_length=100)
     last_name: str = Field(..., min_length=1, max_length=100)
@@ -159,7 +208,7 @@ class GuestCreate(BaseModel):
     is_lead_guest: bool = False
 
 
-class GuestUpdate(BaseModel):
+class GuestUpdate(GuestFlightFields):
     first_name: Optional[str] = Field(None, min_length=1, max_length=100)
     last_name: Optional[str] = Field(None, min_length=1, max_length=100)
     gender: Optional[str] = None
@@ -171,7 +220,7 @@ class GuestUpdate(BaseModel):
     is_lead_guest: Optional[bool] = None
 
 
-class GuestResponse(BaseModel):
+class GuestResponse(GuestFlightFields):
     id: int
     booking_id: int
     first_name: str
@@ -209,10 +258,16 @@ BookingRoomStatus = Literal[
 ]
 
 
-class BookingApplicationGuestCreate(BaseModel):
+class BookingApplicationGuestCreate(GuestFlightFields):
     """One real traveler on this application's trip -- entered once, then
     assigned to whichever room(s) they occupy via
-    BookingApplicationRoomCreate.guest_indices."""
+    BookingApplicationRoomCreate.guest_indices.
+
+    Decision 150: inherits the six optional per-guest flight fields. Left
+    unset (the normal case) the guest simply travels on the application's
+    own flight -- the application-level arrival_flight_* fields on
+    BookingApplicationCreate are unchanged and still the default for
+    everyone."""
 
     first_name: str = Field(..., min_length=1, max_length=100)
     last_name: str = Field(..., min_length=1, max_length=100)
@@ -320,6 +375,12 @@ class BookingRoomResponse(BaseModel):
     confirmation_number: Optional[str] = None
     date_change_reason: Optional[str] = None
     dates_changed_at: Optional[datetime] = None
+    # Decision 199: who changed this room's transfer, when, and why — so the
+    # booking detail can show it, rather than the change being visible only
+    # inside the finance audit trail.
+    transfer_change_reason: Optional[str] = None
+    transfer_changed_at: Optional[datetime] = None
+    transfer_changed_by: Optional[int] = None
     cancellation_reason: Optional[str] = None
     cancelled_at: Optional[datetime] = None
     cancellation_fee: Optional[float] = None
@@ -404,6 +465,10 @@ class BookingCorrespondenceResponse(BaseModel):
     recipient_email_secondary: Optional[str] = None
     created_by: Optional[int] = None
     created_at: datetime
+    # Decision 154: True = SMTP accepted it, False = recorded only (no SMTP
+    # configured, or the send failed), None = predates the column. Distinct
+    # from `status`, which tracks the conversation, not delivery.
+    delivered: Optional[bool] = None
 
     class Config:
         from_attributes = True

@@ -6219,6 +6219,2019 @@ Status: Implemented and verified. `npx tsc -b`/`npx vite build` clean at the 2-e
 
 ---
 
+# Decision 144
+
+Date: 2026-08-03
+
+Decision: Design System v1.0 **Block C, agent scope** — the agent panel now builds its table, its overlays and its detail fields from shared primitives instead of hand-rolled copies. Found on opening the block: `components/ui/Table.tsx` and `components/ui/Modal.tsx` already existed (Phase 0), and `Table.tsx`'s own header comment even names `Reservations.tsx` as one of the seven files it was extracted from — but only the **admin** pages ever adopted them (`AdminPanel`, `AdminBookingFinance`, `Counteragents`, `Cashback`). The agent-facing surfaces kept their own copies the whole time.
+
+**Table.** `Reservations.tsx`'s bookings table (shell, head row, head cells, rows, cells, empty state, error row) now comes from `Table.tsx`. Columns, sorting, the admin extension slots, the skeleton first-load rows and the "needs attention" row treatment are all unchanged. Two additions to the primitive, both driven by what this migration actually needed: `TableShell` gained a `className` passthrough (the table dims itself during a background refresh), and new `TableNumericCell` gives money cells `tabular-nums` so digits stack instead of jittering row to row — right-alignment deliberately **not** applied yet, because `adminExtensions` appends further numeric columns after this one and moving them together belongs to the admin pass.
+
+**Two real class-conflict bugs fixed in the primitives while adopting them** — the recurring failure mode where two utilities for the same CSS property land in one class list and the winner is decided by stylesheet order, not by the order they were written. (1) `TableCell` always emitted `text-slate/80`, while 13 existing call sites *also* pass a text color (`text-slate/50`, `font-medium text-ink`, `font-mono text-slate/40`, …) — every one of those was previously a coin flip. The default is now dropped whenever the caller supplies its own text color; verified against all 19 current call sites, listing which ones now resolve to the caller's color and which keep the base. (2) `TableRow` always emitted `hover:bg-sand/40` for clickable rows, which would have silently fought `Reservations.tsx`'s "needs attention" row — whose whole point (per its own long-standing comment) is that hovering *intensifies* the red alarm rather than washing it out to neutral sand. Same guard. Both fixes also make the pre-existing admin call sites deterministic, which they were not before.
+
+**Modal.** Both agent overlays — the booking detail (`Reservations.tsx`) and the checkout wizard (`HotelSearch.tsx`) — now use `Modal.tsx`. It gained three additive props, defaults chosen so the two existing admin callers render byte-identically: `align="top"` (a tall working surface scrolls with the page instead of centering and overflowing — exactly what the booking detail already did), `panelClassName` (replaces rather than extends the panel's padding, so `p-8` / `max-h-[90vh] overflow-y-auto` don't collide with the default `p-5`), and `closeOnBackdrop`. That last one matters most: the checkout wizard has **never** closed on a backdrop click, and inheriting Modal's default would have meant a stray click beside the form silently discarding an already-filled set of guest passports, dates of birth and flight numbers. It is explicitly `closeOnBackdrop={false}`; the booking detail keeps its original click-to-close.
+
+**DetailField.** New `components/ui/DetailField.tsx` — one "label above value, optional quiet hint line" pair, which the booking detail had hand-written twelve times, each copy free to drift in label size/weight/tracking. Its label styling *is* `tailwind.css`'s own documented Label convention, so adopting it is also how a page stops restating that rule by hand. All 12 fields migrated (agent, agency, handled by, hotel, room type, meal plan, transfer, booking date, dates + night count, guests, both flights with their date/time hint, special requests). **A first attempt at this migration by regex damaged the JSX** (it matched across neighbouring blocks, attaching one field's hint to another and leaving mismatched tags); the affected block was rewritten by hand instead, and content parity was then verified mechanically rather than by eye — all 72 `bookingDetail.*` translation keys present before and after, and every value expression (`claimerNames[...]`, `displayTransferName`, `displayRoom?.special_requests`, `effectiveBooking.nights`, …) at identical occurrence counts. Two labels were deliberately left alone: the "showing room X of Y" caption (not a label/value pair) and the "Итого" total (a deliberately larger `font-display text-2xl` treatment DetailField would have shrunk).
+
+Verified afterwards: zero `fixed inset-0` overlays and zero hand-written `<table className=...>` remain in either agent-facing file.
+
+Reason: owner-approved block C, agent panel first per his own re-sequencing.
+
+Approved By: Daler ("закоммить и продолжи блок C")
+
+Status: Implemented and verified. `npx tsc -b`/`npx vite build` clean at the 2-error dead-file baseline. Dev server confirmed serving the migrated modules. Frontend presentation/structure only — no backend, no API, no logic, no locale key changed. **Not yet verified live in-browser** — needs the owner to open the bookings list (sorting, the red "needs attention" row and its hover), a booking's detail overlay (every field still present, closing by backdrop click still works), and the checkout wizard (must NOT close when clicking beside it).
+
+---
+
+# Decision 145
+
+Date: 2026-08-03
+
+Decision: Design System v1.0 **Block A** — the three-column hotel search, the last block of the agent panel and the one deliberately kept until the end because `HotelSearch.tsx` is the screen that actually creates bookings. Owner confirmed photos are out of scope for now ("фото пока не надо"), so the colour placeholder stays and no image slot was designed in.
+
+**Layout.** The search bar moved out of the results grid and now spans the full width above everything — one search governs all three columns, so it reads as the page header rather than as the first item of the left column. Beneath it: hotel list (left) → room/meal/transfer detail (centre) → trip cart (right), with `items-start` and both side columns `sticky top-4`. Column widths are explicit rather than equal fractions (`lg:grid-cols-[220px_minmax(0,1fr)_290px]`, `xl:grid-cols-[280px_minmax(0,1fr)_340px]`): the list and the cart each need a fixed modest width, and every remaining pixel belongs to the centre, which carries the actual decisions. Verified in the built CSS that both arbitrary templates really emit (`grid-template-columns:220px minmax(0,1fr) 290px` / `280px minmax(0,1fr) 340px`), along with `max-h-[calc(100vh-8rem)]` on the scrollable list — an easy class to write and never notice missing.
+
+**New `HotelListRow`** — one row of the left column: gradient chip, name, stars, location, and the cheapest per-night price via the existing `cheapestPerNightForHotel`, i.e. the same figure `HotelCard`'s own summary strip shows, so list and detail can never quote different "from" prices. A hotel with no active contract shows that badge instead of a price, same as the card does. Built from `<span>`s inside the `<button>` rather than `<div>`s (a button's content model is phrasing content).
+
+**Selection state.** New `selectedHotelId`, set to the first result at the end of every search so the centre column is never empty and never points at a hotel from the previous search; `selectedHotel` falls back to `results[0]` if the id no longer matches.
+
+**The below-`lg` fallback is CSS, not a second render tree.** Every `HotelCard` stays mounted; at `lg+` the non-selected ones are `lg:hidden`. Deliberate: rendering only the selected hotel would unmount the others, so each card's own expanded-room-type state (and any per-room work in progress) would silently reset on every list click and on a window resize across the breakpoint. Below `lg` the page is exactly what it was before this block — every hotel stacked in one column, floating cart, no selection UI — so the layout verified in real use on a laptop/tablet is untouched.
+
+**`HotelCard` gained one prop, `inColumnLayout`.** Its only effect: the colour placeholder is `lg:hidden` in the three-column layout. At `lg+` that block is pure duplication — the same gradient already identifies the hotel one row away in the left list — while costing the centre column roughly 300px of the width the room/meal/transfer rows need. Below `lg` there is no left column, so it still does its job and stays.
+
+**i18n.** New `hotelList.found` key with real Russian plural forms (`_one`/`_few`/`_many`/`_other`) plus the English pair, following this project's existing rule that genuine grammatical pluralisation uses i18next plural keys rather than hand-rolled `mod10`/`mod100` logic. A `selectHint` key was added at the same time, then removed before finishing because nothing ever rendered it — no dead keys left behind.
+
+Untouched by this block: pricing, special offers, transfers, occupancy limits, the cart's own add/remove/checkout logic, and `ApplicationCheckoutForm` in its entirety.
+
+Reason: final block of the owner-approved agent-panel phase; the deferral in Decision 139 ("too large and risky to bundle with everything else") ends here, with the work done on its own and last.
+
+Approved By: Daler ("фото пока не надо, делай блок A")
+
+Status: Implemented and verified so far as this environment allows. `npx tsc -b`/`npx vite build` clean at the 2-error dead-file baseline; both locale files re-validated as JSON; dev server confirmed serving the new code. **Not yet verified live in-browser, and this block needs it more than any other so far** — the owner should check: the left list selects and highlights correctly, the centre column swaps hotels without losing an in-progress room selection, "Добавить в поездку" still lands in the cart, a full add-to-cart → checkout → real application still completes, and narrowing the window below the breakpoint still gives the old single-column page.
+
+---
+
+# Decision 146
+
+Date: 2026-08-03
+
+Decision: Block A follow-up, from the project owner testing the live three-column search against a real-scale question: **"with 1000 hotels you cannot show them all"** in the left-hand list. His proposal, implemented as specified — the agent picks hotels outright in the search field (numbered 3 on his screenshot), up to five; picking one means the list column (numbered 1) is not shown at all and the single result gets the full standard width instead of a narrowed centre lane.
+
+**Multi-hotel picking.** The destination field now accumulates picked hotels as removable chips, capped at `MAX_PICKED_HOTELS = 5`. Choosing a suggestion adds a chip and clears the text instead of writing the hotel's name into the input; already-picked hotels are filtered out of the suggestion list, so the dropdown can never offer a duplicate. Above the cap the input is replaced by a plain "that's the maximum" line rather than silently ignoring further clicks. The chip row renders only once something is picked, so the ordinary single-hotel search looks and behaves exactly as it always has and the multi-hotel capability costs nothing until used. `handleSearch` searches the picked set in the order it was picked; the free-text matcher stays as the fallback for someone who types a destination and searches without picking, unchanged but no longer the primary path.
+
+**Layout follows the result count, not the mode.** New `showHotelList = showPinnedCart && results.length > 1`. Two or more results keep the three-column grid; a single result switches to two columns (`lg:grid-cols-[minmax(0,1fr)_290px]`, `xl:[minmax(0,1fr)_340px]`) with no list column, and `inColumnLayout` is false for it — so the hotel's own colour placeholder comes back and the card renders at full standard width, exactly the "не уменьшенный вариант" the owner asked for. Keying this off the result count rather than off how the search was performed means a free-text search that happens to match one hotel also gets the full-width treatment, which is the same thing the agent would want.
+
+**One extra hole closed, same root cause.** An empty search — no hotels picked, no text — previously matched every hotel in the catalog. Harmless with two hotels, and precisely the unbounded case the owner was pointing at with a thousand. `handleSearch` now requires either a picked hotel or some destination text before it will run (`page.hotelRequired`, checked before the existing date validation). This does remove the old "press Search with an empty field to see everything" shortcut, which is worth flagging explicitly rather than burying: it is a deliberate consequence, trivially reversible if the owner wants that shortcut back.
+
+**i18n.** New `page.multiHotelHint`, `page.addAnotherHotel`, `page.maxHotelsReached`, `page.removeHotel`, `page.hotelRequired` in both catalogs. A sixth key (`pickedHotelAlready`) was added and then removed once the design settled on filtering picked hotels out of the dropdown — nothing rendered it, and this file keeps no dead keys.
+
+Reason: real scale objection from the project owner against the layout shipped in Decision 145, with his own proposed solution.
+
+Approved By: Daler (screenshot with blocks 1/2/3 marked, plus the two-point specification)
+
+Status: Implemented and verified so far as this environment allows. `npx tsc -b`/`npx vite build` clean at the 2-error dead-file baseline; both locale files re-validated as JSON (30 `page` keys each, matching); all four arbitrary grid templates confirmed present in the built CSS (`220px minmax(0,1fr) 290px`, `280px …`, and both single-hotel variants); dev server confirmed serving the new code. **Not yet verified live in-browser** — needs the owner to check: picking two or more hotels gives the list + detail + cart layout, picking exactly one gives the full-width single card with no list column, the chip × removes a hotel, the sixth pick is refused with the maximum message, and an empty search now asks for a hotel instead of listing everything.
+
+---
+
+# Decision 147
+
+Date: 2026-08-03
+
+Decision: Agent-side booking detail made readable, plus the real bug the same screenshot exposed. Reported as "не всё ясно, надо делать его более понятным" against a live agent session on BK-000069.
+
+**The screen was not only unclear, it was partly broken — session expiry was never handled anywhere.** The screenshot shows a red `Invalid token` under Номера and Гости stuck on "Загрузка..." forever. Diagnosed rather than assumed: both endpoints are plain `get_current_user` (no admin gate) and both return `200` with a freshly-issued token, while `ACCESS_TOKEN_EXPIRE_MINUTES = 30` and no refresh flow exists — so a tab open longer than half an hour starts 401-ing on every request, and until now *nothing in the frontend reacted to a 401 at all*. Each panel just printed the raw backend string or sat on a spinner, so an expired session read as "the app is broken" with no hint that logging in again was the entire fix. New `src/session.ts` owns this: `handleSessionExpired()` clears `token`/`role`/`user` (leaving them is what produced this project's old redirect-loop trap) and sends the browser to `/login?expired=1`, guarded by a module-level flag so the several requests that fail together produce one redirect, not several. Wired into the 401 branch of **all eight** `fetchJson` helpers (`Reservations`, `HotelSearch`, `AgentDashboard_v2`, `Contracts`, `ContractsAI`, `Counteragents`, `financeShared`, `PriceCalculator`) — admin side included, since the cause is global. `Login.tsx` shows a warning-toned "your session has expired, nothing was lost" notice when `sessionJustExpired()`, so the user isn't dropped on an unexplained empty form. A hard `location.assign` rather than router navigation is deliberate: module-scope helpers have no router context, and a full reload is the honest response to "every piece of state here was fetched with dead credentials".
+
+**Clarity, each item traceable to something visible in the screenshot:**
+- **Internal manager fields removed from the agent's view.** The facts grid opened with «Агент #2» (their own unresolved id), «Агентство —» (empty) and «Кто взял в работу: ещё не взято» (an internal queue state) — three fields before the first one that means anything to the person reading it. They are genuinely useful to a manager triaging other people's bookings, so they now render only when `adminExtensions` is present — the same structural boundary this file already uses for money, not a new permission flag. The grid now starts at the hotel.
+- **Empty correspondence panel no longer renders.** It was drawing a bordered box containing only "Переписка пока пуста" — an empty container for an internal process, above the booking's own facts. It appears when there is a thread to read (agent included, Decision 103's read/write split untouched) or when the admin reply control needs a home.
+- **«Тип трансфера: —» removed when there is no transfer.** A field whose whole content is an em dash costs a row and says nothing.
+- **«Подтверждение отеля» heading no longer appears over nothing** — and, a real gap found while fixing it: `ConfirmationNumberEdit`/`RoomConfirmationNumberEdit` returned `null` outright for anyone without edit rights, so **an agent could never see their own booking's hotel confirmation number even after the hotel sent it**, while the heading still rendered above the empty space. Non-editors now get the number read-only; the heading renders only when there is a number or the right to add one.
+- **Single-room applications no longer repeat themselves in the agent view.** The Номера block restated hotel, room type, dates, nights and guests — all already in the facts grid — and its status badge is provably identical to the booking's for one room (`service._recompute_booking_status` rolls a lone room's status straight up). Skipped in exactly that case; it still renders for a second room (where it is the room selector), for a room carrying a rejection reason the agent needs to read, and always for admin (approve/reject, per-room price).
+- **Label punctuation made consistent.** Seven field labels ended in a colon while the rest didn't («ПИТАНИЕ:» next to «ТИП НОМЕРА»). Colons stripped from those seven only — the inline "Label: value" strings (`Штраф за отмену:`, `Кому:` …) legitimately keep theirs. Both catalogs, 7 lines each.
+
+Note on an apparent problem that isn't one: `ru/reservations.json` has fewer `bookingDetail` keys than `en` (73 vs 77). Checked rather than assumed — the difference is entirely `_one`/`_other` plural pairs that English needs and the Russian catalog deliberately doesn't, because it uses invariant abbreviations ("ноч.", "взр.") per this project's own documented convention.
+
+Reason: real confusion reported by the project owner against a live agent session, with a genuine functional bug behind part of it.
+
+Approved By: Daler ("посмотри это agent panel, при подробнее на booking details, не всё ясно, надо делать его более понятным")
+
+Status: Implemented and verified so far as this environment allows. `npx tsc -b`/`npx vite build` clean at the 2-error dead-file baseline; both `reservations.json` catalogs re-validated; dev server confirmed serving `session.ts` and the patched helpers. The 401 diagnosis itself was verified against the running backend (fresh token → `200` on both endpoints that were failing). **Not yet verified live in-browser** — needs the owner to open a booking detail as an agent (grid starts at the hotel, no empty panels, single-room bookings show no duplicate Номера block) and to confirm the expiry path by leaving a tab open past 30 minutes, or by clearing `localStorage.token` and clicking something: it should land on the login page with the notice, not print a red error.
+
+---
+
+# Decision 148
+
+Date: 2026-08-04
+
+Decision: **Booking Details rebuilt as a three-column Enterprise workspace.** Owner-specified 16-point brief, scoped explicitly to UI/UX: no backend, API, database, engine, business-logic, workflow or permission change. That constraint held completely — every figure, state and event below comes either from data the detail view already had, or from a pre-existing GET endpoint that already carried no admin gate. Files touched: `pages/Reservations.tsx`, `i18n/locales/{ru,en}/reservations.json`. `AdminBookingFinance.tsx` was **not** modified at all.
+
+**Structural constraint the brief did not mention, and the reason this was done to the shared component rather than an agent-only copy.** `BookingDetail` is shared: `AdminBookingFinance.tsx` composes finance into it through the 9-slot `AdminBookingExtensions` interface established by the Admin/Agent Component Separation refactor, after two real production leaks (Decisions 102/106). A separate agent-only layout would have re-created exactly the divergence that separation exists to prevent, so the workspace is the shared component and all 9 slots were re-placed into the new grid, unchanged in contract: `renderStatusBadgeExtra` → hero, beside the status badge; `renderHeaderActions` → Quick Actions, in its own separated sub-block; `renderCorrespondencePanel`/`renderReplyLogButton` → centre column; `renderFinancialSummary` → right column, still replacing the base's own price block entirely; `onAfterClaim` and the three list-level slots untouched.
+
+**Layout.** `lg` 12-col grid at 3/5/4 — left: booking reference (rooms selector, booking information, hotel/cancellation confirmations); centre: guests, flights, documents, correspondence, history; right: Booking Health, price, quick actions. `md` 2 columns, below that 1. The right column is source-ordered last but `order-first lg:order-none`, so when the columns stack the health/total/actions block lands above the reference data instead of below every field. Modal widened `max-w-6xl` → `max-w-[1400px]` (three real columns do not fit in the old width). New `SectionCard` wraps `Card` so all panels share one heading treatment instead of each writing its own.
+
+**Booking Health — the new block, and the one the brief calls the most important.** Rule-based over stored data only: hotel confirmation (confirmed / waiting / **critical** once arrival is ≤7 days away and still unconfirmed), voucher, invoice, transfer selected, guest passports, approaching cancellation-penalty tier, plus an AI-check row that is an honest aggregate of the rows above rather than a separate claim. Worst tone drives the card's banner. Same category as this file's existing AI insight strip — plain threshold checks, no LLM call, no automated action. Two deliberate calibrations: guest-passport gaps escalate to critical only within 14 days of arrival (all 36 guest rows in the live database have `passport_number` NULL, so an unconditional red would have marked every booking in the system as broken), and a cancelled/rejected booking reports its terminal state instead of nagging about documents it will never need.
+
+**Four brief items could not be delivered as literally written, each blocked by data that does not exist. Stated here rather than faked in the UI:**
+- **Hotel photo.** `hotel_images` and `room_images` are both **0 rows**, and `main.py` mounts no `StaticFiles` route — so even a populated `image_path` could not be served. `HotelHeroMedia` renders the real image the moment one is reachable and a typographic placeholder (initials + star rating, from the real `GET /hotel-engine/hotels/{id}`) until then. No stock photo, no broken `<img>`.
+- **Seven price lines → four.** Accommodation / transfer / mandatory tax / grand total. Meal is not separable: Contract Engine prices a room *per meal plan*, so the meal is inside the room figure, and the only way to split it is the contract's NET price — the exact internal cost Decision 102 removed from the agent's view. The agent-facing discount is omitted for the same reason (total + discount reveals the markup). The ready-made per-category breakdown at `/finance-engine/booking-rooms/{id}/commercial-lines` is `_require_admin`. Admin keeps its full breakdown through `renderFinancialSummary`, untouched.
+- **Documents.** Voucher and Invoice only — LPO, Agent Statement and Credit Note are admin-only endpoints, so offering them to an agent would offer an action that returns 403. States are `Ready`/`Preparing` only: "Sent" and "Downloaded" are tracked nowhere in this project. Both documents are plain text (no PDF layer exists anywhere), so the button says "Download", not "Download PDF". The brief's specific complaint — the literal text "В работе" — is gone, replaced by cards that say *why* a document is not ready yet.
+- **History.** No audit-log table exists. Real, stored events only: created, claimed, dates changed (`dates_changed_at` holds only the LAST change), every correspondence message, cancellation requested, cancellation confirmed. Guest edits, flight edits, manager approval, voucher generation and invoice issuing record no timestamp anywhere and are therefore absent — with a footnote in the card saying so. A complete history needs one new backend table and is deliberately left as a future task, not silently half-implemented.
+
+**Timeline.** Seven real steps (created → claimed → approved → hotel confirmed → voucher → invoice → completed), with cancellation and rejection as their own separate tracks rather than greyed-out continuations of a path a cancelled booking never takes. **No "Waiting Hotel" step**, despite the brief listing one: that status exists in `BookingStatus`'s Literal but no code path ever sets it (verified against `booking/service.py` and against the live table, whose only values are Pending/Confirmed/Cancelled). Waiting on the hotel is shown the honest way — as the confirmation step not being reached yet.
+
+**Smaller things fixed while in here, each a real gap rather than a restyle.** Flight details used to render inside the facts grid *only when already filled*, so an agent who had not entered them saw no sign the fields existed — they are now a permanent Flights card with the same `FlightNumbersEdit` write path and the same `canEditFlights` gate. Guest passport/nationality/date-of-birth were editable but only displayed when non-empty, making an incomplete guest look identical to a complete one — guest cards now always show all four fields with an explicit "не указано", which is the same gap Booking Health reports. Dates and guest counts were removed from the left card because the hero now carries them; both read the same `effectiveBooking`, so a multi-room application still shows the **selected** room's values, not the application's blended ones. Transfer moved from the facts grid into the Flights card (the brief groups it there) rather than being duplicated in both.
+
+Three GET endpoints are newly called from this view — `/hotel-engine/hotels/{id}`, `/hotel-engine/hotels/{id}/images`, `/contract-engine/contracts/{id}/cancellation-policies`. All three verified agent-reachable: `_require_admin` does not appear anywhere in `hotel/api.py` or `contract/api.py`, and all three were called live and their response shapes checked against the new TypeScript interfaces. The invoice-status fetch was **de-duplicated**, not added: `useBookingDocuments` now serves the documents cards, the timeline and Booking Health from one request, so those three surfaces cannot disagree about whether an invoice is issued.
+
+Reason: project owner's explicit 16-point brief — Booking Details "должен перестать выглядеть как обычная форма", becoming a workspace where an agent understands the whole state of a booking in 5–10 seconds.
+
+Approved By: Daler (16-point brief, 2026-08-04; structure confirmed before implementation: "струкtura podtverjdayu, nachinay")
+
+Status: Implemented. `npx tsc -b` and `npx vite build` both clean at the project's 2-error dead-file baseline (`AgentDashboard.tsx`, unrelated); every `t()` key mechanically verified present in **both** catalogs; the Vite dev server confirmed transforming the rewritten file without error; the three newly-called endpoints confirmed live against the running backend. **Not yet verified live in-browser** — the Chrome extension was not connected in this session, so the owner needs to open a booking as an agent and confirm: hero with placeholder + five figures, timeline highlighting the current step, Booking Health showing amber "ожидаем ответ отеля" plus a passport warning on the test data, four-line price, guest/flight/document cards, and history. Admin side needs the same pass in `Бронирования` to confirm all 9 extension slots still render in their new positions.
+
+---
+
+# Decision 149
+
+Date: 2026-08-14
+
+Decision: **"Flexible Dates" turned from a documented stub into a real feature — a server-side date scan in Pricing Engine plus a price strip / price calendar in `HotelSearch.tsx`.** The tab has existed since the Marriott-style search restyle, and `HotelSearch.tsx`'s own comment said outright what it was: *"Visual-only tab, per explicit scope -- no flexible-date search exists... Selecting 'Flexible Dates' just changes which pill is active; the calendar below keeps behaving identically either way."* `dateMode` was local state read by nothing. Files touched: `app/engines/pricing/{service,schemas,api}.py`, `pages/HotelSearch.tsx`, `i18n/locales/{ru,en}/hotelSearch.json`.
+
+**What flexible dates mean here.** Stay LENGTH is held fixed and the check-in date moves across a whole month. The scan returns the cheapest bookable option per candidate date, rendered as a Mon–Sun price calendar; picking a cell is what ENDS flexible mode, writing real check-in/check-out dates and immediately running the ordinary exact-date search. Nothing downstream — results, cart, checkout, Booking Engine — ever sees a "flexible" booking, because there is no such thing. That is the whole reason this needed no change in any LOCKED engine.
+
+**Whole-month is the only mode, by owner decision on seeing the first iteration.** That first iteration also shipped a `"window"` mode (±1/2/3 days around an already-chosen date) and a Период поиска toggle between the two; both were removed outright the same day rather than kept as an option — *"оставим только вариант весь месяц... остальные функции уберем все"*. The reasoning holds up: window mode required an exact anchor date to already be picked, so it could never be the first thing an agent reached for, and a month scan answers the same question more broadly ("when in this period is it cheap" rather than "is the day either side of this one cheaper"). What the agent actually needs is to move quickly between months **and years** — so the config panel is now a year navigator (‹ 2027 ›, bounded to `[current year, +5]`) over a 12-month grid with fully-past months disabled, replacing a flat rolling list of the next 12 months that could never reach a second year at all. Stay length stays, obviously: without it there is nothing to scan. `FlexibleDatesConfig` lost `mode` and `flexDays` entirely, `buildScanCandidates` lost its `checkIn` parameter, and every translation key belonging only to the removed mode was deleted from both catalogs rather than left orphaned. **The backend needed no change at all for this removal** — `scan_dates` takes an explicit list of candidate dates precisely so that choosing which dates to offer stays a UI concern.
+
+**Two further owner refinements, same day, both UI-only.** (1) **Trip length is now a free number the agent types**, not a row of 3/5/7/10/14 preset pills — *"чтоб сам агент поставил, например 11 или 3 или 4"*. The presets were removed entirely rather than kept alongside the field. The input holds free text while being typed and commits to the config only when the value parses **and is already inside 1–30**, with blur snapping the box back to the value actually in effect; the earlier version clamped on every keystroke, which rewrote a half-typed "0" (on the way to "07") into "1" under the cursor. The backend needed nothing — verified live at 1/3/4/11/21/30 nights, all correct and consistent ($409/night × N for Kandima's Sky Studio, base 399 + the $10/night markup). (2) **The always-visible hint paragraph became a hover/focus/click "!" tooltip** (`InfoTooltip`, built locally — no tooltip component exists anywhere in this project yet, and one call site doesn't justify a shared `components/ui/` one), carrying a fuller four-step explanation of the whole mechanism plus an explicit what-is/what-isn't-in-the-price split.
+
+**Double-clicking a month jumps straight to exact dates in it.** Single click still only selects the month for a scan; double click selects it AND hands off to the "Точные даты" calendar already showing that month. These are the two real intents an agent has in front of that grid — "scan this whole month for the cheapest dates" versus "I already know the month, let me pick the days" — and the second previously cost a separate trip up to the tab strip. The month key is passed to the handler explicitly rather than read back from state, so the handoff doesn't depend on whether the two `onClick` writes React fires first have landed yet; the buttons are `select-none` so the double click doesn't highlight the month name as text. Discoverability is deliberate rather than assumed: a visible hint line sits under the grid, each month carries the same text as a native `title`, and the "!" note repeats it — an affordance nobody is told about is one nobody uses.
+
+**Month selection now carries across the tabs, both directions.** Switching to "Точные даты" with December 2027 chosen in flexible mode moves the calendar to December 2027 instead of dropping back to today's month, and switching the other way seeds `anchorMonth` from the month the calendar is currently showing. A third case is covered by re-anchoring `viewDate` every time the picker is **opened**: picking a date out of the price calendar writes check-in/check-out from the parent and never goes through `DateRangePicker` at all, so without this the agent could reopen the picker and be looking at a month a year away from the dates they had just chosen. That open-time re-anchor is the one behavior change reaching the other two callers (`Reservations.tsx`, `PriceCalculator.tsx`) — deliberate: opening a calendar on the month of the date already selected is correct everywhere, and the old behavior (keeping whatever month `viewDate` was first initialised with) was simply a latent bug.
+
+**New endpoint `GET /pricing-engine/date-scan`, and why it lives in Pricing Engine.** The agent-facing price is Contract Engine's net plus this engine's markup/exclusive discount, so a strip built on raw net would repeat exactly the trust-breaking bug Decision 070 fixed (search showing one number, booking charging another). Pricing Engine now imports `contract_service`/`hotel_service` — a new import, but in the direction the dependency graph already runs (`hotel → contract → pricing → booking → finance`), so it stays acyclic; Booking and Finance already import downward the same way. Contract, Hotel and Booking Engine are not modified by a single line. Not admin-gated, same reasoning as `/agent-price` directly above it.
+
+**Why a backend endpoint was mandatory, not a preference.** The existing exact-date search issues ~80 HTTP calls per hotel for ONE date pair (a price + agent-price call per room-type × meal-plan). A ±3-day scan over 5 hotels is ~2800 calls client-side. Measured server-side instead: a full sweep is 0.29s for Siyam World (15 room types × 1 meal plan) and 0.46s for Kandima (10 × 4).
+
+**Correctness of the one optimization, verified rather than assumed.** `_net_ordering_is_faithful` lets the scan call `apply_agent_pricing` once for the winner instead of once per candidate (profiling put that at ~26% of scan time), but ONLY when no exclusive discount can apply — because the remaining transformation is then a flat per-night markup identical across candidates, which cannot reorder them. With an exclusive agent on a contract that has `ContractExclusiveDiscount` rows, it falls back to pricing every candidate. Verified against an independently-written brute-force sweep on **12 real cases** — both hotels, both fast and slow paths, including dates inside Kandima's real 50% exclusive window and Siyam's 10% one — all 12 matched to the cent AND picked the identical room type and meal plan. Guard rails also verified live: over-cap → HTTP 400, `nights=0`/`adults=0`/empty hotel list/empty date list → 400, unknown hotel id skipped rather than sinking the scan, unauthenticated → 401.
+
+**Cost is bounded by a formula, not by today's catalog size.** `MAX_SCAN_UNITS = 40`, where a unit is one (hotel, date) pair — the thing that actually costs a sweep — so it stays meaningful at 500 hotels; the agent already cannot pick more than 5. The frontend sends candidates in chunks of 4 units and appends rows as they arrive, so the calendar fills progressively instead of freezing. Measured end-to-end through the real HTTP path: a whole month of one hotel is 4–7s arriving in 8 visible updates.
+
+**It surfaces real money, and the jumps land exactly on the contract's own season boundaries** — verified by scanning whole months and printing every price change: Kandima December 2027 jumps on **26 Dec** ($3,318 → $4,816), which is precisely where that contract's Peak season starts (2027-12-26); Siyam World December 2026 jumps on **23 Dec** ($5,960.50 → $8,186.50), precisely where its Festive season starts (2026-12-23), plus a second real jump on 27 Dec. Month spreads of $1,498 and $3,308 respectively. A scan of the current month (August 2026) correctly returns 18 candidates rather than 31 (past days dropped) and prices none of them, since neither contract has started yet.
+
+**Deliberately excluded, and said so in the UI.** `min_total` is the cheapest ROOM total only; transfer and mandatory tax are omitted because both depend on choices the agent has not made at this stage, and folding in a guessed one would make the strip disagree with the real quote that follows. The picker's own hint text and the panel subtitle both state this.
+
+**Inherited limitation, surfaced honestly rather than worked around.** Contract Engine's `get_room_price` prices a whole stay off the season covering `check_in` — its own documented simplification. A candidate whose stay crosses a season boundary is therefore priced entirely at the check-in season's rate. Contract Engine is LOCKED and inventing a season-aware nightly rate in the scan would produce numbers the actual booking then contradicts, so the scan reproduces the same behavior and `scan_dates`' docstring records it.
+
+**Pre-existing gap found while building this, NOT introduced by it and NOT fixed here.** `get_room_price` never consults `Rate.minimum_stay`/`maximum_stay` or the `minimum_stay_rules` table at all — they are CRUD-only, never read during pricing. Latent today (every `minimum_stay`/`maximum_stay` is NULL and `minimum_stay_rules` has 0 rows), but flexible dates make it reachable in a new way, since the agent now picks a stay length directly. Flagged for a future Contract Engine task rather than patched from Pricing Engine, which has no business enforcing another engine's contract rules.
+
+**Side effect, intentional:** `Reservations.tsx` and `PriceCalculator.tsx` no longer render the Specific/Flexible segmented control at all. The tabs are now gated on a caller passing `onFlexibleChange`, so a caller that cannot honour flexible dates no longer shows a tab that does nothing — which is what all three callers did before this decision.
+
+**Machine-readable reason codes, not sentences.** `unavailable_reason` returns `"no_active_contract"` / `"no_priceable_rooms"`; the frontend owns the RU/EN wording. Directly applies Decision 111's lesson that a sentence generated server-side bypasses i18next and freezes in whichever language it was written in.
+
+Reason: project owner reported the tab as broken ("гибкие даты не работает") and approved the plan for stages 1–3 (backend scan, ±N-day mode, whole-month calendar).
+
+Approved By: Daler (2026-08-14, "delai" against the presented plan)
+
+Status: Implemented, backend verified live. `npx tsc -b` and `npx vite build` both clean at the project's 2-error dead-file baseline (`AgentDashboard.tsx`, unrelated); both i18n catalogs validated as parseable JSON and all 138 `t()` keys in `HotelSearch.tsx` mechanically confirmed present in **both**; every identifier and translation key belonging to the removed window mode confirmed to have zero remaining references anywhere in `src/`; the endpoint exercised over real HTTP including a Node script replicating the frontend's exact chunked request shape, across three months and both hotels. The first iteration (with window mode) was confirmed working in-browser by the owner via screenshot before that mode was removed. **The simplified version is not yet verified in-browser** — no browser tooling was connected in this session and `/hotel-search` is `role="agent"`-only, so the owner needs to open it as an agent and confirm: the Flexible tab shows trip length plus a year navigator over a 12-month grid (no period toggle), the year arrows reach 2027/2028, past months are greyed out, "Подобрать даты" fills a price calendar with the cheapest dates in green, and clicking a cell runs the normal search on those dates.
+
+---
+
+# Decision 150
+
+Date: 2026-08-14
+
+Decision: **Per-guest flight details — a traveller can now fly on a different flight from the rest of the party.** Until now an application carried exactly one set of flight fields on `Booking` (Decision 047), so a 5-guest, 2-room application had one arrival flight for everyone. Additive extension to LOCKED Booking Engine, same precedent as Decisions 084/089/090/097/104. Files touched: `booking/{models,schemas,service}.py`, `pages/HotelSearch.tsx`, `pages/Reservations.tsx`, `i18n/locales/{ru,en}/{hotelSearch,reservations}.json`.
+
+**Schema: six nullable columns on `guests`**, mirroring `Booking`'s own flight fields rather than inventing a different shape — `arrival_flight_number/date/time`, `departure_flight_number/date/time`. Added by raw `ALTER TABLE` (Decision 084/089's technique); the database was backed up first, all 41 pre-existing guest rows verified untouched and NULL afterwards.
+
+**NULL is meaningful, and is the normal case: it means "this guest is on the application's flight", not "unknown".** That single choice is what makes the whole feature purely additive — every existing application and every future one where the party travels together behaves exactly as before, with these columns NULL and nothing reading them.
+
+**Deliberately NOT paired with a Booking-level "guests fly separately" boolean.** The real case isn't a binary mode but a mix — three of five travellers on the group flight, two arriving a day later on their own — and per-guest NULL-or-value expresses that exactly. A flag would be a second source of truth that could contradict the rows it summarises. The UI's radio button is therefore an *input convenience only*; nothing about the stored data is a "mode".
+
+**`repository.create_guest`/`update_guest` needed no change at all** (they already take `**fields`), and neither did `POST /guests` or `PUT /guests/{id}` (already `**data.model_dump()` / `exclude_unset=True`). The four guest schemas now share a `GuestFlightFields` base instead of repeating six fields four times — which is exactly how `Booking`'s own flight fields ended up spelled out four separate times in that same file.
+
+**Frontend — checkout.** The flight step gained a two-option choice: "Все летят одним рейсом" (default, byte-identical to previous behaviour — no guest ever sends flight fields) and "У кого-то свой рейс", which keeps the common flight AND lets individual travellers override it. Deliberately not "now fill in all five separately": an agent shouldn't have to retype the same flight five times to say that one person arrives late. A traveller left without an override simply travels on the common flight, which is precisely what a NULL row means server-side. The traveller list is derived from `buildGuestsPayload()` — the same dedupe the submit payload itself uses — so the names offered are exactly the guest rows that will be created, never a second list that could drift. Per-guest flights are keyed by the same name+DOB triple `findOrAdd` dedupes on, **not** by list position: going Back and editing a name can reorder that list, which would otherwise silently reassign somebody else's flight. The six inputs are one extracted `FlightFieldsGrid` used by both the common block and every override.
+
+**Frontend — display.** A guest card shows an "own flight" block only for a guest who actually has one (showing the booking's flight on every card would make ordinary bookings look like individual arrangements). The Flights card, when anyone flies separately, names them and relabels its two legs "общий" — without that, those two legs read as "the whole party's flight", which stops being true the moment anyone has their own.
+
+**Flight step redesigned on the owner's feedback ("логика работает, но дизайн сделать красивее и удобнее"), and the reason the first version looked wrong turned out to be a real, pre-existing project-wide bug.** `styles/components.css` applies `width:100%; padding:14px 16px; border:...` to **every** `input`, radios and checkboxes included, and Tailwind's preflight is deliberately excluded — so the mode radios rendered with the dot stranded on the far left and the text pushed to the far right, and the per-guest checkbox as a stretched double box. The codebase's own working precedent is explicit size utilities (`HotelSearch.tsx`'s transfer radio has always carried `h-4 w-4 accent-gold`). This step now avoids native radios/checkboxes altogether — the mode choice is two real selectable cards and the per-guest toggle is a pill, both `<button>` — which is both the better control here and immune to the rule. The rule itself is left alone and documented in CLAUDE.md's Known issues: a global exception would fix it everywhere but would also restyle `Login.tsx`/`Register.tsx`'s existing checkboxes, which nobody asked about.
+
+Other design changes in the same pass: the flat 3×2 grid of six identical boxes became two captioned legs (Прилёт/Вылет, each with a plane icon), because native date/time inputs show only "dd/mm/yyyy" and "--:--" and the flight-number placeholder was the sole clue which row was which — an ambiguity that multiplies once the block repeats per traveller. Column widths are now 1.3/1/0.75 instead of equal thirds (a flight number needs room, a time input doesn't). The common-flight block carries a live "для N из M" badge so "common" isn't a claim the agent has to verify by counting. Each traveller row got an initials avatar and a gold-tinted active state, so five travellers scan as a list rather than a wall of near-identical boxes. Four `*Placeholder` translation keys the redesign stopped using were deleted from both catalogs rather than left orphaned (native date/time inputs ignore `placeholder` anyway — they are `aria-label`s now).
+
+**Third pass, on the owner's next report ("добавил свой рейс — нет варианта выбрать его или сохранить... чтоб второй раз если смотреть увидеть для данного гостя уже выбранный конкретный рейс"): a saved state, and editing after creation.** Two real gaps, both closed.
+
+(1) *In the wizard*, an override had exactly one state — permanently-open input fields. With five travellers that is five six-field forms and no way to read back what was actually entered for whom, and the single toggle both added an override and silently discarded a filled-in one. A traveller with an override now has two states: **editing** (fields + a "Сохранить рейс" button, disabled while every field is empty) and **saved** (a read-only two-line summary, "SU120 · 21 авг 2026 · 02:01"), with separate "Изменить" and "Убрать" actions instead of one ambiguous toggle. **Saving is display state only — an override still open at Submit is sent exactly the same as a saved one.** Deliberately: making Submit ignore unsaved fields would silently discard work plainly visible on screen, which is a worse failure than an un-collapsed card. A leg with only some pieces filled shows just those (a flight number without a confirmed time is a normal state, not an error).
+
+(2) *After creation*, a guest's own flight was visible in `Reservations.tsx` but **not editable anywhere** — it could only ever be set at application time, so a traveller changing flights afterwards had no path but a direct API call. `GuestRow`'s edit form now carries the same own-flight section (a pill toggle, not a checkbox — same legacy-CSS reason). It sends the six fields **explicitly in both directions**: turning the toggle off must write nulls, and since the endpoint uses `exclude_unset`, omitting them would leave a removed flight silently in place. Verified live against the real endpoint with the exact payload the form now sends — set all six, change one leg while the other stays intact, toggle off and confirm all six cleared in the database, with the other guest's row and the booking-level flight both untouched; 9 checks, all passed, test data removed (guests back to 41, bookings 70, zero rows with flight data).
+
+**Fourth pass — two live failures reported on a real submit, both with causes elsewhere than where they showed up.**
+
+(1) **`[object Object]` as an error message.** Root cause reproduced exactly: FastAPI returns `detail` as a **plain string** for every deliberate `HTTPException` this project raises, but as a **list of `{loc, msg, ...}` objects** for a 422 request-validation failure. Both `fetchJson` copies did `if (body?.detail) detail = body.detail` and passed either straight to `new Error(...)`, so a 422 rendered as the literal text `[object Object]`. New `formatApiDetail` (added to `HotelSearch.tsx` and `Reservations.tsx`, which each carry their own `fetchJson` for the module-scope/i18n reasons documented there) turns the list into `field: message`, dropping FastAPI's leading `body`/`query`/`path` segment. The real captured 422 now reads *"departure_flight_date: Input should be a valid date or datetime…"*. **The 422 itself** came from a slipped keystroke turning a flight year into `122029` — beyond Python's `date` range. Flight date inputs now carry `min`/`max` bounds and a submit-time check (`isValidFlightDateValue`, 2000–2100) that names the problem instead of shipping it to the backend. The bounds are deliberately wide: this catches nonsense, it is not a rule about how far ahead a flight may be.
+
+(2) **"пока не добавишь время PM или AM дальше не идёт".** Two compounding causes. `<input type="time">` renders in the **browser's** locale, so on this machine it demands an AM/PM segment and yields `""` until one is picked — the agent types 09:00, sees "09:00 --", and the value is silently empty. Worse, a partially-entered native date/time input is `badInput`, which makes the whole wizard `<form>` invalid, so the browser blocked Submit with no message anywhere on screen. Fixed at both levels: the form is now `noValidate` (this wizard does its own validation, and the native kind was actively harmful), and **every flight-time input in the project became a 24-hour text field** — `formatTimeInput` auto-inserts the colon while typing, `isValidTimeValue` rejects only a complete-but-impossible value like `25:70`, and a half-typed `09:3` stays un-flagged under the cursor but is caught at submit. This is not a workaround: the column is `String(5)` and the real values already stored are `08:45`/`14:20`, so plain text is the closer fit — locale-independent, always yields a value, and no AM/PM exists to forget. `FlightNumbersEdit`'s pre-existing native time inputs were converted too; leaving them would have meant the identical stored value being edited in two different formats on two screens.
+
+Verified: 12 `formatTimeInput`/`isValidTimeValue` cases (including typing `09:30` one keystroke at a time and `21:45`, which natively would have required PM), 4 date-bound cases including the exact `122029-12-12` that caused the original failure, and 5 `formatApiDetail` cases run against the **real captured 422 body**. Both backend regression suites re-run and still fully green, database still at 41 guests / 70 bookings / zero flight rows.
+
+**Real regression risk found and covered by a test rather than assumed away:** `GuestRow`'s save sends names/passport only, so a guest edit must not wipe that guest's flight. It doesn't, because the endpoint uses `exclude_unset=True` — but that is now an explicitly verified behaviour (check E), since if it ever stopped holding, every guest edit would silently clear their flight and nothing else would notice.
+
+Reason: project owner, on making a real 2-room/5-guest booking — *"поletnoe dannie odin variant dlya vsekh, nado postavit opciu... vtoroi variant mojno vibrat raznogo turista vibrat na raznie poletnoe dannie"*.
+
+Approved By: Daler (2026-08-14)
+
+Status: Implemented, backend verified live. A scripted end-to-end run against the real HTTP API covers: a party splitting across flights (values checked in the response AND read back straight from SQLite), an all-on-one-flight application behaving exactly as before, adding a flight to a guest afterwards via `PUT /guests/{id}`, no bleed onto other guest rows, a name edit leaving the flight intact, explicit clearing still working, and no pre-existing guest row gaining flight data — **all 18 checks passed, and the script deletes everything it created** (guests table verified back at 41 rows, bookings at 70). One orphan test application from an earlier aborted attempt was found by check D and removed; allotments were confirmed byte-identical to the pre-change backup. `npx tsc -b` and `npx vite build` clean at the project's 2-error dead-file baseline; every new `t()` key confirmed present in both catalogs. **Not yet verified in-browser** — no browser tooling was connected, so the owner needs to make a real multi-guest application and confirm the radio, the per-traveller override blocks, and the resulting guest cards / Flights card.
+
+---
+
+# Decision 151
+
+Date: 2026-08-15
+
+Decision: **The admin Bookings screen fetches cancellation tiers once per CONTRACT instead of once per (contract, arrival date) pair.** One file, one effect: `pages/Reservations.tsx`'s `BookingsList` load effect. No backend change, no engine touched, no endpoint added — the endpoint already returns a contract's full tier list when `check_in` is omitted.
+
+**Found by measurement, not by reading.** The project owner asked what would break at 100 applications/day, so 500 real applications were generated through the real `POST /booking-engine/applications` (500/500 succeeded, 49s) into an **isolated copy** of the backend and database running on port 8002 — the real `dmc.db` was verified untouched before and after (72 bookings both times). The load screen's request sequence was then replayed exactly, capped at 6 parallel connections to match Chrome's per-origin HTTP/1.1 limit.
+
+| | today (72 bookings) | at volume (500) |
+|---|---:|---:|
+| requests to draw the screen | 26 | **309** |
+| of which cancellation tiers | 19 | **302** |
+| distinct contracts behind those 302 | 2 | **2** |
+| tier rows those 302 requests actually returned | — | **12** |
+
+The fan-out grew with **booking volume**, not with catalog size: 302 requests to slice the same 12 rows, 51 sequential rounds at 6 connections. On localhost that cost 0.95s and looked harmless, which is exactly why it survived — the cost is almost entirely round trips, so it only appears once there is a network:
+
+| network latency | before | after | |
+|---|---:|---:|---:|
+| 0 ms (localhost) | 309 req / 0.92s | 9 req / 0.11s | 8.7× |
+| 20 ms | 309 req / 2.06s | 9 req / 0.27s | 7.7× |
+| 50 ms | 309 req / 3.71s | 9 req / 0.42s | 8.8× |
+| **100 ms (real server)** | **309 req / 6.46s** | **9 req / 0.73s** | **8.9×** |
+
+The selection that moved into the browser builds all 302 keys in **0.6 ms**.
+
+**`tiersApplicableTo` is a deliberate client-side mirror of `contract/service.py`'s `get_cancellation_policy`**, including its both-or-neither quirk (a tier with only one bound set matches neither branch and is excluded) and its inclusive bounds. ISO date strings compare correctly with `<=`, so no date parsing is involved. Same precedent as `financeShared.tsx`'s `computeBookingFinancials` (Decision 101). The alternative — a new bulk endpoint accepting many dates — was rejected as a larger change to a LOCKED engine for a rule this small; the trade is recorded honestly in the helper's own comment: **if `get_cancellation_policy`'s rule ever changes, this must change with it.**
+
+**Equivalence was proven, not assumed.** The mirror was compared against the server's own answer for **all 302 real pairs** from the 500-application dataset: 302/302 identical, and all 302 were non-empty (so it is not a trivially-both-empty comparison). Additionally every one of the **12 exact window-boundary dates** (each tier's first and last day) matched, and four deliberately outside-every-window dates matched at 0 rows each. The same check was then re-run against the **real production database**: 19/19 pairs identical, 19 requests → 2. `npx tsc -b` and `npx vite build` clean at the project's 2-error dead-file baseline. The map's shape (`"contractId|arrivalDate"` → tiers) is unchanged, so `computeCancellationDeadlineFlags` and every other consumer are untouched.
+
+**Deliberately NOT changed in this decision, though measured:** the `limit=500` cap with no pagination — at volume the copy held 572 bookings and the screen received 500, leaving **72 already silently invisible** (at 100/day the cap is one working week). And the two remaining per-booking `?check_in=` calls in `BookingDetail`/Booking Health are one request per opened booking, not a fan-out, and are correct as they stand.
+
+**What the measurement cleared of suspicion:** the database and backend are not the bottleneck — the 500-booking query runs in 0.03s, creating a full application takes ~0.1s including pricing, and opening one booking costs 9 requests regardless of volume. The entire problem was the frontend's request shape.
+
+Reason: project owner, after reviewing the admin panel — *"дай свой комментарий что можно улучшить для работы при нагрузке каждый день 100 заявок"*, then *"сделай 500 тестовых заявок и покажи точные цифры"*, then *"да делай первый пункт"*.
+
+Approved By: Daler (2026-08-15)
+
+Status: Implemented and verified. **Not yet confirmed in-browser** — no browser tooling is connected, so the owner should open the admin Bookings screen and confirm it still renders identically (in particular the amber "cancellation deadline approaching" AI flags, which are the only consumer of this data).
+
+---
+
+# Decision 152
+
+Date: 2026-08-15
+
+Decision: **Real pagination for the admin Bookings screen, with every filter and the sort moved server-side.** Files: `booking/{repository,service,api}.py` (additive extension to LOCKED Booking Engine, same precedent as 084/089/090/097/104/150), `pages/Reservations.tsx`, `i18n/locales/{ru,en}/reservations.json`.
+
+**The cap was losing data, measured not guessed.** At 500 generated applications the copy held 572 bookings, the screen fetched 500, and **72 were unreachable with nothing in the UI saying so**. The list is newest-first, so it is the oldest that vanish. At 100 applications/day that cap is one working week.
+
+**The bigger finding, which is a correctness bug rather than a cap.** All filtering and sorting ran in the browser over whatever slice had been fetched (`Reservations.tsx`'s `filteredSorted`). That silently turned *"who is staying next week"* into *"who among the newest 500 bookings is staying next week"* — an answer that looks right and isn't, and it was already wrong today, before any pagination. Simply adding pages without moving these would have made it worse, because a filter would then have meant "within these 50 rows". So the three "By date" views (**staying** — stay interval overlaps the range, excluding Cancelled/Rejected; **created** — created_at within the range; **cancellations** — arrival in range and status Cancelled) moved into `repository._apply_booking_filters` **verbatim**, alongside new `status`/`hotel_id`/`agent_id` filters and a whitelisted `sort_by`/`sort_dir`.
+
+**Backend shape.** `GET /bookings` gained the new optional params (all default to previous behavior, so no existing caller changes) and a sibling `GET /bookings/count` returning `{"total": N}` from **the same `_apply_booking_filters` helper** — a page and a total computed from different filter sets is exactly how a list ends up claiming "1-50 of 400" over 120 real rows. `/bookings/count` is declared **above** `/bookings/{booking_id}`: that route's param is an `int` and FastAPI matches in declaration order, so a later `count` would be swallowed and fail parsing — the exact bug `api/routes.py`'s `/agent-registrations/stats` still has (documented in CLAUDE.md), deliberately not repeated. Every non-default sort appends `Booking.id` as a tiebreaker so a page boundary can't repeat or skip a row when two share an `arrival_date`.
+
+**A real bug the tests caught, not review:** `_booking_order_by` returned a tuple and was passed to `query.order_by(...)` as a single argument — every sorted page returned HTTP 500. `order_by()` takes criteria as separate arguments; it now always returns a tuple and callers splat it. Found by the pagination test on its first run.
+
+**Three knock-on effects handled rather than ignored:**
+- **AI flags** (`pending_soon`, `cancellation_deadline`) were computed from the loaded list, so pagination would have quietly shrunk them to 50 rows. They now have their own fetch bounded by *arrival* date (60-day horizon, sorted ascending so a cap would drop the furthest arrivals, never the most urgent), independent of the user's current filters. This is also **strictly more complete than before**: the admin screen's default view fetches only bookings *created today*, so a stay arriving in three days but booked last month could never raise a flag at all. If the cap is ever reached the strip says so instead of under-reporting silently.
+- **Filter dropdowns** were built from `new Set(bookings.map(...))`. On a page of 50 Pending rows that would have left "Pending" as the only selectable status — trapping the user inside their own filter. Statuses now come from a fixed list mirroring `BookingStatus`, agents from the already-fetched user map.
+- **`renderListSummary`** now receives one page, so its "Total profit" is page-scoped. Said out loud in the UI rather than left to be assumed; a true across-the-filter aggregate needs its own Finance endpoint and is not pretended here.
+
+**Also generalized:** the mid-selection refetch guard (`createdDateKey`) covered only the "created" view; now that all three views hit the server, all three could trigger the refetch-mid-date-pick flicker it exists to prevent, so it covers all three and includes the view in its key. And the agent-scoped screen moved from `/agents/{id}/bookings` to the paginated `/bookings?agent_id=`, verified to return the identical set — same auth level, so no change in exposure.
+
+**Measured, at 500 applications:**
+
+| network latency | before | after | |
+|---|---:|---:|---:|
+| 0 ms (localhost) | 309 req / 1.52s | 11 req / 0.12s | 12.7× |
+| 50 ms | 309 req / 3.68s | 11 req / 0.43s | 8.6× |
+| **100 ms (real server)** | **309 req / 6.38s** | **11 req / 0.77s** | **8.3×** |
+
+Rows transferred to draw the screen: **500 → 50**. Reachable bookings: **newest 500 (72 unreachable) → all 572 across 12 pages**.
+
+Approved By: Daler (2026-08-15, "polniy variant delai")
+
+Status: Implemented and verified. Backend proven at **both** 72 and 572 bookings: each of the three date views compared against the old client-side predicate over four date windows, every status/hotel/agent filter and two combined filters compared against ground truth, `count` equal to the row count for seven filter sets, pages tiling the full set with **no duplicate and no gap** across three sort orders, sort direction actually applied, and the no-parameter call byte-identical to before (still newest-first; an unknown `sort_by` falls back rather than erroring). The exact query strings the rewritten screen builds were then replayed — nine filter combinations, each checked for count-vs-rows agreement and for page 1 being the true prefix of the full order — plus Decision 125's "search ignores the date scope" rule re-proven, and the agent-scope switch proven set-identical. Decisions 150/151's suites re-run green afterwards. `npx tsc -b`, `npx vite build` and `npx oxlint` all clean (tsc at the project's 2-error dead-file baseline). **Not yet confirmed in-browser** — the owner should open `Бронирования`, page through, and check that filters/sort/search behave and that the "Showing X–Y of N" count matches. Note the AI-flag path could not be exercised with real rows: no booking in either dataset arrives within 60 days, so its query was verified correct (returns exactly the arrivals in range — zero) but never with a populated result.
+
+---
+
+# Decision 153
+
+Date: 2026-08-15
+
+Decision: **A flight date that cannot belong to a stay is now refused outright, not merely warned about.** Files: `booking/{validators,service}.py` (additive extension to LOCKED Booking Engine), `pages/{HotelSearch,Reservations}.tsx`, both i18n catalogs.
+
+**Confirmed live before writing anything.** The owner asked whether check-in 22.11.2027 with a flight of 20.12.2020 is really accepted. It was: a real application went through the API and stored an arrival flight **2528 days before check-in** and a return flight **719 days before the outbound**, with no error anywhere. `booking/schemas.py` had no Pydantic validators at all, and `validators.py` never mentioned flights. The test booking was deleted afterwards.
+
+**Two tiers, because both extremes are wrong.** Blocking everything unusual would break real itineraries (a night flight landing the day before check-in, a departure the morning after check-out, or an agent who genuinely doesn't know the flight yet and leaves it blank). Warning about everything leaves nonsense in the database. So:
+
+- **Refused (HTTP 400), in `validate_flight_dates`:** an arrival flight more than **365 days** from the check-in date, a departure flight more than 365 days from the check-out date, or a **departure flight earlier than the arrival flight**. The owner set the year threshold directly — *"не бывает время трансфера через год после их проживания"*.
+- **Warned, never blocked:** more than 3 days off the stay. Shown live in the checkout as the agent types, and as a new **Booking Health** item ("Flight dates") on existing bookings, which is how rows stored before this validation existed become visible instead of sitting silently in the database.
+
+**Anchored to the STAY, deliberately not to today.** Bookings get edited long after travel has happened — a completed August stay still gets its guest list corrected — and anchoring to the current date would make every historical booking un-editable. A past stay with past flights is valid; a 2027 stay with a 2019 flight is not, and one rule judges both.
+
+**Applied on every write path that can carry a flight date**, not just the one the owner happened to hit: `create_booking_application` (the application-level flight **and** each guest's own override, checked before any pricing or inventory work), `update_booking`, `create_guest`, `update_guest`. The two edit paths validate only the fields actually present in the payload, filling the rest from what is already stored — so a partial edit is judged on the booking's real resulting state rather than on nulls the caller never sent, and editing a guest's **name alone** is unaffected by the flight rule.
+
+**The frontend mirrors it, the server decides it.** `flightDatesImpossible` reproduces the same rule so the agent finds out while typing rather than losing a filled-in wizard to a 400; `flightDatesSuspicious` drives the softer warning. Multi-room applications validate against the first room's dates — the same "representative" row whose dates become the Booking's own, so client and server judge identically.
+
+**Existing data is affected, on purpose:** BK-000074 and BK-000075 (the owner's own test rows, gaps of 459–9775 days) can no longer be re-saved without fixing their flight dates, and now show a Booking Health warning. BK-000002's real 32-day departure-flight gap is inside the hard bound, so it is warned about and still editable.
+
+**Revised the same day, after the owner tested it — and the report uncovered a real hole as well as a threshold disagreement.** *"если дата трансфер отличается 3-4 дня система не предупреждает... от 1 дня до 365 дней предупреждения"*. Two separate causes:
+
+1. **Threshold.** The warning fired only above 3 days, on the reasoning that a night arrival the day before check-in is normal enough not to mention. The owner's call overrides that: warn on **any** difference, 1 day upward. It only ever produces a line of text, and a one-day slip is also exactly what a typo looks like. `FLIGHT_DATE_WARN_DAYS` is now 0 in both files. Verified on his own booking BK-000076 (arrival 2 days off, departure 3 days off) — silent before, both warn now.
+2. **A real hole, not a threshold.** The notice was rendered **only under the common flight block**. A traveller's own flight (Decision 150) could be any number of days off the stay and say nothing at all — so if he tested there, no gap would have warned. Extracted into one `FlightDateNotice` component now rendered in **three** places: the common flight, each open per-guest override, **and the saved per-guest summary** (otherwise pressing "Сохранить рейс" would make the warning vanish without the date changing). The component also shows the hard-refusal case in red while typing, instead of only on submit.
+
+The refusal message now names the actual reason — *"отличается больше чем на год ({{days}} дн.) — заявка не будет принята"* — rather than a generic "isn't possible". The backend rule and its 365-day bound are unchanged; only the reporting tier moved.
+
+Reason: project owner — *"если не логично добавляется вообще не принимать... дата заезда 22.11.2027 и трансфер на 12.12.2019 этого не может быть"*, then after testing: *"от 1 дня до 365 дней предупреждения, если отличается больше года — не принимается"*.
+
+Approved By: Daler (2026-08-15)
+
+Status: Implemented and verified. 18 live checks over every write path: five impossible cases refused (including the exact 20.12.2020 report, a two-years-*late* flight, a reversed pair, and a guest's own override), six legitimate ones accepted (flights on the stay dates, night-before/morning-after, no dates at all, 364 days off), the 365-day boundary confirmed on both sides (364 accepted, 366 refused), both edit paths refusing nonsense while still saving sensible values, a name-only guest edit unaffected, and a partial edit correctly judged against the stored other leg. All test data removed (72 bookings / 46 guests, unchanged). The Booking Health check was run against the three real bookings that carry flight dates and flagged exactly the expected gaps, leaving a normal booking clean. Decisions 150/151/152's suites all re-run green. `npx tsc -b`, `npx vite build` clean; `npx oxlint` shows only the pre-existing fast-refresh advisories this file already had. **Not yet confirmed in-browser** — the owner should try entering a nonsense flight date in the checkout and open BK-000075 to see the new Booking Health row.
+
+---
+
+# Decision 154
+
+Date: 2026-08-15
+
+Decision: **The LPO now carries per-guest flight data, and pressing "Send" actually attempts to send.** Files: `booking/{models,schemas,service,api}.py`, `pages/{AdminBookingFinance,Reservations}.tsx`, both reservations catalogs.
+
+**"LPO не работает" turned out to be three separate things, only one of which is about the LPO text.** Diagnosed live before changing anything:
+
+1. **Nothing was ever emailed.** `POST /correspondence/send` never referenced `email_service` at all — it wrote a row and returned. Its own docstring said "record-only". So an LPO the manager believed had gone to the hotel had simply never left, with nothing on screen saying so.
+2. **Nothing could be emailed even if it tried.** `backend/.env` does not exist, so `SMTP_USER`/`SMTP_PASSWORD` are empty and `send_real_email` prints to console and returns `False`. **This one needs the owner's SMTP credentials — it cannot be fixed from code.**
+3. **The "To" field is empty.** `Hotel.email` is NULL for every hotel; the address the LPO would go to isn't in the database yet.
+
+Separately, and matching the owner's actual request: **per-guest flights (Decision 150) were entirely absent from the LPO.** Both builders read only `booking.arrival_flight_*`, and `GuestRef` carried nothing but names — so a party splitting across flights produced an LPO telling the hotel they all arrive together, on the one piece of information an airport transfer is arranged from.
+
+**What was built.** A shared `buildFlightSection(booking, guests)` used by **both** the single-room and multi-room LPO, so the two cannot describe the same trip differently. When nobody flies separately it emits exactly the previous two rows. When someone does, the group legs are relabelled "(group)" — the same reason the booking screen relabels them — and a second table lists each separately-flying traveller's own arrival and departure. In the multi-room builder the guest list is deduped by name across rooms, so a traveller occupying two rooms appears once. Verified against real booking BK-000075: the group legs render, and guest "123 123" appears with their own 222/3333 flights beneath.
+
+**Sending is now real.** `send_correspondence` calls `email_service.send_real_email` for each recipient, wrapped so an email failure can never destroy the record of what was composed. New `booking_correspondence.delivered` column (nullable Boolean, added by raw `ALTER TABLE`; all 23 existing rows NULL = unknowable): **True** = SMTP accepted it, **False** = recorded only, **NULL** = predates the column. Deliberately separate from `status`, which tracks the *conversation* (sent/replied), not delivery. Keyed to the **primary** recipient only — a secondary copy going out while the hotel's own address failed is not a delivered LPO. The correspondence thread now shows an amber "Recorded but NOT emailed: mail is not configured. Copy the text and send it from your own mail client." on any outbound row with `delivered === false`, and shows nothing for the pre-existing NULL rows rather than guessing about them.
+
+**Deliberately not done:** no SMTP credentials were invented or hardcoded, and no hotel email addresses were guessed. Both are real data the owner has to supply; everything is wired so that the moment `backend/.env` exists, sends start working and `delivered` starts coming back True with no further code change.
+
+Reason: project owner — *"в admin panel единый LPO со всеми данными нужно создать и полётные данные. Сейчас есть LPO, не работает."*
+
+Approved By: Daler (2026-08-15)
+
+Status: Implemented and verified. The three failure causes were each reproduced against the live backend before any change (the send path confirmed to never reference `email_service`; `.env` confirmed absent; `Hotel.email` confirmed NULL for both hotels). A real LPO send was then performed end-to-end and came back `delivered: false` — recorded, honestly reported as not emailed — and the test row was removed (correspondence back to 23 rows). The new flight section was rendered against real booking BK-000075 and produced the group legs plus the separately-flying guest's own flights. All five existing regression suites (Decisions 150/151/152/153) re-run green. `npx tsc -b` and `npx vite build` clean at the project's dead-file baseline. **Not yet confirmed in-browser**, and **two blockers remain that only the owner can clear: SMTP credentials in `backend/.env`, and real hotel email addresses** (the latter is already tracked as a backfill task — the addresses exist in the contract PDFs).
+
+---
+
+# Decision 155
+
+Date: 2026-08-15
+
+Decision: **Stages 1+2 of the booking-integrity plan: the progress strip stops lying, and entering a hotel confirmation number stops being anonymous.** Files: `booking/{models,schemas,service,api}.py`, `pages/Reservations.tsx`, both reservations catalogs.
+
+**The evidence, pulled from the live database before writing anything.** BK-000077, the booking on the owner's screenshot: `status = "Confirmed"`, `confirmation_number = "123"`, `claimed_by = NULL`, **zero outbound LPO messages, zero inbound replies**. Nobody took the booking on, the hotel was never asked, and the system nonetheless called it confirmed, released a voucher to the guest and reported profit on it.
+
+**Problem 1 — three parts of one screen disagreeing, all technically correct.** `buildTimeline` was a strict queue: the first not-done step became "current" and *everything after it* rendered "upcoming" regardless of its own flag (the code said so explicitly, reasoning that a filled dot after an empty one reads wrong). On BK-000077 the only incomplete early step was **claimed**, at position 2 — so three genuinely finished stages (Approved, Hotel confirmed, Voucher ready) rendered grey, while the header badge said "Confirmed" and Booking Health listed both the confirmation and the voucher as done.
+
+Now every step carries **its own** state, and a step completed while an earlier one is still open gets a new amber **`skipped`** state rather than a quiet green tick — because that ordering *is* the signal (a confirmation number typed by someone who never took the booking on). A new `ProgressSummary` above the strip gives one sentence — "Reached: X · next step: Y" — plus what was done out of order and what is still outstanding. It is derived from **the steps, not from `booking.status`**: the status column says what someone set, the steps say what actually happened. On BK-000077 the strip now reads Approved/Hotel confirmed/Voucher ready as amber "out of order", with the warning naming all three.
+
+**Problem 2 — the one milestone with no actor.** Cancellation records `cancelled_by`, a room approval records `approved_by`, but `confirmation_number` — the single field that makes a booking count as hotel-confirmed and triggers the guest's voucher — recorded nobody. New `confirmation_number_by` / `confirmation_number_at` columns (raw `ALTER TABLE`, all 74 existing rows NULL), stamped in `update_booking` where the value actually changes, and **only when it genuinely changed** — so re-saving an unrelated field never rewrites who confirmed it (verified). `update_booking` gained an `acted_by` parameter threaded from `current_user.id`; it is not trusted from the payload.
+
+The same write **auto-claims** the booking when nobody holds it. Deliberately auto-claim rather than refuse: blocking the save would leave a real hotel reply unrecorded, which is worse than recording it under the name of whoever entered it. Either way "who handled this" can never be blank again on a confirmed booking.
+
+**Deliberately NOT in this decision:** the verification rules themselves (was an LPO ever sent? did the hotel reply? do the reply's dates match?) — that is stage 3 of the agreed plan, and the larger piece. This decision makes the existing truth *visible and attributable*; it does not yet judge whether that truth is correct.
+
+Reason: project owner, on the admin panel — *"статус заявки не соответствует наверху по списку... система подтверждает всё без единой перепроверки, и непонятно кто брал заявку в работу"*, then approving stages 1+2 of the plan.
+
+Approved By: Daler (2026-08-15, "da nachinay s 1+2")
+
+Status: Implemented and verified. Accountability proven end-to-end against the live API: entering a confirmation number recorded `confirmation_number_by=1` (System Administrator) with a timestamp and auto-claimed the booking; a subsequent unrelated field edit left both untouched. BK-000077 was then **restored to its exact screenshot state** (`confirmation_number='123'`, all audit fields NULL) so the owner sees the same booking he reported. The new timeline logic was run against that booking's real flags and produces the corrected reading shown above. All five existing regression suites (Decisions 150–154) re-run green; `npx tsc -b`, `npx vite build` and `npx oxlint` clean; all 420 `t()` keys present in both catalogs. Database backed up before the schema change. **Not yet confirmed in-browser** — the owner should reopen BK-000077 and check that the three finished stages now show amber "out of order" with the summary sentence above the strip.
+
+---
+
+# Decision 156
+
+Date: 2026-08-15
+
+Decision: **Booking Detail de-duplication (done) + agreed accordion layout (NOT yet built).**
+
+## Part A — shipped: duplication removed, interface only
+
+Owner's constraint, verbatim: *"мы логику не меняем и схему не меняем, только интерфейс и где повторяется убираем их"*. Nothing below touches the backend, the schema, or any computation — only what is rendered.
+
+Measured duplication on the reported screen, before changing anything:
+
+| Block | Genuinely new | Already shown above |
+|---|---|---|
+| Rooms (single room) | status, price | hotel, room type, dates, nights, occupancy — all in the hero |
+| Booking information | agent, agency, handled by, special requests | hotel, room type, meal plan, booking date — all in the hero |
+| Booking Health → hotel / documents / invoice | — | timeline steps 4–6, plus the progress summary's "still outstanding" |
+| Booking Health → transfer | — | the Transfer line under Flights |
+| Booking Health → guest details | — | visible in the guest cards ("not provided") |
+| Booking Health → AI check | — | by its own docstring, a count of the items beneath it |
+
+Five of seven health items were restating the same screen. Changes made:
+
+- **`visibleHealthItems`** — a **display filter**, `computeBookingHealth` untouched. Hides `ok` items and the `ai` aggregate, and hides hotel/documents/invoice unless **critical** — "unconfirmed and arrival is in 3 days" is an escalation the timeline cannot express, whereas plain "waiting" is exactly what the timeline already shows. **An all-clear card renders nothing at all** (owner: *"да, сворачивай только проблемы"*).
+- **Booking information** dropped hotel / room type / meal plan / booking date.
+- **Rooms** on a single-room booking shows only status + price. A multi-room application keeps every line — there the rooms genuinely differ from each other and from the hero's representative room, so repeating them is information, not noise.
+
+**Not merged, and why:** Guests and Flights look like duplicates but are not — the guest card carries that guest's OWN flight (Decision 150) while the Flights card carries the group flight and the transfer. Two different contents in two blocks. Merging them is a layout choice, which fed into Part B rather than being done blind.
+
+## Part B — agreed with the owner, NOT built
+
+Reported after Part A: *"много мест, но всё равно часть деталей внизу надо искать... шрифты будто мёртвые... давай сверху всё поставить как блок и нажимаешь — его данные открываются полностью... не надо в одном экране 3 блока"*.
+
+Diagnosis from the screenshots: three columns of unequal height (`lg:col-span-3 / 5 / 4` under one grid at `Reservations.tsx:3365`), so the left column ends while the centre and right continue — Quick Actions sits two screens down. Nearly all text is `text-xs` in light grey, labels and values styled alike, which is what reads as "dead".
+
+**Agreed target:**
+
+- Always visible, never collapsed: hero + timeline/progress summary + problems (when any).
+- **Quick Actions pinned directly under the hero**, not in a column.
+- Everything else becomes **one single-column accordion, one section open at a time**, each collapsed row carrying a summary on the right so a single figure never costs a click: Guests & flights · Rooms · Money · Documents · Correspondence · Booking information · History.
+- **Auto-open the section that needs action** — owner chose this over "all collapsed" or "always the first one" (*"b delai"*): e.g. Guests & flights when passports are missing, Documents when the invoice is pending.
+- Typography: keep labels small, raise **values** in size and contrast — today both use the same small grey, which is why the whole card reads flat.
+
+**Constraint to respect when building it:** `BookingDetail` is shared with the agent screen, and admin content reaches it only through the 9 named `adminExtensions` slots (`Reservations.tsx`'s `AdminBookingExtensions`) — the structure that exists because of two real production leaks (Decisions 102/106). Every slot must keep a sensible home in the new layout; none may be inlined.
+
+Reason: project owner's UI review of the booking detail screen.
+
+Approved By: Daler (2026-08-15 — Part A implemented; Part B design approved, build deferred)
+
+## Part B — implemented
+
+Built as agreed. Key implementation choice: **`SectionCard` itself learned to collapse**, rather than wrapping every card in a new accordion component. Wrapping would have meant inserting a matching open/close pair around each of ~8 regions of dense conditional JSX; teaching the card that already surrounds every one of them means each call site changed by adding props to a tag that was already there, so no nesting was touched and nothing could be mis-paired. A card collapses only when `sectionKey` is passed — every other caller, including the agent screen, renders exactly as before.
+
+Delivered: three columns collapsed into one top-to-bottom flow; **six collapsible sections** (guests, flights, documents, correspondence, info, history), one open at a time, each showing a summary line while closed so a single figure never costs a click; **auto-open of the section that needs action** on first render, guarded so it never fights the user's own clicks as data loads; **Quick Actions moved from the bottom of the old right column to directly under the hero/timeline**; and typography fixed — labels stay small and quiet while values gained size and contrast (`DetailField` values 14px→15px, guest-card values `text-xs text-ink` → `text-sm font-medium text-ink`), which was the actual cause of panels reading flat.
+
+Not made collapsible, deliberately: Rooms (already reduced to status+price in Part A) and the money/health blocks (they are the answer to "what state is this in", which the plan keeps always-visible).
+
+Status: **Parts A and B implemented and verified** — `npx tsc -b` and `npx vite build` clean at the project's 2-error dead-file baseline, no backend/schema/logic touched. All six admin extension slots confirmed still referenced after the restructure (`renderStatusBadgeExtra`, `renderHeaderActions`, `renderCorrespondencePanel`, `renderReplyLogButton`, `renderFinancialSummary`, `onAfterClaim`) — none inlined, the Decision 102/106 boundary intact. `npx tsc -b`, `npx vite build` and `npx oxlint` all clean; every `t()` key present in both catalogs. No backend, schema or logic touched anywhere in this decision. **Not yet confirmed in-browser** — the owner should open a booking and check that it lands on the section needing work, that opening another closes the first, and that the closed rows' summaries read correctly.
+
+---
+
+# Decision 157
+
+Date: 2026-08-16
+
+Decision: **Follow-up pass on the booking detail after the owner used the new layout.** Interface only — no backend, schema or logic touched, same constraint as Decision 156.
+
+- **Quick Actions.** Moving the card under the hero (156B) turned every button into a full-page-width bar. The column is now capped (`max-w-xs`); the buttons stay one per row because each is a separate action and must not read as a segmented control.
+- **Rooms card removed for the degenerate case.** A single-room booking's card carried only a status chip and a price — hotel, room type, dates and occupancy are all in the hero already (156A). Now hidden for **admin too**, not just the agent. Two deliberate exceptions keep it: the room still being `Pending` (the Approve/Reject buttons live in that card) or carrying a rejection reason. Multi-room applications always keep it.
+- **Cost/price live in one place.** The Net cost / Sale price / Profit trio sat directly above the commercial breakdown — the table built to carry exactly those figures, per category, with the same totals at its foot. The trio is gone; the breakdown is the single source. The agent-facing total (`saleTotal`) is untouched — that is the price the agent is entitled to see, not cost or profit, and removing it would break the Decision 102 boundary from the other side.
+- **Breakdown made readable.** Its money cells had nothing stopping them wrapping, so "1856.00" and "USD" landed on separate lines in the one table that exists to be read. Now `whitespace-nowrap` with tabular figures.
+
+**Left alone, and flagged rather than guessed:** the bookings **list** still has its own Net cost / Profit columns. That is a different screen — an overview where those figures are the point — so "remove cost/price everywhere else" was not extended to it without asking.
+
+Reason: project owner's review of the rebuilt detail screen.
+
+Approved By: Daler (2026-08-16)
+
+Status: Implemented. `npx tsc -b`, `npx vite build` and `npx oxlint` clean at the project's 2-error dead-file baseline; database untouched (74 bookings). Not yet confirmed in-browser.
+
+---
+
+# Decision 163 — BUILT
+
+Date: 2026-08-16
+
+Decision: **Claim-before-work. A booking nobody has taken on is locked to a single action.**
+
+This is the first change in this run that alters **business logic**, not the interface. It exists because of a real finding: BK-000077 reached "Confirmed by the hotel", released a guest voucher and reported profit while `claimed_by` was NULL, zero LPO messages had been sent and the hotel had never replied. Someone typed a confirmation number and the system believed it, with no name attached to the act.
+
+**Agreed behaviour, confirmed with the owner:**
+
+1. **An unclaimed booking is visually alarming and functionally frozen.** The row/card shows a red state and the "Take" button pulses. Only that button works; every other action is unavailable until someone claims it.
+2. **No exceptions, admin included** (owner: *"да, все должны сперва брать заявку в работу"*). Exempting admin would restore exactly the anonymity this exists to remove.
+3. **Agents are outside this mechanism entirely.** They see the real status of their own booking as they do today; the red state and the Take button are admin-panel-only, and an agent never sees a claim control at all (owner: *"агентам не надо показать правила админа, она видит реальное статус заявок"*).
+4. **One manager, no transfer, for now** (owner: *"я бы оставил пока только на одного менеджера"*). `claimed_by` is set once; reassignment would need its own deliberate action, which does not exist yet and is not being invented here.
+5. After a claim the booking is bound to that manager, everything unlocks, and the LPO is prepared for sending to the hotel.
+6. **Direction of travel:** all of this is eventually to be performed by AI with the manager assisting, not the reverse (owner). So the lock must be expressed as *"an accountable identity has taken this on"* — a future AI agent claims through a designated system user exactly as `Booking.claimed_by`'s own model comment already anticipates — rather than as *"a human clicked a button"*.
+
+**Non-negotiable implementation note:** the block must be enforced **on the server**, not by hiding buttons. At the volumes this admin panel is meant to handle, a client-side-only guard is not a guard. Hiding the UI alone would leave every mutating endpoint open to anyone who can call it.
+
+**Build order matters, and is the reason this is not started yet:** the server guard alone would make the UI fail with unexplained 403s; the UI alone would be security theatre. They have to land together — UI lock + red/pulsing state + server enforcement + LPO preparation on claim — or not at all.
+
+Approved By: Daler (2026-08-16, all three questions answered)
+
+## What was built
+
+**Server side — `booking/api.py`'s new `_require_claimed(booking, current_user)`.** Refuses with HTTP 409 *"This booking has not been taken into work yet — claim it first"*. Three deliberate exemptions, each for a concrete reason rather than convenience:
+
+- **Non-admin roles pass through untouched.** The rule is an internal accountability rule for the people processing a booking, not a lock on the agent whose booking it is (owner's point 3). Verified at the role level: `agent`/`Agent` allowed, `admin` refused, on the identical unclaimed booking.
+- **Terminal statuses (Cancelled/Rejected/Completed) pass through.** There is nothing left to take on.
+- **Anything that is not `Pending` passes through.** `claim_booking` is restricted to `Pending` (Decision 045), so a booking past that which is somehow still unclaimed would be *permanently unwritable* — bricked, with no legal way out. **This was not foreseen — it was caught by the verification run**: the first version of the guard made the real BK-000077 (Confirmed, `claimed_by` NULL — the very booking that motivated this decision) uneditable forever.
+
+**Applied to every write path, not just the obvious one.** The first pass guarded only `PUT /bookings/{id}` and `PUT /guests/{id}` — 2 of 9 mutating endpoints, with the rest held shut by the UI alone, which is precisely the "security theatre" this decision's own non-negotiable note rules out. Now also on: `POST /bookings/{id}/cancel`, `POST /bookings/{id}/change-dates`, `POST /rooms/{id}/approve`, `POST /rooms/{id}/reject`, `PUT /rooms/{id}` (the per-room twin of BK-000077's own hole), `POST /guests`, `POST .../correspondence/send`, `POST .../correspondence/reply`. All 9 verified refused over real HTTP with a real admin JWT against a real unclaimed booking, then all verified to succeed after taking it, with the database confirmed clean afterwards (76 bookings / 55 guests, zero probe residue).
+
+`POST /bookings/{id}/confirm-cancellation` is deliberately **not** guarded: it is reachable only at status `"Cancellation Requested"`, which the not-Pending exemption already passes through, so the call would be dead code that reads as protection.
+
+**Client side — `Reservations.tsx`.** An unclaimed booking's permission object is replaced wholesale (`canChangeDates`/`canEditGuestDetails`/`canEditFlights`/`canCancel`/`canConfirmWithHotel` all `false`, `canClaim` preserved), rather than each control being individually gated — one place to be wrong instead of six. Scoped to `isAdminSide` (`Boolean(adminExtensions)`), so an agent's own list never shows the lock at all, per point 3.
+
+## Not built
+
+**LPO auto-preparation on claim** (point 5's second half). Taking a booking unlocks everything and binds it to the manager, but does not yet pre-fill the LPO. Deferred, not forgotten.
+
+Status: **Built and verified end to end.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` and `npx oxlint` clean; filter/pagination regression suite passes in full.
+
+---
+
+# Decision 164 — BUILT
+
+Date: 2026-08-16
+
+Decision: Follow-up to Decision 163, from the owner using the claim gate on the real list.
+
+## Built
+
+**"Claim" renamed to "Take"** (owner: *"это просто и понятно"*). Text only — the translation keys, the API endpoint and `Booking.claimed_by` all keep the word `claim`, so a wording preference does not rename anything in the data model.
+
+## Built — the important one
+
+**An unclaimed booking carries forward to today, every day, until someone takes it.**
+
+The admin list defaults to `date_view=created` scoped to today. A booking created yesterday and still unclaimed therefore drops out of the view entirely — it is not cancelled, not rejected, nobody has taken it, and nobody sees it again. That is a booking quietly lost, which at this volume is the most expensive failure the screen can have.
+
+Agreed behaviour:
+- While `claimed_by IS NULL`, a booking appears in **today's** list regardless of when it was created, shown red as it already is.
+- The moment it is taken, it **returns to its real creation date** and stops floating.
+- Both dates are kept and shown: when the booking was placed (`created_at`) and when it was taken (`claimed_at`) — both columns already exist, no schema change needed.
+
+Implemented in `repository._apply_booking_filters`'s `date_view == "created"` branch as *"created in range **OR** (unclaimed and not terminal)"* — one shared helper, so the page and its count can never disagree (Decision 152's rule).
+
+**Gated on the selected range actually containing today**, which is the part that keeps it honest: a historical report ("what came in during the first week of July") must not have today's live backlog float into it, or every past-period figure the screen has ever produced becomes unreproducible. Verified both directions — a July window returns only rows genuinely created in July, while today's window returns 15 rows of which 2 were created today and 13 are older, every one of them unclaimed and non-terminal.
+
+Verified that taking a booking really does drop it back out: today's count went 15 → 14 the moment BK-000076 was taken, the row left the view, and both dates were kept and readable (placed `2026-08-15 14:00`, taken `2026-08-16 06:42`).
+
+**The regression suite was updated, not silenced.** `verify_filters.py` compares the server against an independently-written client-side predicate; its two `created`-view checks failed after this change, correctly — the expectation now encodes the carry-forward rule itself, so the suite still guards the behaviour instead of merely agreeing with the code.
+
+## Built — Take button in the list row
+
+`RowTakeButton` in `Reservations.tsx`, shown on exactly the rows already flagged red (`needsAttention`) and gated by the same `permissions.canClaim` as the detail's own button. `stopPropagation` on click, since the row itself opens the detail and a manager working through a backlog must not lose their place. It calls the identical endpoint **and** the identical `onAfterClaim` side effect (Decision 080's auto-created Draft invoice) as the detail button, so "took it from the list" and "took it from inside" cannot diverge.
+
+**Deviation from this decision's own original plan, deliberate:** it lives in the shared base `BookingsList`, not in an `adminExtensions` slot as written above. The Decision 102/106 boundary is specifically about **money** — cost, profit, invoices — and taking a booking is an ownership action, not a financial one. The detail's own claim button is already in the base, gated the same way; routing the list twin through an extension slot would have split one rule across two mechanisms for no gain. Agent-side safety is unchanged either way: `needsAttention` is already `isAdminQueue`-scoped, and agents do not carry `canClaim`.
+
+Reason: project owner, after using the claim gate on the live list.
+
+Approved By: Daler (2026-08-16)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` and `npx oxlint` clean; the full filter/pagination suite passes with the carry-forward expectation added.
+
+---
+
+# Decision 165 — BUILT
+
+Date: 2026-08-16
+
+Decision: Three fixes to the booking detail, from the owner reading a real two-room booking (BK-000080) on screen.
+
+## 1. Room type is a labelled field, not a subtitle
+
+Room type appeared only in the hero's subtitle line, which renders the **representative first room** as if it were the whole application. BK-000080 read "Sky Studio" while also containing a Beach Villa with Swirlpool — a manager comparing the screen against a hotel's reply would have been comparing the wrong room.
+
+Now a `HeroStat` fed by all rooms: one type across the application shows its name (the common case, identical to before), several show the count with the full list on hover. Room type and meal plan were then **removed from the subtitle**, which now carries only the location — they are labelled fields below, and repeating them is the duplication this run has been removing. The stat grid went 8-across → 5-across so the 9th field doesn't strand itself alone on a second row.
+
+## 2. What Approve does, said where the button is
+
+Approve was unexplained, and what a manager assumes it does matters. Verified in `booking/service.approve_booking_room` before writing a word of it: it flips the room to `"Confirmed"`, records who and when, and recomputes the application's rollup status. **It notifies nobody and sends no voucher** — the guest voucher is triggered by a different act entirely, entering the hotel's confirmation number (Decision 097).
+
+The note says exactly that, shown only to whoever can press the button and only while a room still awaits a decision.
+
+**The question this raised was put to the owner and answered — see Decision 166.** He chose that Approve should send the voucher, having been told directly that it would go out before the hotel confirms and therefore without a confirmation number on it.
+
+## 3. The price the agent actually booked at
+
+The Rooms block showed each room's `BookingRoom.total_amount` — **the room line alone**. Transfer and mandatory tax were missing and there was no total anywhere. On BK-000080 that read "1466.50" and "3927.00" while the agent had booked at **6700.50**.
+
+New read-only `GET /finance-engine/bookings/{id}/commercial-summary` → `service.get_booking_commercial_summary`: every room, every category, and the grand total. Rendered at the foot of the Rooms block as "Booked by the agent at", with the full calculation on hover.
+
+Three things make it trustworthy rather than a second opinion about the same money:
+
+- **One definition of the arithmetic.** The seed formula was extracted into `derive_seed_lines(room)`. `get_or_seed_commercial_lines` persists those triples; the summary reads them without persisting. Two copies would let the tooltip quietly disagree with the Commercial breakdown it exists to explain.
+- **It writes nothing.** The per-room GET auto-seeds, which is right when a manager opens one room's ledger, but a summary rendered for every room of every opened booking must not leave seed rows behind for rooms nobody looked at — the same rule `compute_bookings_list_financials` already follows. Verified: 5 summary calls, commercial-line row count unchanged at 78.
+- **It agrees with the breakdown table.** Verified against the seeding endpoint the table itself uses, per room, on bookings 80 / 79 / 66 (66 being one with a real manual correction) — exact match every time; plus internal consistency across the 20 most recent bookings, with the 2 non-billable rooms shown but correctly excluded from the total.
+
+A manual correction is not hidden: the total carries a "corrected" chip and the offending line is marked in the tooltip, so "what the agent booked at" and "what it is now" can't silently be the same sentence.
+
+**Placed in `adminExtensions` (new `renderRoomsTotal` slot), not inline**, per Decision 107 — `AgentDashboard_v2.tsx` has zero references to the component, the slot or the endpoint, so it is structurally unreachable from the agent path rather than merely hidden.
+
+## Point 3 of the owner's list
+
+Withdrawn by the owner before any work started ("пока игнорируй, ничего не меняем на этот пункт — передумал"). Nothing was touched.
+
+Reason: project owner, reading BK-000080 in the admin panel.
+
+Approved By: Daler (2026-08-16)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` and `npx oxlint` clean; database unchanged by the verification (77 bookings / 78 commercial lines / 82 rooms).
+
+---
+
+# Decision 166 — BUILT
+
+Date: 2026-08-16
+
+Decision: **Approving a room sends the guest voucher to the agent immediately, behind a re-confirmation the manager must give.**
+
+## How this was decided
+
+Decision 165 asked rather than assumed, because the owner's wording could be read either way and one reading was a business-logic change to a LOCKED engine. He was told plainly what it would mean — the voucher leaves before the hotel replies, so it carries no confirmation number — and chose it anyway. He then added the safeguard himself: *"но с переподтверждением с менеджером, что вы уверены… если менеджер дал добро, тогда скидываем ваучер и подтверждения"*.
+
+That safeguard is what makes the change sound. Approve was previously a reversible internal note; it now puts a document in someone else's hands, and the dialog is where the manager takes that on.
+
+## The dialog is not a generic "are you sure"
+
+It names the room, states that the voucher goes to the agent and cannot be unsent, and then says the one thing that actually decides whether this is safe:
+
+- confirmation number present → a neutral line quoting it, since it will appear on the voucher;
+- confirmation number absent → a **red** line: the hotel has not confirmed, and the voucher will be sent without one.
+
+A manager can still proceed — that is the owner's call — but not by accident, and not discovering it later from a guest at a check-in desk.
+
+## What changed underneath
+
+`Voucher.confirmation_number` was `NOT NULL`, physically as well as in the model, because a voucher only ever existed as a consequence of that number being entered. Now nullable (SQLite table rebuild, Decision 053's technique — 6 rows verified byte-identical against a pre-rebuild backup taken first). The hard `raise` in `create_and_send_voucher_for_room` is gone.
+
+**Nothing is faked in its place.** The download and the email both print *"ожидается подтверждение отеля"*, and the email's opening line stops claiming the hotel confirmed anything — it says the booking is in work and confirmation is awaited. An empty field would have read as a broken system; a placeholder reference would have been worse.
+
+**Real bug, found by running it rather than by reading it:** the first approve-time voucher was written to the database and the caller got a **500** — `VoucherResponse.confirmation_number` was still typed `str`. Fixed to `Optional[str]`. It is also precisely why the frontend send is best-effort: the room was correctly approved throughout.
+
+## Wiring
+
+The send is a Finance Engine call, so it goes through a new `onAfterRoomApproved` extension slot rather than inline in the shared `BookingsList` (Decision 107) — `AgentDashboard_v2.tsx` never supplies it. Best-effort by contract, the same as `onAfterClaim`'s auto-invoice: the approval has already succeeded by the time it runs and must never be undone or reported as failed because a document didn't go out. The confirmation-number editor remains the recovery path, unchanged.
+
+Verified live end to end on a real room: approve → 200, voucher created with `confirmation_number=None`, document rendering the awaiting line; then with a confirmation number present → unchanged behaviour, the number on the document. Every change reverted afterwards and checked field-by-field against a snapshot taken before the test (room status/approved_by/approved_at/confirmation_number, booking status, 3 test vouchers deleted, count back to 6).
+
+Reason: project owner, explicitly, after being shown the trade-off.
+
+Approved By: Daler (2026-08-16)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` and `npx oxlint` clean; filter/pagination suite passes; database identical to the pre-change backup on every table checked.
+
+---
+
+# Decision 167 — BUILT (one part deliberately left open)
+
+Date: 2026-08-16
+
+Decision: Four corrections to the room block, from the owner reading BK-000080 on screen.
+
+## 1. The header describes the selected room, and only it
+
+Decision 165 gave the hero a room-type field listing **every** type in the application ("2 room types · Sky Studio · Beach Villa with Swirlpool"). Wrong: every other field beside it — dates, nights, guests, meal plan — is the *selected* room's, so one aggregated field made the whole header read as an application-wide summary it is not. Owner: *"должен быть исключительно выбранные детали номера"*.
+
+Now the selected room's own type. The hint says only **which** room is on screen ("Room #1 of 2"), so a multi-room application never leaves that ambiguous — the fix for the original problem, without re-introducing it.
+
+## 2. The Approve explanation moved to a "!" beside the button
+
+It was a banner above the room list. Owner: it belongs next to the control it describes. New local `ActionInfo` component — a real `<button>` with `stopPropagation` (these sit inside a clickable room row and must not open the room) and `focus-within`, so it is reachable by keyboard, not hover-only. Deliberately not `HotelSearch.tsx`'s `InfoTooltip`, which is built for a form field and has neither of those needs.
+
+## 3. The per-room rate is gone from the Rooms block
+
+With Decision 165's application total now at the foot of that same block, two different money figures sat centimetres apart — one a room line, one the whole booking — which is exactly the confusion the owner reported. Every per-room figure remains in the Commercial breakdown, itemized.
+
+## 4. Reject: a "!", a real dialog, and the agent is actually told
+
+The "!" explains what Reject means. Making that explanation **true** required work, not just text:
+
+- **The agent is now emailed.** `reject_booking_room` previously only changed a status the agent had to notice by themselves — the one outcome that genuinely cannot wait to be discovered. New `email_service.send_room_rejected_email`: which room, which dates, and the manager's reason. **Deliberately carries no money** — whether anything is owed is the cancellation-terms conversation, not something to assert inside a rejection notice. Best-effort in a `try/except`: the rejection is already committed, and a mail failure must never undo it or report it as failed.
+- **`window.prompt` is gone.** Rejecting now sends someone a message, so it gets the same deliberate dialog Approve got in Decision 166: the room named, a required reason field (labelled as *the text the agent will see* — it is), and a red line stating the mail goes immediately, cannot be unsent, and that a rejected room can never move to another status (Booking Engine's existing terminal-status rule, surfaced rather than discovered).
+
+Verified live end to end: reject → 200, the notification really emitted by the running server with the manager's reason in it, then the room and booking restored field-by-field against a snapshot taken first.
+
+**Found while verifying, worth recording:** the first reject test appeared to send nothing. It had actually been served by a *stale* uvicorn process — the restart had failed to bind port 8001 and logged only `[Errno 10048]`, while `curl` kept getting clean `200`s from the old code. Same family as Decisions 042/112. **A successful API response is not evidence that the code under test ran.** Killing the whole process tree and confirming `port 8001 free` before starting is the only reliable check.
+
+## Deliberately NOT built — the owner's own words, left as spec
+
+The owner described more of the flow: after the agent is told, *"ещё одно переподтверждение — заявка снимается в системе, и менеджер должен дать добро, что cancelled free of charge, и после этого удаляется заявка"*.
+
+The notification and the re-confirmation were built here. The final step was left open rather than guessed at, because **"удаляется заявка" could not mean a row delete**: invoices, vouchers, statements and review notes all reference bookings, and this project's whole audit posture is append-only. The owner answered directly — *"да, cancelled free of charge, заявка остаётся видно как cancelled"* — and it is built in **Decision 168**.
+
+Reason: project owner, reading BK-000080 in the admin panel.
+
+Approved By: Daler (2026-08-16)
+
+Status: **Points 1–3 and the built half of point 4 are done and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` and `npx oxlint` clean; filter/pagination suite passes; database restored to 77 bookings / 82 rooms / 6 vouchers / 51 invoices.
+
+---
+
+# Decision 168 — BUILT
+
+Date: 2026-08-16
+
+Decision: **An application nobody could fulfil is closed free of charge, by an explicit manager decision, and stays visible as Cancelled.** Nothing is deleted.
+
+Closes the step left open in Decision 167. Owner, asked directly: *"да, cancelled free of charge, заявка остаётся видно как cancelled"*.
+
+## The flow, end to end
+
+Reject a room → the agent is emailed (Decision 167). If that was the last room with anything still owed, a second dialog opens **by itself**, right at the moment it becomes true, and asks whether to close the whole application at no cost. The manager grants it; it is never automatic.
+
+New `POST /bookings/{id}/cancel-free-of-charge` → `service.cancel_application_free_of_charge`.
+
+## Deliberately not the existing two-stage cancellation
+
+Decision 104's `cancel_booking` → `confirm_cancellation` pair models *the agent asking* and *the hotel acknowledging*, and stage 2 requires the hotel's own cancellation reference. **There is no such reference here** — nobody is cancelling against the hotel; the rooms were already declined and their inventory already given back. Forcing this through that pair would have meant inventing a fake confirmation number.
+
+`repository.cancel_free_of_charge` writes the same audit fields both stages do (who, when, why), and fills the confirmation-stage fields with the same actor and moment — because in this flow the decision and its confirmation genuinely are one act. The record is no thinner for taking the short path.
+
+`cancellation_fee` is a real, computed `0.0`, never `NULL` — throughout this project NULL means "not computed", and this is a manager deciding zero.
+
+## Two guards that carry real weight
+
+1. **Refuses while any room is still live.** Verified on a real 2-room application: refused with both rooms live, refused *again* after only one was declined (naming which room is still open), and succeeded only once nothing was left. Without this, declining one room of a multi-room application would have closed the confirmed ones with it.
+
+2. **Never releases allotment.** `reject_booking_room` already released each room's reservation as it was declined. Releasing again would hand the same inventory back twice and silently overstate availability — the most damaging thing this could get wrong, and invisible until a room oversells. Asserted structurally (`release_allotment` does not appear in the function, while it does appear in `reject_booking_room`), because today's data has only 7 allotment rows and none on the rooms tested, so an empirical check alone would have proven nothing and looked like it proved something.
+
+`_recompute_application_status` now returns early on an already-Cancelled application. Unreachable today — a Cancelled application has no Pending room left, and approve/reject are its only two callers — but a rollup would otherwise relabel it "Rejected" and erase the fact that someone signed off on cancelling it at no cost. The invariant belongs in the code, not in the memory of whoever adds the third caller.
+
+## Verified
+
+Stays in the `status=Cancelled` list with `cancellation_fee 0.0` (the owner's whole point — visible, not deleted). Cancelling twice is refused rather than silently repeated. The existing terminal-status rule still refuses any move out of Cancelled. `flag-cancellation-confirmed` reuses Decision 104's existing Finance note trail rather than inventing a second one, best-effort. Every field restored afterwards and compared against a snapshot taken first.
+
+**Process note, second time in two decisions:** the first attempt to test this ran against a *stale* uvicorn process — `/openapi.json` proved the new route was simply absent from the running server while every request returned `200`. Checking `openapi.json` for the route before testing is now the reliable pre-flight; see Decision 167's own note.
+
+Reason: project owner, explicitly.
+
+Approved By: Daler (2026-08-16)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors; filter/pagination suite passes; database restored to 77 bookings / 82 rooms / 51 invoices / 7 allotments.
+
+*(The vouchers table moved 6 → 8 during this session from the project owner's own browser session approving both rooms of BK-000080 — Decision 166's new behaviour firing for real, with `confirmation_number` NULL exactly as designed. Left in place; not test residue.)*
+
+---
+
+# Decision 169 — BUILT
+
+Date: 2026-08-16
+
+Decision: **The "Booking information" section is removed.** Owner: *"эти информации на верху уже имеется"* — correct.
+
+Successive passes had already emptied it into the hero: hotel, room type, meal plan, dates, nights, guests and booking date went there in Decision 156, flights moved to the Flights card, transfer moved to sit with them. What was left by the end was agent, agency and who is handling it — all three of which the hero also shows. It had become a numbered section whose only job was making a manager open it to re-read the header.
+
+`SECTION_ORDER` drops `"info"`, so everything below renumbers on its own. Nothing referenced the key elsewhere (the auto-open effect never picked it), verified rather than assumed.
+
+**Its one genuinely unique field was not dropped with it.** Special requests — free text a guest wrote, and the only thing in that card the hero didn't already carry — moved into the hero as a highlighted full-width block under the stats. It is now *more* visible than before, not less: it used to sit behind a collapsed card. Rendered only when present, so a booking without one gains no empty box. Still reads the selected room's request first, falling back to the application's, exactly as it did.
+
+Called out explicitly because "we removed a duplicated section" and "we removed a guest's request" are very different things, and the second would have been a real loss disguised as tidying.
+
+`DetailField` (a design-system component added earlier in this run) now has no callers anywhere. Its import was removed; the component file was left in place rather than deleted as a side effect of an unrelated task.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-16)
+
+Status: **Built.** `npx tsc -b` back at the project's 2-error dead-file baseline (an unused-import error this change introduced was fixed, not tolerated), `npx vite build` clean, `npx oxlint` 0 errors; filter/pagination suite passes; database untouched.
+
+---
+
+# Decision 170 — BUILT
+
+Date: 2026-08-16
+
+Decision: **Rooms moves directly under the timeline, above the numbered sections.** Owner's order, verbatim: timeline → Rooms → then the numbering.
+
+Rooms sat *between* section #1 (Quick actions) and section #2 (Guests) — an unnumbered card interrupting a numbered run, which is what made the sequence hard to read.
+
+The new order reads correctly rather than merely differently: the timeline says where the booking stands, Rooms says what the booking **is**, and only then do the numbered steps begin. Rooms stays deliberately outside the numbering — it is not a step in the sequence, it is the subject the steps act on, and it is also the room selector every section below reads from.
+
+Decision 156B's reason for lifting Quick Actions (it used to sit two screens down, below every detail block) is still satisfied: it now sits directly beneath a compact Rooms card, not below the details.
+
+Implementation is a pure move of `<QuickActionsCard>` — no props, state or behaviour touched. `SECTION_ORDER` is unchanged, so the numbering (Quick actions #1, Guests #2, Flights #3, Documents #4, Correspondence #5, History #6) follows automatically.
+
+**Verified by reading the render tree, not by eye:** a script scanned the file from `<BookingHero>` down and confirmed all nine landmarks appear in exactly the requested sequence. Worth doing — an earlier version of that same check reported a false mismatch because it matched the *component definitions* higher in the file rather than the render tree, which is precisely how a reordering like this gets mis-verified.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-16)
+
+Status: **Built.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors.
+
+---
+
+# Decision 171 — BUILT
+
+Date: 2026-08-16
+
+Decision: Two fixes found by the owner comparing a two-room booking against a fresh single-room one.
+
+## 1. Room details always show — the single-room card was rendering empty
+
+BK-000081 (one room) showed a Rooms card with **nothing in it**: a "Pending" chip and the Approve/Reject buttons floating beside blank space, while BK-000080 (two rooms) showed hotel, room type, dates, nights and occupancy per room.
+
+Two earlier rules stacked into this. Decision 156 suppressed those three detail lines when `rooms.length === 1` (the hero repeats them), and Decision 157 hid the whole card for a single non-Pending room. The de-duplication reasoning was right about the *words* and wrong about the *result*: it left a card that reads as a rendering bug, not as restraint. A room's own hotel, type, dates and occupancy belong on the room.
+
+Both rules removed. The card always renders, and every room shows its full lines; the `#N` sequence prefix still appears only on multi-room applications, where a number means something.
+
+## 2. Transfer type is in the header
+
+Added as a labelled hero field, resolved to the contract's real name (`Domestic Flight Sapphire Class`, not `domestic_sapphire`) from the selected room — consistent with every other hero field, which describes the selected room. `null` renders "No transfer", a real answer rather than a gap.
+
+**Removed from the Flights card in the same change.** It had lived there because that is where a transfer is *arranged*; the header is where facts get *checked against the hotel's reply*. Leaving both would have put the same value on screen twice — the exact duplication this run keeps removing — so `FlightsCard`'s now-unused `transferName` prop went with it rather than being left dangling.
+
+## Verified
+
+Hero renders 10 fields in order, transfer among them, room type still present; `transferTypeLabel` now appears exactly once in the file; no single-room suppression remains anywhere; the Decision 170 section order still holds end to end (checked by scanning the render tree, using the render-site marker — an earlier run of the same check reported a false negative because it looked for a translation key the render site doesn't use).
+
+An unused-prop error this change introduced was fixed rather than tolerated: `npx tsc -b` is back at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors.
+
+Reason: project owner, comparing BK-000080 and BK-000081 live.
+
+Approved By: Daler (2026-08-16)
+
+Status: **Built and verified.**
+
+---
+
+# Decision 172 — BUILT
+
+Date: 2026-08-16
+
+Decision: **A booking opens with every section closed. Each closed section carries a "!" naming exactly what is outstanding inside it.**
+
+## Auto-open removed
+
+Opening a booking used to guess which section to expand — guests if a passport was missing, otherwise documents, otherwise rooms. Owner: Booking Health already lists the gaps, so the guess was a second, less complete answer to a question already answered, and it forced a scroll past a section the reader had not asked for. The `autoOpened` guard that kept that effect from fighting the user's own clicks went with it.
+
+## The "!" replaces it, and the text rule is the point
+
+`SectionIssueMarker` on the section header, hover or focus to read. Same mechanics as Decision 167's `ActionInfo` — a real `<button>` with `stopPropagation`, which matters more here: the header row is itself the toggle, so without it, reading what is outstanding would collapse the very section being read.
+
+**Owner's rule, verbatim: always state the specific thing, never "some details pending".** Enforced by *not* reusing `computeBookingHealth`'s strings. Those are written to summarize a whole booking — "2 guests without a passport" — which is exactly the aggregate phrasing being ruled out. New `computeSectionIssues` names individuals instead. The two coexist by design: Booking Health stays the overview, this names the rows.
+
+What it produces, rendered against real bookings rather than asserted:
+
+- **BK-000081** — *Quick actions:* "Room #1 still awaiting approve or reject". *Guests:* "Afshona Daler: no passport number, no passport expiry, no date of birth, no nationality" and the same for the second traveller, by name. *Documents:* "Voucher: waiting for the hotel's confirmation number", "Invoice: still Draft, not issued".
+- **BK-000077** — *Quick actions:* "Nobody has taken this booking into work".
+
+Rooms are named by number, guests by name, invoices by their actual status, and a missing field is named as the field. Flight-date problems reuse `describeFlightDateIssues`, which was already concrete (it names the leg, the traveller and how many days off). A section with nothing outstanding renders no marker at all — a "!" that means nothing is worse than none, because it costs a click to learn it said nothing.
+
+Terminated bookings (Cancelled/Rejected) raise none of the document, flight or claim items — chasing a voucher for a cancelled booking is noise.
+
+Wired into Quick actions, Guests, Flights and Documents. Correspondence and History raise nothing: neither has a definition of "outstanding" that would survive being written down.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-16)
+
+Status: **Built.** An unused-state error the removal introduced was fixed rather than tolerated: `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors.
+
+---
+
+# Decision 173 — BUILT
+
+Date: 2026-08-16
+
+Decision: **The hotel's confirmation number is entered inside the room, always.** The standalone "Hotel confirmation" card is gone.
+
+Owner, comparing BK-000081 against BK-000080: the one-room booking sent this to a separate card while the two-room booking had it inside each room.
+
+## Why the split existed, and why it had to go
+
+A 2+-room application has always entered numbers per room — one shared field would silently apply a single hotel reference to every room, the real bug reported on BK-000066. Single-room applications kept the old booking-level card. So the same act lived in two different places depending on how many rooms had been booked, and on the one-room screen it sat detached from the room it describes.
+
+Now every room carries its own editor. The booking-level `confirmation_number` column and its `ConfirmationNumberEdit` are untouched and still displayed everywhere — only this one entry point moved, so every booking that already holds a booking-level number keeps showing it. **Nothing was migrated.**
+
+**One case genuinely still needs the old card:** an application with no `BookingRoom` rows at all has no room to hang a confirmation on. Kept for exactly that, and it is not speculative — there is precisely **1** such booking of 78 in the live database, checked rather than assumed.
+
+## A real bug this surfaced, fixed rather than inherited
+
+`useBookingDocuments` computed `voucherReady` from `booking.confirmation_number` alone. For a multi-room application that column is never set — its numbers live on the rooms — so a fully confirmed 2-room booking reported "voucher pending" forever, and Decision 172's new Documents "!" would have said so in writing.
+
+Latent until now, because single-room bookings did set the booking column. Moving single-room entry into the room card would have spread it to *every* booking. `voucherReady` now counts either source: the booking column, **or** every room having a number.
+
+Measured on real data before and after: 5 bookings ready before, 5 after, none lost. No delta because only 4 room rows carry a number today and BK-000080 has just 1 of its 2 rooms confirmed — correctly still not ready. The fix is proven by construction and becomes load-bearing the moment a room number is entered, which is now the only way to enter one.
+
+Verified separately that the Documents download still resolves a per-room voucher through the booking-level endpoint: `GET /bookings/80/voucher/download` → 200, returning VCH-000008, on a booking whose own `confirmation_number` is NULL.
+
+Reason: project owner, comparing BK-000080 and BK-000081 live.
+
+Approved By: Daler (2026-08-16)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors.
+
+---
+
+# Decision 174 — BUILT
+
+Date: 2026-08-16
+
+Decision: **The Commercial breakdown becomes a spreadsheet.** Owner: put it in a table, make it readable, name what each line is actually charging for, and simplify the figures — *"по таблицу как excel например"*.
+
+## A ruled grid, not a page table
+
+Deliberately **not** the shared `TableShell`/`TableRow` components. Those are sized for page-level lists (`px-4 py-3` a cell), which here produced six rows of near-empty whitespace and let a six-line ledger fill a screen. This is a purpose-built grid: every cell bordered, tight rows, numbers right-aligned and tabular so digits line up down the column. Forcing that density through the shared components would have restyled every other table in the app.
+
+## Figures simplified
+
+The currency was printed on all fourteen figures. It is now stated **once per column head** ("Cost, USD") and the cells carry bare grouped numbers — `13,314.50`, not `13314.50 USD`. Empty categories (typically three of six) are dimmed instead of shouting a bold "—", so they recede rather than compete with the lines that carry money.
+
+## Every line says what it is charging for
+
+"Room" alone does not say which room — the owner's actual point. New `describeCommercialLine` gives each line its real subject, resolved from ids the screen already holds:
+
+- **Room** — `Sky Studio · Kandima Maldives · 7n · 2 ad`
+- **Transfer** — `Domestic Flight Sapphire Class`
+- **Meal** — the contract's own meal-plan name
+- **Tax** — `Mandatory tax`
+- **CIP / Excursion** — `null`, honestly: they are free-form manual entries with no id anywhere to resolve. Nothing is invented to fill the column.
+
+The names are resolved in `Reservations.tsx` and passed through a new optional `DetailCtx.labels`, because that component already holds the hotel/room-type/meal-plan/transfer maps — the extension would otherwise refetch all four to label rows it is being handed the ids for.
+
+## A Margin column
+
+The table already held both sides of it and made the reader subtract in their head, one row at a time. Negative margins render red, per line and in the total.
+
+## Bug fixed in passing
+
+The inline edit form's `colSpan` was `5`. With Details and Margin added the header is now seven columns, so the form would have stopped short and sat boxed into part of the table. Corrected to 7, and both amount inputs now state the currency they are in.
+
+## Verified against real data
+
+Rendered for BK-000081 from the live API: Room `2,793.00 / 2,863.00 / 70.00`, Transfer `1,220.00 / 1,220.00 / 0.00`, Tax `168.00 / 168.00 / 0.00`, Meal / CIP / Excursion empty, **Total 4,181.00 / 4,251.00 / 70.00** — and the booking total is `4,251.00`, an exact match, so the reconciliation line still holds.
+
+Confirmed the currency now appears only in the three column heads and in the two reconciliation sentences below the table (prose, where it belongs); zero currency suffixes remain inside the grid.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-16)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors.
+
+---
+
+# Decision 175 — BUILT
+
+Date: 2026-08-16
+
+Decision: **The Commercial breakdown adopts the colour and type of the reference table the owner supplied.** His instruction was explicit and narrow: *"формулу не меняем, только цвет и шрифт"* — nothing about which figures appear or how they are computed changed.
+
+What the reference actually specifies, and what was matched:
+
+- **Header** — white, near-black **bold labels in normal case**, not the muted uppercase small-caps this table had. Columns separated by a light vertical tick (`border-l`), not a filled grey bar.
+- **Body** — near-black text (`text-ink`) instead of muted slate, at `text-sm` rather than `text-xs`, on white with no zebra.
+- **Rules** — horizontal only. The vertical grid lines inside the body are gone; the reference has none, and they were what made the previous version read as a spreadsheet mock rather than a table.
+- **Rows** — `px-3 py-2`, roomier than the previous `px-2 py-1`, matching the reference's comfortable line height.
+
+Two judgements the reference does not answer, made deliberately rather than silently:
+
+- **An unused category stays lighter** (`text-slate/45`). The reference has no empty rows to copy. On a typical booking three of the six lines are empty, and rendering them at full contrast would read as six equally real charges.
+- **Numbers stay right-aligned and tabular.** The reference left-aligns its Profit column, but alignment is neither colour nor font, and right-aligned tabular figures are what makes a money column readable down its length. Changing it would have been a regression smuggled in under a styling request.
+
+Verified by scanning the grid markup itself, not the surrounding panel: no uppercase, no grey fill, no muted slate text, no vertical rules in the body, ticks present in the header, one horizontal rule per row, base font `text-sm`. The arithmetic (`computeCommercialLineTotals`, the per-line margin) is byte-identical.
+
+The section heading above the table and the two reconciliation sentences below it keep their existing muted styling — they are page furniture and secondary prose, shared with every other admin section, and restyling them would have made this table inconsistent with the rest of the panel rather than consistent with the reference.
+
+Reason: project owner, with a reference screenshot.
+
+Approved By: Daler (2026-08-16)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors.
+
+---
+
+# Decision 176 — BUILT
+
+Date: 2026-08-16
+
+Decision: The bookings list gets the Commercial breakdown's grid treatment, the admin panel goes full width, and the list gains a **Manager** column.
+
+This is step 1–2 of the plan assessed in the previous turn, taken in the order recommended there: the shared component first, the highest-value table second, everything else untouched pending a look at the result.
+
+## The density lives in `Table.tsx`, not in the page
+
+`TableShell` takes `density?: "comfortable" | "grid"`. **Comfortable is the default and is byte-identical to the old look**, so no existing caller moves — verified: `density=` appears at exactly one call site in the whole app.
+
+Passed by **React context**, not as a prop on all six components. A caller would otherwise thread the same value through fourteen cells per row, and the one it forgot would be the one that looks wrong.
+
+Grid mode: near-black text, bold headers in normal case (not muted uppercase), every cell ruled at `ink/20` (rgb 209,211,217 — the weight of the owner's reference; the first hand-built version used `ink/10`, rgb 232,233,236, which is why it did not read as a table at all), a heavier rule under the head, tighter rows, and money right-aligned so digits stack against a common edge.
+
+This is deliberately **not** copy-pasted from the Commercial breakdown. That one-off was becoming the 9th hand-rolled table in a codebase that already extracted `Table.tsx` precisely because it had seven; folding it back onto the shared variant is the follow-up.
+
+## Applied to the admin instance only
+
+`density={isAdminQueue ? "grid" : "comfortable"}`. The same `BookingsList` component is the agent's own list, where a handful of rows needs no spreadsheet — restyling a screen nobody asked about is exactly what an opt-in prop exists to prevent. `AgentDashboard_v2.tsx` never passes `adminExtensions`, so it cannot reach grid mode.
+
+## Full width
+
+`AdminShell`'s `mx-auto max-w-[1400px]` is gone. It suited forms and short lists, but a 14-column table was squeezed into the middle of the screen with empty margins on both sides while its own cells wrapped. Nothing under that shell is prose, so no line-length argument applies — every child is a table, a card grid or a toolbar.
+
+## Manager column
+
+Who took the booking into work, between Agent and Hotel. **Admin-only**: an agent has no business seeing which manager handles their booking, the same internal queue state the detail header already keeps behind that boundary. Resolves from the existing `agentNames` map (a user-id → name map, not agents only), so it costs **no extra request**. An unclaimed booking reads "not taken" rather than a bare id.
+
+## A real inconsistency this surfaced
+
+`AdminBookingFinance.tsx`'s trailing Net cost / Profit columns were hand-rolled `<th>`/`<td>` appended into this very table. As raw elements they kept the comfortable padding and skipped the grid's rules entirely, so a ruled table would have ended in two unruled, left-aligned columns. Moved onto `TableHeadCell`/`TableNumericCell`, which pick the density up from the same context.
+
+## Verified
+
+Header cells 10, body cells 10, both with the same 2 conditionals — so no column can render without its header. `columnCount` (skeleton rows, empty and error states) counts the new column. `border-ink/20`, `border-ink/25`, `border-b-2`, `text-right` all confirmed present in the built CSS with their resolved colours, after the earlier lesson that a grep with the wrong escape reports a false absence.
+
+Reason: project owner, with a reference screenshot.
+
+Approved By: Daler (2026-08-16)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors.
+
+**Not done, deliberately:** Transfers/Arrival/Departure and Invoices, and folding the Commercial breakdown onto the shared variant. Per the plan — look at this one in real use first.
+
+---
+
+# Decision 177 — BUILT
+
+Date: 2026-08-17
+
+Decision: **A booking can be taken into work at any non-terminal status, not only "Pending".** Plus: search and the date filters become one toolbar.
+
+## The bug, and why it was a rule and not a typo
+
+Reported live: *"есть заявки уже confirmed, но в то же время стоит как новые заявки… нельзя взять в работе, ошибка даёт already confirmed"*. Three real bookings — BK-000064, BK-000069, BK-000077 — sat `Confirmed` with `claimed_by` NULL.
+
+Three rules, each defensible alone, combined into a trap:
+
+- **Decision 045** restricted `claim_booking` to `Pending` — "claiming only means something for a booking nobody has looked at yet".
+- **Decision 164** floats every unclaimed non-terminal booking into today's list until someone takes it.
+- **Decision 163** locks an unclaimed booking, but exempted anything non-Pending *specifically because* it could not be claimed and would otherwise be bricked.
+
+So a Confirmed unclaimed booking floated into the daily queue **permanently** (it could never be taken, so it never left), and was simultaneously the one category still freely editable with nobody's name attached. That is the exact failure Decision 163 was written about: BK-000077 reached "Confirmed by the hotel", released a guest voucher and reported profit anonymously — and under the old rule it could never be given an owner.
+
+Decision 045's premise was simply inverted by Decision 163: once ownership is an *accountability* rule rather than a queue convenience, a Confirmed booking with no owner is the case that needs one most.
+
+## What changed
+
+- `claim_booking` now refuses only `TERMINAL_BOOKING_STATUSES` — a new named constant, because "can this be claimed", "does it float into today's list" and "is it locked until claimed" were three hand-written copies of the same set and could drift apart. The carry-forward filter already used exactly these three, so the rules now agree by construction.
+- `_require_claimed`'s non-Pending exemption is **removed**. Its only justification was the brick risk, which no longer exists.
+- Frontend: the red state and the Take button are gated on *unclaimed and non-terminal*, not on `Pending`. They were invisible on precisely the rows that needed them; a locked booking now always has a visible way out, in the list row and in the detail.
+
+## Verified live
+
+`POST /bookings/77/claim` → **200**, claimed, status still `Confirmed` (claiming does not touch business status). A `Cancelled` booking still refuses: *"there is nothing left to take on"*. On BK-000069: `PUT` refused with **409** while unclaimed → claim → the identical `PUT` succeeds. Today's carry-forward count dropped as the taken ones left the queue. All three test bookings restored to unclaimed afterwards, database at 78 bookings.
+
+## The toolbar
+
+Search + filters and the date range/view were two separate rows, the second a sand-filled panel of its own — the controls for one question split across two blocks, with the sentence explaining the chosen view colliding with the view pills on a narrow window (visible in the owner's screenshot). Now one bordered toolbar holds search, status, hotel, agent, the date range, the Staying/Created/Cancellations pills, the by-date toggle and Reset; a hairline separates "what" from "when" without them becoming separate blocks again. The explanatory sentence moved below the bar, where it is free to wrap without pushing controls around. The three view pills were also collapsed from three copy-pasted buttons into one `map`.
+
+Reason: project owner, from a live screenshot.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes.
+
+---
+
+# Decision 178 — BUILT
+
+Date: 2026-08-17
+
+Decision: **The agent is billed the price they saw at booking, transfer included. One number, everywhere.** A manual correction in the admin panel changes our cost and margin, never the agent's price.
+
+Owner's rule, verbatim: *"мы скидку не даём агенту… если сумма вручную уменьшается в админ панели, это только для нас, агент получит invoice сумму, которую видел во время бронирования, с трансфером… все суммы должны сходиться и быть едиными"*.
+
+Measured before touching anything: **3 of the 14 most recent bookings** had four surfaces reporting different numbers. Three separate causes, all fixed.
+
+## 1. Manual corrections were re-pricing the agent
+
+The commercial ledger's price side (`base_price + adjustment_price`) fed the Bookings list's Sale price and the "Booked by the agent at" line, while the invoice was built from the frozen figures. So editing a price moved two of the three and not the third. BK-000077 read **3442.00** on its invoice and **10546.00** in the list.
+
+Now: `compute_booking_room_commercial_totals(lines, room)` takes the room and reads the sale side from its frozen columns; the ledger governs **cost only**. Same in `compute_bookings_list_financials`, `get_booking_commercial_summary` and the frontend mirror. Profit = frozen sale − ledger cost, which is exactly the internal figure a correction is *meant* to move.
+
+The price inputs are gone from the ledger's edit form — leaving them would promise an edit the system no longer honours. `base_price` rows are preserved as history (the upsert only writes what it is sent); they simply no longer decide anything.
+
+## 2. The invoice-reconciliation line was never fed
+
+`CommercialLineItemsPanel` had an `invoiceTotal` prop and a red "does not match" line — with **no caller ever passing it**. A stale Issued invoice was invisible on the one screen that shows the money.
+
+Real case: BK-000054 was invoiced at 1156.65 and its booking now totals 1908.85 after a date change, and it had already dropped off the urgent panel because someone acknowledged the note — acknowledging means *seen*, not *fixed*. Now wired from the invoice cache the panel already loads. **7 of 19 invoiced bookings** are in this state; they are a real, different fact (frozen at issue vs changed since), and are now visible rather than silent.
+
+## 3. Multi-room bookings understated the price everywhere — including the agent's own screen
+
+`Booking.total_amount` is the **representative first room's** figure. Every list rendering `total_amount + transfer + tax` as "the price" understated every multi-room booking: BK-000080 showed **1964.50** for a booking the agent pays **6700.50**; the worst was understated by 7442.00 (6 bookings affected).
+
+New `application_total` on `BookingResponse`, stamped by `service.attach_application_totals` on the list, the detail and the agent's own list — every billable room's room + transfer + tax. Non-billable rooms (Rejected/Cancelled/Cancellation Requested) are excluded, the same set Finance Engine already uses, so a room nobody pays for is never added into the price shown.
+
+**One bulk query per page, never one per row** (Decision 151's load-shape rule). Verified by timing: 5 / 7 / 8 ms at page sizes 10 / 50 / 78 — flat, not linear.
+
+## Verified
+
+Re-ran the same four-surface audit over **every invoiced booking**: 19 checked, **0 live figures disagreeing**. Every booking on a full page (78) reports an `application_total` equal to an independently computed sum from the room rows. The filter/pagination suite passes unchanged.
+
+Database untouched by the work: 78 bookings, 83 rooms, 53 invoices, 81 ledger lines.
+
+## Known limitation, stated rather than hidden
+
+A service genuinely sold to the agent *after* booking (an excursion added later) has no agent-facing price under this rule — the sale side is the frozen quote. Today those categories are cost-only manual entries, so nothing is lost; if a real "bill the agent for an extra" case appears, it needs its own decision rather than reopening the price field.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors.
+
+---
+
+# Decision 179 — BUILT
+
+Date: 2026-08-17
+
+Decision: The Commercial breakdown stops confusing **one room's price** with **the whole booking's**. Fixes a labelling bug introduced by Decision 178 itself.
+
+Reported on BK-000080, which read:
+
+> *Agent is billed 1964.50 USD — the price they saw at booking…*
+> *Invoice total: 6700.50 USD — does not match the breakdown*
+
+Both figures were correct; both captions were wrong.
+
+## What was actually happening
+
+The panel is **one room's ledger** — `ctx.booking` is the selected room adapted onto a `Booking` shape, so `computeBookingFinancials(booking)` returns that room's price. Decision 178 passed it as `bookingTotal` and labelled it "Agent is billed", then compared it against an invoice covering **every** room.
+
+On BK-000080: room #1 = 1964.50, room #2 = 4736.00, application = 6700.50, invoice = 6700.50 (correct). So the panel called one room's figure the agent's bill, and then reported a mismatch that was arithmetically guaranteed on any multi-room booking — **4 of 53 invoiced bookings were showing that false alarm**, every one of them actually correct.
+
+Worse than a cosmetic slip: it looks exactly like the discrepancy Decision 178 had just been written to eliminate, which is how a real one would have been missed.
+
+## The fix
+
+`bookingTotal` split into two named props that cannot be conflated: `roomTotal` (this room's frozen price, what the table's own Total column sums to) and `applicationTotal` (`booking.application_total`, which rides through the room-adaptation spread untouched — the price the agent is billed and the one the invoice covers).
+
+- The note now reads *"Agent is billed 6,700.50 for the whole booking, of which 1,964.50 is this room"*, and drops the second clause entirely when there is only one room.
+- The heading says whose ledger it is: **Commercial breakdown · Room #1 of 2**. Unlabelled, one room's figures sat under a heading that read like the booking's.
+- The invoice is compared against the **application** total, never a room's.
+- The verdict names what it compared: *"matches what the agent is billed"* / *"does not match what the agent is billed; it was issued before the booking changed"*. The old "does not match the breakdown" never said match *what*.
+
+## Verified
+
+Rendered the panel's actual text from live data for all three shapes: BK-000080 (2 rooms — correct split, invoice matches from either room), BK-000081 (1 room — no room label, no split clause, matches), BK-000054 (1 room, genuinely stale invoice — correctly still reported as a mismatch).
+
+Across all 53 invoiced bookings: **4 false alarms removed, 40 genuine stale invoices still reported.** The fix quiets only the wrong warnings.
+
+Reason: project owner, reading BK-000080.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes, database unchanged.
+
+---
+
+# Decision 180 — BUILT
+
+Date: 2026-08-17
+
+Decision: Switch rooms inside the Commercial breakdown, and show a **Grand total for N rooms** beneath it.
+
+## Room tabs
+
+The ledger is per room. Seeing another room's meant scrolling back up to the Rooms card and clicking there — once per room, on an application that may have eight. Tabs now sit under the panel's heading.
+
+They drive the **same** selection the Rooms card does: `DetailCtx` gained `onSelectRoom`, wired straight to `BookingDetail`'s existing `setSelectedRoomId`. One piece of state, so the tabs and the Rooms card can never point at different rooms — and the hero, the guest list and everything else keyed to the selected room follow along, exactly as if the click had happened upstairs.
+
+A Rejected or Cancelled room stays readable but is labelled on its own tab (`Room 3 · rejected`), reusing the file's existing `NON_BILLABLE_ROOM_STATUSES` set rather than adding a second copy — the first attempt did add one and the compiler caught the redeclaration.
+
+## Grand total
+
+The table above is deliberately one room's, so **cost and margin existed per room and nowhere in aggregate** — the only whole-booking figure on screen was the agent's price. The new row gives Cost / Price / Margin for the whole application, labelled with the real billable-room count ("for 2 rooms"), so it can never be read as the room above it.
+
+Fed by the same read-only `/commercial-summary` the Rooms block's own total already uses — no second definition of the arithmetic, and it writes nothing (verified: ledger row count unchanged at 81). It re-fetches when `lines` change, so the grand total cannot lag an edit made in the table beneath it.
+
+**Hidden when there is one billable room**, where it would only repeat the table's own Total.
+
+## Verified against live data
+
+Rendered what each booking will show: BK-000080 → tabs [Room 1, Room 2], *Grand total for 2 rooms — Cost 6,457.00 / Price 6,700.50 / Margin 243.50*. BK-000081 (one room) → no grand total row, as intended.
+
+Then the invariant that matters: on **all 6** multi-room bookings, the grand total's Price equals `application_total` — what the agent is billed — to the cent, and the tab count equals the real room count. 0 problems.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes, database unchanged.
+
+---
+
+# Decision 181 — BUILT
+
+Date: 2026-08-17
+
+Decision: The agent gets the same per-room breakdown and grand total, in the same design — **with nothing internal in it.**
+
+Owner: *"дизайн commercial breakdown нужно сделать такой же как в админ панели, но без деталей скидок… разбивка для агента будет как она видела в онлайн"*.
+
+## The bug this also fixes
+
+The agent's price card listed the **selected room's** three lines (3927 / 725 / 84) under **"ИТОГО К ОПЛАТЕ 6700.50"** — the whole booking's total. The same room-vs-application conflation Decision 179 had just fixed on the admin side, still live on the agent's own screen, where it is least forgivable: the lines did not add up to the number underneath them.
+
+## A separate endpoint, not a filtered view
+
+New `GET /finance-engine/bookings/{id}/price-breakdown` → `service.get_booking_price_breakdown`. Per room, per category, **price only**.
+
+Deliberately not a flag on `/commercial-summary`: that payload carries our cost, our margin and an `adjusted` marker. This one's response model **has no field for them**, so they cannot be sent by accident — the same principle as Decision 102's invoice-status endpoint, which returns only a status string. Verified by scanning the real payload for `cost` / `net_total` / `profit` / `margin` / `adjust`: none present.
+
+Gated by `_require_admin_or_owning_agent`. Checked at the role level: admin allowed, the owning agent allowed, **a different agent refused 403**.
+
+## What the agent sees
+
+The admin panel's ruled grid, two columns — Item and Amount. Each room gets a heading row with its type, its own lines, and a subtotal; then the grand total labelled with the real count ("за 2 номера"). Clicking a room's heading selects that room everywhere else on the screen, so its guests and flights follow — the same single piece of state the Rooms card drives.
+
+Single-room bookings lose nothing: no heading rows, no subtotals, just the lines and the total, as before.
+
+## Two real bugs found while verifying, not by reading
+
+- **`room.confirmation_number` was rendering as literal text.** A missing `{}` — the agent saw the variable name where the hotel's reference should be.
+- **The one legacy booking with no `BookingRoom` rows reported 0.00** for a booking the agent is billed 1545.00 on. The new function iterated rooms and had none; it now falls back to the booking's own frozen columns, exactly as `attach_application_totals` already did. Caught by the reconciliation sweep, which is precisely what it is for.
+
+## Verified
+
+All **78** bookings: the breakdown total equals `application_total` (what the agent is billed) to the cent, and every room's lines sum to that room's own subtotal. 0 problems. Filter/pagination suite passes; database unchanged.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors.
+
+---
+
+# Decision 182 — BUILT
+
+Date: 2026-08-17
+
+Decision: The invoice module put in order, in the five steps the owner approved.
+
+## The rules, written down (they were nowhere)
+
+1. An invoice is created **manually** from a booking. Its amount is frozen at creation: what the agent saw — accommodation + transfer + tax across every billable room. Status **Draft**.
+2. **Approve & send** is a separate act: Draft → **Issued**, emailed. Until then the agent cannot see or download it.
+3. If the booking changes afterwards the invoice does **not** move. A review note is appended and the booking is flagged.
+4. **Mark as reviewed** means *seen*, not *fixed*.
+5. **Void** cancels it; a new one can then be issued.
+
+One invoice per booking — verified, no booking has two live ones.
+
+**`CLAUDE.md` was stale on point 1-2** (it claimed Issued-at-creation, the pre-Decision-079 behaviour). Corrected.
+
+## 1. The list that was missing
+
+The page had "Needs attention" plus a search requiring you to already know an agent's name or a booking number. **39 of 53 invoices were reachable by neither**, and all **12 Drafts — 48,893.00 USD, created and never sent** — could never appear in the flagged panel, because a Draft has no change note. The "Approve & send" button existed in that very table with no way to reach it.
+
+New **All invoices** section: status tabs with live counts (All / Draft / Issued / Void), invoice-number search, 25 a page. Filtered, sorted and paginated **on the server** — at 100 bookings a day this is 3,000 rows a month, and `db.query(Invoice).all()` in no order was what it replaced. Count and page come from one shared `_apply_invoice_filters` (Decision 152's rule). Verified: count equals rows on every filter, pages tile 53 rows with no gap or duplicate.
+
+## 2. Dates
+
+`formatDate` was `en-US` on the finance screens alone — "7/20/2026" where the rest of the admin says 20.07.2026. Now dd.mm.yyyy.
+
+**"Created" was showing `issue_date`**, which made INV-5E0847DAC701 read *"Created 7/20 · Approved 7/19"* — approved before it existed. It was created 19.07 19:09:12 and approved 24 seconds later; both now show date **and time**, because a date alone cannot order events seconds apart.
+
+## 3. The comparison block
+
+The two columns were built on different bases and stacked as addends. The right one listed Base rate (net), Supplements, Discount, Commission, Profit, then a total none of them summed to — on BK-000025, **1,509 + 828 + 72 above a total of 1,684.50**.
+
+Both sides now carry the **same three agent-facing rows** and both add up. Frozen side from the invoice's own `InvoiceRoomLine` snapshot (reconciles to `total` on all 10 that have it; the 43 older ones say plainly that only the total was recorded, rather than reverse-engineering a split). Current side from the agent-facing price breakdown (Decision 181) — literally the same endpoint the agent reads, so the two cannot disagree.
+
+Profit is gone from the invoice block: an invoice is what the agent pays; our margin lives in the booking's commercial breakdown. **Side effect: two or three fewer Contract Engine re-pricing calls per modal open**, since the live re-pricing that fed the old column is no longer needed.
+
+## 4. Red now means money
+
+Every flag was the same red. INV-5E0847DAC701 carries four date-change notes with its total unchanged at 2,412.50; INV-AA2FF204A259 is **2,174.55 short**. Indistinguishable.
+
+Now: **red** for a real money difference, **amber** for "changed, same amount", and the badge states the delta.
+
+**Judging on the notes alone was not enough** — INV-3A3B7074F568 is short and every one of its notes predates structured price snapshots, so it read as harmless. The decisive test is invoice total vs **what the booking costs now**, attached per row in one bulk query.
+
+That surfaced a third state worth its own words: **a live invoice on a cancelled booking**. Reporting it as "Amount −1,609.05" describes it wrongly — nothing is owed because the booking is gone, not because the price fell. Now labelled "Booking cancelled — invoice still live". **7 of 27 live invoices are in that state**, and 7 more differ in amount (the largest by **+20,462.05**).
+
+## 5. Names, not ids
+
+Booking `#29` → BK-000029, hotel `#2` → its name, plus the agent's name — resolved server-side in three bulk queries per page, never one per row.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes, database unchanged (53 invoices / 78 bookings).
+
+---
+
+# Decision 183 — BUILT
+
+Date: 2026-08-17
+
+Decision: The invoice list becomes date-scoped with **Drafts carried forward**, and the detail modal adopts the booking screen's collapsible sections.
+
+## 1. Dates, with unsent invoices refusing to leave
+
+Decision 182 made every invoice reachable — correct, and unreadable within a fortnight at 100 a day. The list now opens on a date range, like Bookings.
+
+But a Draft is money **nobody has been sent**. Dropping out of view because it was raised last Tuesday is precisely how it stays unsent. So the same rule as Decision 164's unclaimed bookings: while an invoice is Draft it appears in any range containing today, whenever it was raised; the moment it is approved it returns to its own issue date and stops floating. A Draft also renders **red with a "Not sent" badge**, unconditionally — the owner's rule, and now consistent with why it will not leave the screen.
+
+**Gated on the range actually containing today**, so a historical window still answers "what was issued that week" — verified: a 19–20 July window returns 38 rows, all genuinely issued then, including the 2 Drafts that really were.
+
+Verified live end to end: today's list opens on **11 rows, all Draft, 44,642.00 USD unsent**; approving one drops the list to 10, the row leaves, and it is then found on its own issue date. State restored afterwards.
+
+The **tab counts are scoped to the same window** — a tab promising 26 Void while the list can show none of them is a lie in a different font. Count and rows agree on all four tabs.
+
+## 2. One section design
+
+`SectionCard` (the booking detail's collapsible card) is now exported and takes an optional `number`. It previously derived its number from `SECTION_ORDER`, which is the booking screen's own sequence — an invoice's sections are not in it and would all have rendered a blank circle. Booking-detail callers pass nothing and are unchanged.
+
+The invoice modal was five permanently-open stacked panels. Now three sections: **1 Amounts** (open by default — the reason anyone opens an invoice, summarised with the total when collapsed), **2 Changes since this invoice** (auto-opens while still unreviewed), **3 Audit trail** (who created/approved/voided it, and when).
+
+The blocks were then physically reordered so reading order matches the numbering — they had ended up 3-2-1 in the DOM, which is exactly the kind of "numbered but not in order" the numbering exists to prevent.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes, database unchanged (53 invoices, 11 drafts).
+
+---
+
+# Decision 184 — BUILT
+
+Date: 2026-08-17
+
+Decision: **A detail window always opens large, and always at the same size.**
+
+Owner, with two screenshots of the same modal at visibly different sizes: *"они не удобны и разные размеры, нужно по больше как в booking… и один размер"*. The booking detail was supplied only as the reference and is untouched.
+
+## Why it was two different windows
+
+The invoice modal was `max-w-2xl` — **672px** — with `max-h-[85vh]`. A **max** height grows with content, so a Draft with three lines and an Issued invoice with a change history genuinely opened as two different windows. 672px was also too narrow for the two side-by-side money columns the modal carries, which is why the comparison read cramped.
+
+## Now
+
+`max-w-[1400px]` — **the same width as the booking detail**, not an invented middle ground — and a **fixed** `h-[85vh]` rather than a max. The header (title, status, Close) is pinned; only the body scrolls inside it. Every invoice therefore opens identically whatever it contains, and the change history no longer scrolls the Close button off the screen.
+
+Deliberately **not** applied to the Counteragents and Cashback modals: those are two-field add-forms, and a 1400px window for two inputs would be worse, not better. The rule is about detail windows.
+
+Verified structurally: one fixed width, one fixed height, no content-dependent `max-h` anywhere in the modal, exactly one scroll container, and the same `max-w-[1400px]` as the booking detail.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes, database unchanged.
+
+---
+
+# Decision 185 — BUILT
+
+Date: 2026-08-17
+
+Decision: **Every invoice filter on one bar at the top.** The separate "Search invoices" section at the bottom of the page is gone.
+
+Owner: the status tabs, the date range, the invoice-number box and the two searches further down should all sit together, in one row.
+
+## What was wrong with two places
+
+The page answered the same question — *show me these invoices* — with **two different lists**: the filtered list at the top, and a By-agent / By-booking-number search with its own results table at the bottom. So the controls for one list sat below the results of the other, and which one you got depended on which control you happened to reach first.
+
+## Now
+
+One bordered bar above the list, same treatment as the Bookings toolbar: **status tabs with counts · date range · agent · number search**, with a hairline separating "what" from "when".
+
+- **Agent became a filter**, not a search with its own table.
+- **One number box matches an invoice number OR a booking number.** Nobody should have to know which field to type a number into. Done in SQL as a subquery so the filter stays one statement shared with the count — a second round trip would be a second chance to disagree. Verified: `BK-000040`, `INV-AA2FF`, `000040` and `AA2FF` each find the right invoice.
+- The tab counts respect the agent as well as the dates, so a tab can never promise rows the list will not show.
+
+Verified across all six filter combinations, including all four applied at once: **rows equal count every time**.
+
+## Removed, said out loud
+
+`normalizeBookingNumber` (which padded a bare "21" into BK-000021) is gone — the server now matches any substring of either number directly, so it has nothing left to do.
+
+**A client-side CSV export of one agent's search results was removed with the section that held it.** The real agent statement — the `.xlsx` from Decision 086 — lives on the Balance tab and is untouched. Recorded here rather than left for someone to discover missing.
+
+`Invoices.tsx` went from 685 to 569 lines, all of it deleted duplication.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes, database unchanged.
+
+---
+
+# Decision 186 — BUILT
+
+Date: 2026-08-17
+
+Decision: **One invoice list.** The separate "Needs attention" table is removed, and the overlapping filter controls are fixed.
+
+Owner's own proposal: *"Needs attention и All invoices чем отличается, так как обе стоят красным и нужно внимания — я предлагаю можно сделать один список всех красных и то что нужно внимания"*. Correct — an invoice appeared in **both**, two rows apart, with the same buttons.
+
+## The overlap
+
+`AgentSearchSelect` carries its own `min-w-[280px]`. I had put it in a `w-56` (224px) box, and **min-width wins over a parent's width — it does not shrink to fit**, so it overflowed and sat on top of the search field beside it. The wrapper is gone; the component sizes itself.
+
+## Why the panel existed, and why it no longer needs to
+
+The list is date-scoped (Decision 183), so a flagged invoice from July would fall out of today's window — that is the whole reason a separate always-loaded panel existed.
+
+So flagged invoices now **carry forward into today exactly as Drafts already did**. Same urgency source as everywhere else (`list_urgent_booking_ids`), never a second computation. Verified: all 3 flagged invoices are in today's window, counts still agree, and a historical window stays historical (17 rows, all genuinely issued 19.07).
+
+**Real bug caught by running it, not by reading:** the carry-forward needed the session and `_apply_invoice_filters` only took a query — a `NameError: name 'db' is not defined`, returned as a 500 on the first call. The session is now threaded through both callers.
+
+## Ordering replaces the panel
+
+Three tiers, most urgent first: a **real money difference**, then anything else **flagged or unsent**, then the rest. `sort()` is stable, so within a tier the server's newest-first order survives.
+
+Today that renders as 2 red money rows, then 12 drafts and flagged, then everything else — the panel's job done by ordering instead of by a second table showing the same rows again.
+
+Verified: count equals rows on all seven filter combinations. `Invoices.tsx` is down to 552 lines from 685 before this pass began.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes, database unchanged.
+
+---
+
+# Decision 187 — BUILT
+
+Date: 2026-08-17
+
+Decision: The invoice list adopts the Bookings grid, and **admin pages become tabs** instead of replacing each other.
+
+## 1. One table design
+
+`Invoices.tsx` was one of the seven files `Table.tsx` was extracted from and had never adopted it — so the two money screens in the same admin panel read as two different products. Now `density="grid"` (Decision 176's ruled spreadsheet): the same lines, the same near-black type, the same right-aligned amounts as the Bookings list. No hand-rolled `<th>`/`<td>` remains in the file.
+
+## 2. Open pages stay open
+
+Owner: *"когда я открываю booking menu… не надо закрывать booking menu, пусть он будет открыт, но открывается другая страница… и добавь в конце × чтоб если не надо закрыть его"*.
+
+Two separate things were closing on him, and both are fixed:
+
+- **The page itself.** Selecting a nav item replaced whatever you were looking at, so checking an invoice and returning to Bookings meant rebuilding the filters you had set. Pages now open **alongside** each other and appear as tabs in the top bar, each with its own **×**.
+- **The sidebar group.** Navigating to a top-level page closed whichever group was expanded — reasonable when navigation meant leaving the section, wrong once pages live side by side. The group now stays open.
+
+Tabs use the nav's own labels via a new `navLabelFor`, so a tab and the sidebar item that opened it cannot say different things. The strip only appears once a second page is open — a single tab labelling itself is noise.
+
+**The close rules, simulated rather than assumed** (open Bookings → Invoices → back to Bookings → close each in turn): reopening an already-open page never duplicates it; closing a background tab leaves the active page alone; closing the **active** tab lands on the one to its left; and the last remaining tab refuses to close rather than leaving an empty screen.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes.
+
+---
+
+# Decision 188 — BUILT
+
+Date: 2026-08-17
+
+Decision: Pages stop titling themselves, the filter bar is pinned to the top, and every control on it shares one size and font.
+
+## 1. No self-titling headings
+
+The open tab already says **Invoices**; a page repeating it one line below is the same word twice for no reader. "All invoices" removed, and **Price Calculator** likewise — its own explanatory line stays, which is the part that actually says something.
+
+Checked the other modules rather than assuming: "Needs Attention", "Global markup", "Upload contract", "New cashback arrangement" are **section** headings inside a page, not page titles, and stay. `AdminNeedsAttentionView` renders a panel with no title of its own already.
+
+## 2. The filter bar is pinned
+
+On a long list the filters scrolled away, so changing a status or a date meant scrolling back up first. Now `sticky top-0` on both the invoice list and the admin bookings list. `z-30` clears the table's own header, and the negative margin plus matching padding lets the bar's background span the full width — otherwise rows show through beside it as they pass underneath.
+
+**Only the admin instance of the bookings list pins.** The agent's own dashboard is not a long scrolling queue and that bar sits inside its own page flow there.
+
+## 3. One size, one font
+
+The status pills were `text-xs` while the inputs were `text-sm`, and paddings differed, so a single row of controls read as three kinds of thing. All four now sit at the same height and the same size:
+
+| control | vertical padding |
+|---|---|
+| status pills | group `p-0.5` + button `py-2` = 10px |
+| date range | `py-2.5` = 10px |
+| agent | `py-2.5` = 10px |
+| invoice/booking # | `py-2.5` = 10px |
+
+The count inside a pill ("All **14**") stays smaller on purpose — a secondary figure, not a competing label. The date picker renders an **unframed** button, so the border/radius/background is the caller's job; without it the picker read as a different kind of control beside two framed inputs.
+
+## Caught while writing it
+
+The bookings bar was first written as a shared base class plus a conditional suffix — which put `bg-sand` and `bg-white`, and `border-b` and `border`, in one class list. Tailwind resolves that by **stylesheet order, not string order**: a recurring bug class in this project, already recorded. Each branch now builds its own complete class list, verified to contain no duplicate property.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes.
+
+---
+
+# Decision 189 — BUILT
+
+Date: 2026-08-17
+
+Decision: **A search ignores the date scope and searches every invoice.**
+
+Reported: typing `80` returned nothing. The invoice exists — INV-CA53F683BCD4 for BK-000080 — but it was issued on the 16th and is `Issued`, so it neither falls inside today's window nor carries forward (only Drafts and flagged invoices do). The search was silently confined to the current dates.
+
+Owner's own framing, sent while this was being fixed: *"если даты выбраны не на те даты, которые бронь сделано, надо сделать чтоб поиск искал все существующие invoice и показал"* — exactly the rule implemented.
+
+A search box that only searches the current window is worse than no search box: it answers "not found" for something that exists.
+
+## Where the rule lives
+
+In `_apply_invoice_filters` — the helper the page query and the count **both** go through — not by having the caller drop the date parameters. The page and the count are two separate requests, and one of them forgetting is precisely how "1–25 of 0" happens. The bookings list solved the same gap caller-side (Decision 152's own note records it as "a real gap found live"); this puts the same rule where it cannot be got wrong.
+
+## The screen says so
+
+While a search is active the date control dims and the results line reads **"Searching all dates —"**. Without that the date pill still shows "Aug 17 – Aug 17" and looks like it is filtering, which is how the original confusion happened in the first place.
+
+Dates still apply normally when not searching: today returns 14, and a 19.07 window returns 17 rows all genuinely issued that day.
+
+## Verified exhaustively, not by example
+
+Every one of the **53** invoices in the database is findable from today's view by its **booking number**, and every one by its **own invoice number** — 0 failures either way. Count equals rows on every search term tried.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes, database unchanged.
+
+---
+
+# Decision 190 — BUILT
+
+Date: 2026-08-17
+
+Decision: **Incoming and Outgoing, side by side, per room — plus the hotel's own figure recorded against ours.**
+
+## The two sides
+
+The invoice detail showed one blended pair of numbers, so the question a manager actually asks — *the hotel billed us more than we expected, which room, and why* — had nowhere to be asked.
+
+New section **2 · Incoming & outgoing**:
+
+- **Incoming — what we owe the hotel.** Every category, per room, with any manual correction marked, a subtotal per room and a total. This is the cost side of the commercial ledger, so a hotel discount entered as an adjustment is already in it.
+- **Outgoing — what the agent pays.** The same shape, the frozen agent price (Decision 178), so a correction on the incoming side never moves it. Ends with the margin.
+
+Both are **per room throughout**, because a multi-room application is confirmed room by room and a single booking-level figure cannot say where a discrepancy is.
+
+## The hotel's own figure
+
+New `HotelPriceConfirmation` table, **one row per BookingRoom, upserted**: what the hotel billed, their reference number, and a free-text why. Recorded inline under each room on the incoming side, with the difference against our own figure shown in red where it exists.
+
+Upsert rather than append-only, deliberately: this is a **single external fact with a current value**, not a history of our own actions. `InvoiceReviewNote` is append-only because it records what *we* did; a hotel correcting itself should replace its figure, not leave two contradictory ones. `confirmed_by`/`confirmed_at` still record who set it last.
+
+Currency is taken from the room, never from the caller — a confirmation in a currency the booking was never priced in is a typo, and accepting one would put two currencies in one comparison. A negative amount is refused; an unknown room 400s.
+
+**Partial confirmation is stated, not hidden.** The footer says "Hotel confirmed (1 of 2 rooms)" and a line underneath warns that the figure is not yet comparable to the full incoming total — summing a partial confirmation against a full total would invent a discrepancy out of rooms nobody has checked.
+
+## Verified on real multi-room data
+
+Six bookings, 1 and 2 rooms: per-room lines sum to each room's subtotal, room subtotals sum to the section total, on **both** sides — 0 problems. Booking 66 correctly shows a **−26,573.48** margin: a real, already-known consequence of a manual ledger correction, surfaced rather than smoothed over.
+
+The section numbering renumbered to 1 Amounts · 2 Incoming & outgoing · 3 Changes · 4 Audit trail, physical order checked against the numbers.
+
+Test confirmation removed afterwards; database unchanged at 53 invoices / 78 bookings / 83 rooms.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes.
+
+---
+
+# Decision 191 — BUILT
+
+Date: 2026-08-17
+
+Decision: **One hotel confirmation per booking, not per room.** Corrects Decision 190's own table, made the same day.
+
+Owner, seeing "Hotel has not confirmed this room / Record" appear once per room: *"если 2 номера всё равно будет 1 переписка с отелем... если 1 номер или 8 всё равно всё под один email будет — нужно один email показать"*.
+
+He is right, and the error was mine. I keyed the table on `BookingRoom` reasoning that a per-room figure locates a discrepancy — but that **modelled a conversation that does not happen**. The hotel invoices an application once, in one email, whatever it holds. A per-room form would have asked a manager to split one hotel invoice across rooms by hand before they could record it at all.
+
+Which room a discrepancy sits in is still answerable — by the per-room Incoming breakdown directly above it, which is where the reader already is.
+
+## What changed
+
+`hotel_price_confirmations` rekeyed from `booking_room_id` to `booking_id`, still unique and upserted. The table was empty (Decision 190's own test row had been cleaned up), so this is a clean rebuild with nothing to migrate — checked before touching it rather than assumed.
+
+The endpoint moved from `/booking-rooms/{id}/hotel-confirmation` to `/bookings/{id}/hotel-confirmation`. Currency now comes from the booking. The per-room bulk lookup is gone, as is the "partly confirmed (1 of 2 rooms)" warning — a partial state that can no longer exist.
+
+One editor now sits under the Incoming table, comparing the hotel's single figure against our incoming **total**.
+
+## Verified
+
+On BK-000080 (2 rooms): recorded 6,600.00 against our 6,457.00 → difference **+143.00** with the reference and reason shown. Re-recording 6,457.00 replaced it (difference +0.00) and left **one** row, confirming upsert rather than append. The room objects carry no hotel field at all any more — verified structurally, not by eye.
+
+Test data removed; database unchanged at 53 invoices / 78 bookings / 83 rooms.
+
+Reason: project owner.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes.
+
+---
+
+# Decision 192 — BUILT
+
+Date: 2026-08-17
+
+Decision: The **Amounts** section is fixed and made legible. It was raising a false alarm on every multi-room invoice, and the owner could not tell what it was for — a fair complaint about a section that looks like the money again and is not.
+
+## What it is for
+
+One question: **has the booking changed since this invoice was issued?** Left is the amount frozen into the invoice; right is what the booking costs today. Equal → the invoice is still correct. Different → the booking moved after invoicing, and the agent may be owed a different amount.
+
+Now stated in the section itself, behind a `!` (the shared `ActionInfo`, exported from Reservations so it is the same marker as everywhere else), rather than left to be inferred.
+
+## The false alarm
+
+The warning compared `computeBookingFinancials(booking)` — the **parent Booking row**, whose columns on a multi-room application hold the **representative first room only**.
+
+On BK-000080 it compared **1,964.50** (room #1) against an invoice for **6,700.50** and declared "the price differs", while the column two centimetres to its right correctly showed 6,700.50 = 6,700.50. Two answers to one question on one screen, and the wrong one was the one shouting.
+
+Same bug class Decision 178 fixed for the list, the breakdown and "Booked by the agent at"; this was the one place it survived. It now reads the same all-rooms figure that column already uses, from the same endpoint.
+
+**Measured across all 53 invoices: 4 false warnings removed, 40 genuine differences still reported.** The fix quiets only the wrong ones.
+
+## Made legible
+
+- It now says so **when the totals match too** (`✓ The invoice still matches the booking — $6,700.50`). Silence on the good case is what made the warning unreadable: there was nothing to contrast it against, so a red box looked like the section's normal state.
+- The mismatch message names both figures and the gap instead of only asserting that one exists.
+- The two columns say what they are: *"Frozen in invoice — what the agent was billed"* and *"Booking now — all rooms"*.
+- On a multi-room booking the header facts (room type, dates, guests) come from the parent row and therefore describe **room 1**. Not recomputed — the per-room truth is one section away — but now **labelled**: "This booking has 2 rooms. The details below describe room 1 only." Saying it was the part that was missing.
+
+Reason: project owner — *"поправь, но сделай его понятным, а то мне самому не понятно"*.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes, database unchanged.
+
+---
+
+# Decision 193 — BUILT
+
+Date: 2026-08-17
+
+Decision: **Multi-currency readiness: markup per currency, totals per currency.** Groundwork for the Mauritius contract in EUR.
+
+Owner's rule, and it is the cheap one: **one currency per booking, end to end.** A Mauritius hotel sells in EUR, the agent is invoiced in EUR, the hotel is paid in EUR. No exchange rates, no conversion, nothing to reconcile — that only becomes necessary if the company ever wants its whole turnover as a single figure.
+
+Currency already flowed `contracts → rates → bookings → invoices`, and search already prices off `contract.currency`, so a EUR contract would have displayed in EUR unaided. Two things would have been wrong.
+
+## 1. The markup
+
+It was **one global row**: `10.00 USD per night`. Since the markup is an **absolute amount, not a percentage**, applying it to a EUR booking would have added **10 EUR** because 10 USD was configured — a different amount, silently, on every night of every EUR booking.
+
+Now one row per currency (`USD 10.00`, `EUR 10.00` — the owner's figure). Which row applies is decided by the **contract's own currency**, resolved inside Pricing Engine from the `contract_id` it already receives — deliberately **not** added to `apply_agent_pricing`'s signature, because LOCKED Booking Engine calls it directly and has no opinion about currency. Falls back to USD if a contract cannot be read: the markup must never be the reason a price fails to compute.
+
+Proved end to end by temporarily flipping contract 2 to EUR with a distinct EUR markup: the same stay priced 50.00 markup in USD and 35.00 in EUR, then contract and markup were restored.
+
+## 2. Totals that summed across currencies
+
+**Balance** added every invoice into one number and stamped it with the **first invoice's** currency — fine while everything was USD, wrong the moment EUR exists. Now Amount and Profit render one line per currency, sorted. No conversion, which is the honest answer without rates.
+
+The bookings list's "Total profit" already split by currency — checked rather than assumed, and left alone.
+
+The admin markup screen now shows one input per currency, with a line saying plainly that the contract's currency selects the row and that nothing is ever converted.
+
+## Not done
+
+The `.xlsx` agent export and `generate_agent_statement` remain explicitly single-currency (already documented as such). They are per-agent, per-period documents; a mixed-currency statement needs its own decision about whether it becomes two documents or two sections.
+
+Reason: project owner — EUR markup 10 per night, totals split USD/EUR in Balance and in the bookings list.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the project's 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors, filter/pagination suite passes; contracts still all USD, 78 bookings / 53 invoices untouched.
+
+---
+
+# Decision 194 — BUILT
+
+Date: 2026-08-17
+
+Decision: **The St. Regis Le Morne, Mauritius entered as real contract data — the first EUR contract, and the first hotel with a real email address.** Zero code changes. This is the test Decision 116's formula principle asked for: does a third hotel, in a second currency, from a contract nobody designed the schema around, go in **by data alone**? It did.
+
+Loaded from `contract2027.pdf` (01.11.2026 – 31.10.2027) into hotel #14 / contract #9: 19 room types, 14 markets, 11 season windows, 4 age categories, 3 meal plans, **207 rates**, **621 rate supplements**, 11 cancellation tiers, 2 minimum-stay rules.
+
+Every figure was parsed from the PDF **twice by independent methods** — once by text lines, once by x-coordinate columns — and the two parses cross-checked against each other before anything was written, because this contract's rate table has jumbled header ordering that a single text extraction reads wrongly. The 11 season windows were verified to tile the contract's own validity exactly: **365 days, no gap, no overlap.** 5 of 5 live price checks matched the PDF to the cent.
+
+`Hotel.email` is populated for the first time (`reservations@stregislemorne.com`, from the contract's own Reservation Email Address block) — the LPO's empty "To" field, flagged as a blocker in Decision 154, now has one real hotel that fills it.
+
+## The one real bug this surfaced — and it was in my data, not the engine
+
+The first HB price check returned **200.00 where the contract says 400.00** for 2 adults × 2 nights. My initial read was that the engine multiplies a meal supplement per room instead of per person, and I reported it as an engine limitation. **That was wrong, and worth recording as wrong**, because the owner's answer is what corrected it: *"kandima doplata na cheloveka"* — Kandima has always charged per person and its figures have always verified.
+
+`get_room_price` has **two** meal-supplement paths, and they are already exactly right:
+
+- inside the age-category bucket loop, a `meal_plan_supplement` carrying an `age_category_id` is multiplied by **that bucket's headcount** — per person;
+- below it, a supplement with `age_category_id IS NULL` is applied **once** — per room.
+
+Kandima's 30 rows are tagged `Adult` (HB+ 90 / FB+ 140 / PAI 195, `per_person_per_night`) and take the first path. The 414 St Regis rows I created were left untagged and took the second. **The engine was never wrong; the tag is the switch, and I failed to set it.**
+
+Fix: `age_category_id = Adult` on all 414 St Regis meal rows — the contract says "Adult Supplement per night", children sharing are free of charge. `service.py` untouched. Kandima's rows untouched (checked, not assumed: 30 rows, all still `Adult`, the UPDATE was scoped to contract 9's rates).
+
+Verified after the fix — St Regis Junior Suite King, HIGH 1, 2 nights, BB base 1,700.00:
+
+| Occupancy | Total | Supplement | Contract |
+|---|---:|---:|---:|
+| 1 adult HB | 1,900.00 | 200.00 | 100 × 2 × 1 ✓ |
+| 2 adults HB | 2,100.00 | 400.00 | 100 × 2 × 2 ✓ |
+| 3 adults HB | 2,300.00 | 600.00 | 100 × 2 × 3 ✓ |
+| 1 adult FB | 2,000.00 | 300.00 | 150 × 2 × 1 ✓ |
+| 2 adults FB | 2,300.00 | 600.00 | 150 × 2 × 2 ✓ |
+| 2 adults BB | 1,700.00 | — | no supplement ✓ |
+
+Kandima regression, Beach Studio, 3 nights: BB 1,854.00 unchanged; HB+ 2 adults 2,394.00 (540 = 90×3×2); PAI 1 adult 2,439.00 (585); PAI 2 adults 3,024.00 (1,170). All per adult per night, all unchanged.
+
+**Rule this establishes for every future contract:** a meal supplement is entered **with the age category it applies to**. An untagged row means "per room" and should be rare and deliberate. Nothing in the UI enforces this yet — an entry form that lets a manager leave it blank will reproduce this exact under-charge, which is a real follow-up, not a hypothetical one.
+
+## Deliberately not entered — flagged for the owner
+
+These are in the PDF but were **not** guessed at, because each one needs either a mechanism decision or a figure the contract does not state:
+
+- **Festive supplements** (24 and 31 December) — mandatory gala dinners, per person, not modelled as a date-scoped per-person charge anywhere yet.
+- **10% child/teen own-room discount** — a discount on a *separate* room, keyed to the occupant's age; no existing mechanism expresses that.
+- **Extra bed 50 EUR** — needs `"extra_bed"`, the one `RateSupplement.adjustment_type` still unimplemented since Decision 016.
+- **Offers**: honeymoon, golf, long-stay 10%, repeaters.
+- **PEAK rates for the 1BR and 2BR villas** — genuinely absent from the contract's own table, so those two season/room combinations are left unpriced rather than filled with a neighbouring season's figure. A search over the PEAK window simply will not offer them.
+- **Per-season release rules** — the system holds one release field per contract; entered at the **strictest** value (14 days), which under-books rather than over-books.
+
+Reason: project owner — *"posmotri contract i dobav ego"*, then *"kandima doplata na cheloveka"*.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** No code changed. Contract 9 live and priceable in EUR; St Regis 5/5 and Kandima 5/5 verified against source figures; contracts 2 and 8 untouched.
+
+---
+
+# Decision 195 — BUILT
+
+Date: 2026-08-17
+
+Decision: **A newly entered contract is invisible until activated — and the flexible-date strip was ranking prices across currencies.** Both found from one owner report: *"tceni ne pokazviaet v sisteme, naprimer april 2027 dbl"* → "Нет активного контракта" on St Regis.
+
+## 1. Draft is invisible, and nothing says so
+
+`Contract.contract_status` defaults to `"Draft"` (`repository.create_contract`), and `get_active_contract` matches only `"Active"`. Decision 194 created contract 9 through the real API and therefore got a Draft — every rate, season and supplement correct and in place, and the hotel still answering "no active contract" for every date. Kandima and Siyam World are both `"Active"`, so this had never come up before: they were the only two contracts, and both were activated long ago.
+
+Nothing was wrong in the engine and nothing was changed in it. Contract 9 set to `"Active"` through `PUT /contract-engine/contracts/9`, so the engine's own `validate_contract_status` ran rather than a raw UPDATE.
+
+**Worth stating plainly, because it will happen again:** entering a contract is two steps, and the second one is invisible. Loading 207 rates does not make a hotel bookable. Any future contract-entry flow (including AI Core Engine's write-through, which calls the same `create_contract`) lands in Draft and needs an explicit activation. A search screen that said *why* a hotel has no contract — Draft, expired, or genuinely absent — would have made this self-evident; today all three read identically.
+
+Verified after activation, St Regis Junior Suite King, April 2027 (HIGH 2, 945.00 EUR/night), 7 nights, 2 adults:
+
+| Meal | Net | Agent | Check |
+|---|---:|---:|---|
+| BB | 6,615.00 EUR | 6,685.00 EUR | 945 × 7 ✓ |
+| HB | 8,015.00 EUR | 8,085.00 EUR | + 100 × 7 × 2 ✓ |
+| FB | 8,715.00 EUR | 8,785.00 EUR | + 150 × 7 × 2 ✓ |
+
+Markup 70.00 = 10 EUR × 7 nights, from the EUR settings row (Decision 193). The flexible-date scan now returns all three hotels together, 6 units in 1.26s, EUR beside USD.
+
+## 2. The flexible-date strip compared currencies as bare numbers
+
+Found by checking the above rather than reported: `FlexibleResultsPanel` computed one global `cheapest`/`dearest` across every cell and rendered a savings line as `dearest - cheapest`, **stamped with the first cell's currency** — the identical mistake Balance made before Decision 193.
+
+Latent while every hotel was USD. Reproduced against real data the moment a EUR contract existed — a Nov–Dec 2026 scan of Siyam World + St Regis, where the cheapest displayed figure genuinely flips currency between dates:
+
+| Date | Shown | Also available |
+|---|---|---|
+| 05.11.2026 | 6,685 EUR St Regis | 6,746 USD Siyam World |
+| 05.12.2026 | 6,020 EUR St Regis | 6,746 USD Siyam World |
+| 26.12.2026 | 9,269 USD Siyam World | 15,470 EUR St Regis |
+
+Before: **"save 3,249 EUR"** — 9,269 USD minus 6,020 EUR, labelled EUR. A number with no meaning.
+After: **"EUR: 665"** only; USD is flat across these dates and is omitted.
+
+Fixed by keeping min/max **per currency** in a `Map`, exactly Decision 193's rule — split, never convert. Green highlight now means "cheapest **in its own currency**", and both it and the savings line are gated on the same `max > min` condition, so the two cannot disagree. That gate also removes two pieces of noise the old code produced: a currency represented by a single cell used to be badged cheapest against nothing, and a month where every date costs the same used to turn entirely green while the savings line correctly stayed silent.
+
+**Known and accepted, not fixed:** `buildFlexibleCells` still picks each date's displayed row by the smallest raw number, so on a date carrying both currencies the cell shows whichever figure is numerically smaller. One cell has room for one figure and no exchange rate exists, so there is no better pick available — but what the cell then displays is true (that hotel really does cost that, in that currency, and the currency is printed under it), the tooltip lists every hotel with its own currency, and the ranking claim — the green badge — is now made only within a currency. Revisit only if agents actually search across currencies routinely; the common case is one destination.
+
+Reason: project owner — *"tceni ne pokazviaet v sisteme, naprimer april 2027 dbl"*.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors. Contract 9 Active and priceable; contracts 2 and 8 untouched; single-currency scans render byte-identically to before.
+
+---
+
+# Decision 196 — BUILT
+
+Date: 2026-08-17
+
+Decision: **Transfers become a real module: priced per person OR per vehicle, declinable everywhere, and editable by the owner without a developer.** Started from one reported lie on screen — *"napisano Итого (проживание + трансфер), ot kuda info o transfer?"* — and was deliberately built as foundation rather than a Mauritius special case, on the owner's explicit instruction: *"Mnogie napravlenii delaetsya transfer takim je obrazom za mashinu i mogut sami ekhat toje, poetamu nujno etogo postavit v fundament proekta chtob ne lomat v budushem, i eto doljen bit kak modul."*
+
+## 1. The label was lying
+
+`grandTotalLabel` was the fixed string "Итого (проживание + трансфер)" with an optional tax suffix — printed on every room card regardless of whether a transfer was in the figure. On St Regis, which sells none, it claimed a transfer inside a pure accommodation total. Now assembled from the parts actually summed, so it reads "Итого (проживание)", "(проживание + трансфер)", or "(проживание + трансфер + налог)" and cannot drift from the arithmetic. `taxSuffix` is gone; three part-name keys replace it in both catalogs.
+
+## 2. Per-vehicle pricing — the mechanism, not the hotel
+
+Every transfer before this was per person, and `ContractTransferOption` only had `price_adult`/`price_child`/`price_infant`. A seaplane seat genuinely is per passenger; **a road transfer is sold by the car** — a sedan to Le Morne is 220 EUR round trip whether one guest rides in it or three. Entering 220 as `price_adult` would have billed a couple 440 for one car, and a family of four 880.
+
+New `pricing_basis` (`"per_person"` default | `"per_vehicle"`) and `price_per_vehicle` on the option, added by raw `ALTER TABLE` (Decision 084/089 technique). **All 4 pre-existing rows were explicitly stamped `per_person`** rather than left NULL, so their behaviour is stated in the data, not inferred from a default. `get_transfer_price` branches on the basis and returns three new fields (`pricing_basis`, `price_per_vehicle`, `vehicle_total`) — purely additive: Booking Engine and Finance Engine only ever read `total`, verified by grep before touching anything.
+
+On a `per_vehicle` row the three per-person columns are a real, computed **0.00**, and the fare is **not** folded into `adult_total`. That would have been the smaller change, and it would have made every breakdown in the system print a car's fare as an adult's fare. `validate_transfer_pricing_basis` refuses both mismatches — a `per_vehicle` row without a fare (which would price the transfer at nothing, silently) and a `per_person` row carrying one (a number nobody reads and nobody can explain a year later).
+
+A transfer discount, if one ever applies, reduces the car fare as a whole — there is no adult/child split for `applies_to_children` to divide. No real offer discounts a road transfer today; it is wired so a `per_vehicle` row can never be silently exempt from a discount a `per_person` row on the same contract would have honoured.
+
+## 3. "Without transfer" is a choice, not an absence
+
+Guests taking their own taxi, or having a transfer arranged elsewhere, is a normal outcome on many destinations. Before this the agent could only ever **add** a transfer: once a radio was picked there was no way back to none, and a never-touched block was indistinguishable from a deliberate decision. An explicit "Без трансфера / Without transfer" option now leads the list, hidden only where the contract makes a transfer mandatory. New `CartRoom.transferDeclined` — true only when a transfer **was** on offer and was declined — is what lets the cart and the checkout say "Без трансфера" for a real decision while staying silent for a hotel that simply doesn't sell transfers. A null `transferType` alone cannot tell those apart, and both used to render the same blank line.
+
+## 4. The module part: the owner can now do this without me
+
+`Contracts.tsx`'s Transfers block was **read-only** — every transfer in this system was created by a developer running a script. Adding a destination therefore required me. It now has add / edit / delete, with a Per person ⇄ Per vehicle toggle that swaps which price fields are asked for, and `PUT`/`DELETE /contract-engine/contract-transfer-options/{id}` behind it (only `POST` and list existed).
+
+The update is partial and normalising: editing a fare never re-opens the basis question, and switching basis clears the fields the other basis reads, so a row can never describe itself two ways at once. Delete is a real delete — the row carries no history, and a booking that used it froze its own `transfer_type`/`transfer_total` at booking time, so removing an option cannot change what anyone was charged; setting `status` to something other than `"Active"` remains available for an option a destination wants to keep on file but stop selling. The toggle is built from `<button>`s, not native radios, for the reason already documented in Known issues.
+
+## Mauritius data, entered through that module's own API
+
+Standard Sedan 2025 **220 EUR**, Lexus ES 2025 **300 EUR**, Mercedes S-Class 2025 **500 EUR** — all `per_vehicle`, round trip, on contract 9.
+
+Verified: each priced identically for 1 adult, 2 adults, 2+2, and 4+1 infant — party size does not move it. Per-person regression on Kandima and Siyam World unchanged (414/828/1128 and 515/1030). All 7 admin actions exercised against the live API, including both basis switches and the rejection of a nonsense basis; the test row was deleted afterwards and St Regis's three real options confirmed intact.
+
+Agent-facing result for the exact search in the owner's screenshot (Junior Suite King, BB, 7 nights, 2 adults + 2 children): 6,020.00 EUR without transfer — matching the screenshot to the cent — then 6,240 / 6,320 / 6,520 with each car.
+
+## Known gap, stated rather than guessed at
+
+**One option selected means one vehicle.** Nothing consults a vehicle capacity, because no contract states one — a party of six would be charged for one sedan. Deliberately not solved by inventing a capacity per car type: the honest fix is either a capacity column filled from real contract data or an explicit vehicle-count field the agent sets, and which one is right is the owner's call. Flagged to the owner in plain terms rather than silently modelled.
+
+## Found while verifying, unrelated and not fixed
+
+**Every special offer in the system has expired** — KM26_03's booking window closed 2026-07-31, all four SWJ26 offers closed 2026-08-15, two days ago. So no room or transfer discount applies anywhere today. This is why Decision 034's verified 564.00 Kandima figure now computes as 1128.00: not a regression (confirmed by running the pre-change code, which gives the identical 1128.00), just an offer that has genuinely lapsed. New booking windows are data the owner needs to enter for 2026/27. To prove the discount path itself was untouched, offer 5's window was temporarily opened, old and new code compared (both `[1340.00, 825.00, 310.00]`, exactly the expected no-tier / 50% / 100% adults-only results), and the window restored to `2026-08-15`.
+
+Reason: project owner — the reported false label, the Mauritius transfer prices, and the explicit instruction to make this foundation and a module.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors. 4 pre-existing transfer options stamped `per_person` and unchanged in behaviour; 3 new Mauritius options live; no LOCKED engine's existing behaviour altered.
+
+---
+
+# Decision 197 — BUILT
+
+Date: 2026-08-17
+
+Decision: **A transfer option states how many guests it can carry, and the system stops offering one that cannot.** Closes Decision 196's own stated gap the same day, because the owner supplied the missing data: *"vse varianti kotoriy dobavili eto maximum do 2+2 / vishe 2+2 do 8 pax mercedes v class summa 550 euro tuda i obratno."*
+
+Decision 196 deliberately shipped without capacity and said so — one selected option meant one vehicle, and a party of six would have been charged for one sedan. That was the right call at the time (no contract stated a capacity, and inventing one per car type would have been a guess); it is superseded now that the figures are real.
+
+## The rule
+
+New nullable `ContractTransferOption.max_passengers`. **NULL means the contract states no limit** — the honest value for a seaplane or a scheduled flight, and what all 4 pre-existing per-person options keep. It is never read as zero.
+
+**Counted as adults + children + infants** — deliberately unlike Hotel Engine's `max_occupancy`, which excludes infants. A bed can be shared; a seat belt cannot. Over-counting sends a family to the larger car, under-counting sends five bodies to a four-seat one, so the error this convention makes is the harmless one. Stated in the model, in the admin form's own helper text, and enforced identically on both sides.
+
+Enforced in two places on purpose:
+
+- `get_transfer_options(db, contract_id, guests=None)` gained an optional party size, exposed as `?guests=` on the available-options endpoint. Optional and defaulting to None, so every existing caller keeps the full list.
+- `get_transfer_price` **refuses** an option too small for the party, with a message naming both numbers. This is the one that matters: without it a stale screen or a direct API call could still book six people into a sedan.
+
+## The search page needs both halves, so it filters locally
+
+`HotelSearch.tsx` fetches the full Active list in **one** request and splits it itself, rather than asking the endpoint to filter. It needs the options that fit **and** how many exist but are too small — a filtered-only response would make a contract selling four transfers look like it sells none, with the whole transfer block silently vanishing for a party of five. New `HotelResult.transfersTooSmall` carries that count, and the block renders an amber line naming the party size instead of disappearing. The endpoint's `guests` filter remains as the protection for any other caller. Each option now also shows its own capacity ("· до 4 гост."), since that is the fact deciding the choice.
+
+## Admin
+
+The capacity field sits **outside** the per-person / per-vehicle branch in `Contracts.tsx`'s transfer form — a shared speedboat has seats too, so capacity is independent of how the fare is calculated. Empty means "no stated limit" and is sent as an explicit `null`, never dropped from the payload.
+
+## Mauritius data
+
+| Option | Fare | Carries |
+|---|---:|---:|
+| Standard Sedan 2025 | 220 EUR | up to 4 |
+| Lexus ES 2025 | 300 EUR | up to 4 |
+| Mercedes S-Class 2025 | 500 EUR | up to 4 |
+| **Mercedes V-Class** (new) | **550 EUR** | **up to 8** |
+
+Verified live: 2 guests and 4 guests see all four cars; 2+2+1 (five, infant counted) and 3+2 see only the V-Class with "3 options hidden"; nine guests see none and only "Без трансфера" remains. The server refuses `sedan_standard` at five guests and `mercedes_v` at nine, quoting both numbers. Kandima's three per-person options, `max_passengers` NULL, are still offered to parties of 2, 8 and 20 — an unlimited option must never be filtered out.
+
+End-to-end totals (BB, 7 nights): Junior Suite King 2 adults — 6,020 without transfer, then 6,240 / 6,320 / 6,520 / 6,570. Two Bedroom Family Suite 2+2+1 — 8,540, then 9,090 as the only option.
+
+## Deliberately no minimum
+
+A couple is still offered the V-Class at 550 EUR. The owner described the tiers as "above 2+2 → V-Class", but a maximum is a safety constraint while a minimum would only remove a legitimate choice — an agent may want the larger car for luggage. Flagged to the owner rather than assumed: if the V-Class should be hidden below five guests, that is a `min_passengers` field, not a change to this one.
+
+Reason: project owner — capacity figures for all four Mauritius vehicles. (Same message also confirmed: expired special offers stay as they are for now — *"poka ostavim kak est'"*.)
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors. All 4 pre-existing per-person options keep `max_passengers` NULL and are unfiltered for any party size.
+
+---
+
+# Decision 198 — BUILT
+
+Date: 2026-08-17
+
+Decision: **A vehicle's capacity is two numbers, not one: total seats and adult-sized seats.** Corrects Decision 197's own table hours after it was written, on the owner's correction: *"do 4 gost eto tolko do 2+2 detyam do 11.99 let / esli 3 vzr uje nelyza libo 4 vzr nelzya / 1+3 do 11.let mojno / 2+1 mojno."*
+
+Decision 197 modelled a sedan as "up to 4 guests". That is wrong in a way a single number cannot fix: the same car takes **2 adults + 2 children** but refuses **3 adults**, and takes **1 adult + 3 children** again. Four is the body count; two is the adult-sized count; both are real and independent.
+
+## The rule
+
+New nullable `ContractTransferOption.max_adults`, alongside Decision 197's `max_passengers`. NULL means no separate adult limit — a V-Class is simply 8 seats, any mix.
+
+**"Adult" here means anyone aged 12 or over, and this needed no new mechanism at all:** `HotelSearch.tsx`'s `deriveOccupancy` already promotes a 12-year-old out of `childAges` and into `adults` (`childAges.filter(a => a >= 12)`), with `children` being 2–11 and `infants` under 2. So the owner's "детям до 11.99 лет" boundary is exactly the boundary the search form has always used, and a 14-year-old counts against the adult seats on its own, with no age plumbing added anywhere. This was checked before designing the field, not assumed.
+
+Both limits are enforced in both places, independently:
+
+- `get_transfer_options(db, contract_id, guests=None, adults=None)` — a second optional filter param, exposed as `?adults=` on the available endpoint alongside `?guests=`. A NULL limit on an option is never read as zero.
+- `get_transfer_price` raises separately for each, naming both numbers, so the message says *which* limit was hit ("takes up to 2 guests aged 12 or over — this booking has 3"). The refusal is the load-bearing half: 3 adults is under the sedan's total of 4 and would pass a total-only check.
+
+The admin form asks for both as a pair, refuses an adult limit above the total (meaningless, and misleading to whoever reads the row later), and explains the pair in the owner's own terms — "4 in total, of which 2 aged 12+".
+
+The search page's hidden-options warning was **reworded**: Decision 197's "fewer seats than guests" is no longer true when the reason is the adult limit, so it now names the party mix ("2 взрослых, 2 ребёнка") rather than asserting which limit was breached.
+
+## Mauritius data
+
+| Option | Fare | Total | Aged 12+ |
+|---|---:|---:|---:|
+| Standard Sedan 2025 | 220 EUR | 4 | 2 |
+| Lexus ES 2025 | 300 EUR | 4 | 2 |
+| Mercedes S-Class 2025 | 500 EUR | 4 | 2 |
+| Mercedes V-Class | 550 EUR | 8 | no limit |
+
+Every one of the owner's six examples verified against the live system:
+
+| Party | Sedan offered | Owner's rule |
+|---|---|---|
+| 2 adults + 2 children | yes | allowed ✓ |
+| 2 + 1 | yes | allowed ✓ |
+| 3 adults | no — V-Class only | not allowed ✓ |
+| 4 adults | no — V-Class only | not allowed ✓ |
+| 1 adult + 3 children | yes | allowed ✓ |
+| 2 + 2 + 1 infant | no — V-Class only | 5 bodies ✓ |
+
+Asked directly, the API refuses the sedan for 3 and 4 adults quoting the adult limit, and prices it at 220 EUR for 1+3 and 2+2. Kandima's and Siyam World's per-person options carry NULL for both limits and remain offered to any party.
+
+Reason: project owner — the correction above, with all four vehicles' real limits.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the 2-error dead-file baseline, `npx vite build` clean. All 4 pre-existing per-person options have both limits NULL and are unaffected.
+
+---
+
+# Decision 199 — BUILT
+
+Date: 2026-08-17
+
+Decision: **A room's transfer can be changed after the booking exists — by the agent as well as a manager — and the admin panel is told about it in the same request.** Owner's requirement: *"s pervo khoteli sidan potom reshili brat' lexus, chtob radi etogo ne otmenit bron... agent chtob delal eto izminenia u sebya cherez agent panel. kak tolko delaetsya izminenia srazy v admin panel doljen soobshenia priyti... tak kak izminenia mojet proizoyti cherez 3 mesyaca posle zayavok."*
+
+Before this, the only way to record a change of car was to cancel and rebook — throwing away the booking's whole history over a 220 → 300 EUR swap.
+
+## Scoped to one room, deliberately
+
+`transfer_type`/`transfer_total` are `BookingRoom` columns, a multi-room party can genuinely split across vehicles, and every other real change on this model (dates, confirmation number, cancellation) is already per-room. `service.change_room_transfer` re-prices through Contract Engine's own `get_transfer_price` against **the room's** contract and dates, not the application's, since rooms in one application can hold different dates.
+
+`new_transfer_type=None` is a first-class value — "the guests will make their own way" (Decision 196) — and clears `transfer_total` to NULL, not 0.0, keeping "no transfer" distinct from "a transfer that costs nothing". The schema uses `Optional[str] = Field(...)`: required-but-nullable, so None must be sent explicitly and an omitted field is a malformed request rather than a silent removal.
+
+**Capacity came free.** Because the re-price goes through `get_transfer_price`, Decisions 197/198's limits apply to a change with no extra code: three adults are refused the sedan on a change exactly as they would have been at booking. The new `GET /rooms/{id}/transfer-options` filters by the room's own party through the same rules, so the change screen never offers a car the change would then refuse.
+
+Refused before any write: a Cancelled/Rejected room (no trip left to transfer anyone to), a room mid-cancellation (same guard `change_booking_dates` already applies), a terminal application, and re-selecting the option already in place. A reason is required, same as a date change — a change landing three months later needs to say why, and whoever reads it is usually not who made it.
+
+## The notification is in the same request, not a follow-up browser call
+
+Decisions 080/083/094 all use best-effort frontend orchestration, and CLAUDE.md records why: avoiding a circular import. **Checked rather than assumed — there is none to avoid here.** `finance/service.py` imports booking's *service*, never its *api*, so `booking/api.py → finance/service.py` is acyclic (verified by importing both). The owner's requirement is that the change gets noticed; a signal that depends on a second call from a browser succeeding does not meet it.
+
+`finance_service.record_transfer_change` does two things:
+
+1. Appends an `InvoiceReviewNote` against the booking, which is what puts it in the admin panel's **"Needs Attention"** until someone acknowledges it — Decision 108's booking-rooted urgency mechanism, reused entirely unchanged.
+2. Re-syncs the room's `transfer` commercial line. **This was a real trap, not a precaution:** `get_or_seed_commercial_lines` seeds once and never re-reads the BookingRoom, so without this the Commercial breakdown and the invoice would keep quoting the old car's price forever. Only `base_cost`/`base_price` are touched — `adjustment_cost`/`adjustment_price` are a deliberately separate manual correction, so re-syncing the system figure cannot discard a manager's own entry. A line that has never been seeded is left alone, matching `get_booking_commercial_summary`'s rule about not creating rows for rooms nobody opened.
+
+**All 8 price-snapshot columns stay NULL.** Those columns describe a *date* change, and `financeShared.tsx`'s `formatSingleNote` picks its rendering tier from `old_total`/`new_total` — populating them here without dates would have rendered this note as a date change containing "Invalid Date". Found by reading that function before writing the note, not by seeing it break.
+
+The note names the **cars**, not the `transfer_type` codes: `change_room_transfer` resolves the display names once and returns them, because "sedan_standard → lexus_es" makes the reader look up two codes to understand a sentence about a car. Generated in English server-side per Decision 111.
+
+If the note itself fails, the change is already committed, so it is logged rather than pretended away — the change really did happen.
+
+## Frontend
+
+`RoomTransferEdit` lives in `Reservations.tsx` — the **shared** file, not `AdminBookingFinance.tsx`'s admin-only extensions — because the owner asked for the agent to do this in their own panel. Mirrors `RoomConfirmationNumberEdit`'s shape exactly. The current transfer, its price, and an amber "changed <date>" chip render for anyone who can see the room, not only whoever may edit it. Hidden entirely on a Cancelled/Rejected room. Three new `BookingRoomResponse` fields (`transfer_change_reason`/`transfer_changed_at`/`transfer_changed_by`) carry the audit trail to the UI so it is visible on the booking, not only inside finance.
+
+## Verified
+
+Against the real St Regis booking **BK-000082**, which had genuinely been booked with the Standard Sedan — the owner's exact scenario. Sedan → Lexus (220 → 300, +80), Lexus → S-Class (+200), S-Class → no transfer (−500), back to sedan: each one re-priced correctly, appended a numbered note, put the booking into Needs Attention, and re-synced the ledger line, which returned to 220.00 across all four. Refusals confirmed: re-selecting the same option, an unknown `transfer_type`, and a missing reason.
+
+Permission boundary verified directly against real user rows: **admin allowed, the booking's own agent (id 2) allowed, an unrelated agent refused 403** "You can only modify bookings you own". Tested in-process rather than over HTTP because `SECRET_KEY` is regenerated on every restart (the known limitation in CLAUDE.md), so a locally minted JWT cannot authenticate against the running server.
+
+Test notes and audit fields created while verifying were removed afterwards. The one note now on BK-000082 is the owner's **own** live change through the UI ("they dont wanted transfere", Standard Sedan → no transfer), left exactly as it is — the feature working in production, not test residue.
+
+Reason: project owner — the requirement quoted above.
+
+Approved By: Daler (2026-08-17)
+
+Status: **Built and verified.** `npx tsc -b` at the 2-error dead-file baseline, `npx vite build` clean, `npx oxlint` 0 errors. 84 pre-existing booking_rooms have all three new columns NULL and behave exactly as before.
+
+---
+
 # Decision Template
 
 Decision Number:

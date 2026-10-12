@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { API_URL } from "../config";
+import { handleSessionExpired } from "../session";
 
 // ---------------------------------------------------------------------------
 // Types (only the fields this screen actually reads) — mirror Contract
@@ -44,6 +45,14 @@ interface ContractTransferOption {
   price_adult: number;
   price_child: number;
   price_infant: number | null;
+  // Decision 196: "per_person" (a seaplane seat, priced per passenger) or
+  // "per_vehicle" (a road transfer — one flat fare for the car).
+  pricing_basis: string;
+  price_per_vehicle: number | null;
+  // Decision 197: null means the contract states no limit (a seaplane).
+  max_passengers: number | null;
+  // Decision 198: separate cap on guests aged 12+. null = no adult limit.
+  max_adults: number | null;
   status: string;
 }
 
@@ -121,6 +130,13 @@ async function fetchJson<T>(path: string, token: string, options: RequestInit = 
       ...(options.headers || {}),
     },
   });
+  // A 30-minute token simply expires while a tab sits open; every request
+  // then fails with 401 "Invalid token". Handled once, centrally, instead of
+  // each panel rendering that raw string or hanging on a spinner forever.
+  if (response.status === 401) {
+    handleSessionExpired();
+    throw new Error("Session expired");
+  }
   if (!response.ok) {
     let detail = `Request error (${response.status})`;
     try {
@@ -213,6 +229,24 @@ const Contracts = () => {
   const [formEndDate, setFormEndDate] = useState("");
   const [savingDiscount, setSavingDiscount] = useState(false);
   const [discountError, setDiscountError] = useState<string | null>(null);
+
+  // Decision 196: transfers are now editable here rather than only viewable.
+  // Every destination arranges them differently -- per seat by seaplane, per
+  // car by road -- so adding a new destination's transfers must be data entry
+  // by the owner, not a script run by a developer.
+  const [transferFormOpen, setTransferFormOpen] = useState(false);
+  const [editingTransferId, setEditingTransferId] = useState<number | null>(null);
+  const [tfType, setTfType] = useState("");
+  const [tfName, setTfName] = useState("");
+  const [tfBasis, setTfBasis] = useState<"per_person" | "per_vehicle">("per_person");
+  const [tfAdult, setTfAdult] = useState("");
+  const [tfChild, setTfChild] = useState("");
+  const [tfInfant, setTfInfant] = useState("");
+  const [tfVehicle, setTfVehicle] = useState("");
+  const [tfMaxPax, setTfMaxPax] = useState("");
+  const [tfMaxAdults, setTfMaxAdults] = useState("");
+  const [savingTransfer, setSavingTransfer] = useState(false);
+  const [transferError, setTransferError] = useState<string | null>(null);
 
   const [detailContract, setDetailContract] = useState<Contract | null>(null);
   const [detailSeasons, setDetailSeasons] = useState<ContractSeason[]>([]);
@@ -438,6 +472,164 @@ const Contracts = () => {
     } finally {
       setSavingDiscount(false);
     }
+  }
+
+  // ---- Transfers (Decision 196) -----------------------------------------
+  async function refreshDetailTransfers() {
+    if (!detailContract) return;
+    const token = localStorage.getItem("token") || "";
+    setDetailTransferOptions(
+      await fetchJson<ContractTransferOption[]>(
+        `/contract-engine/contracts/${detailContract.id}/transfer-options`,
+        token
+      )
+    );
+  }
+
+  function openNewTransferForm() {
+    setEditingTransferId(null);
+    setTfType("");
+    setTfName("");
+    setTfBasis("per_person");
+    setTfAdult("");
+    setTfChild("");
+    setTfInfant("");
+    setTfVehicle("");
+    setTfMaxPax("");
+    setTfMaxAdults("");
+    setTransferError(null);
+    setTransferFormOpen(true);
+  }
+
+  function openEditTransferForm(o: ContractTransferOption) {
+    setEditingTransferId(o.id);
+    setTfType(o.transfer_type);
+    setTfName(o.transfer_name ?? "");
+    setTfBasis(o.pricing_basis === "per_vehicle" ? "per_vehicle" : "per_person");
+    setTfAdult(String(o.price_adult));
+    setTfChild(String(o.price_child));
+    setTfInfant(o.price_infant != null ? String(o.price_infant) : "");
+    setTfVehicle(o.price_per_vehicle != null ? String(o.price_per_vehicle) : "");
+    setTfMaxPax(o.max_passengers != null ? String(o.max_passengers) : "");
+    setTfMaxAdults(o.max_adults != null ? String(o.max_adults) : "");
+    setTransferError(null);
+    setTransferFormOpen(true);
+  }
+
+  async function handleSaveTransferForm() {
+    if (!detailContract) return;
+    const type = tfType.trim();
+    if (!type) {
+      setTransferError("Enter a transfer type code (e.g. sedan_standard, seaplane)");
+      return;
+    }
+    // Validated here as well as server-side, so the owner sees the problem
+    // beside the field rather than as a 400 from the API.
+    // Decision 197: empty means "no stated limit" (a seaplane), which is a
+    // real answer, not a missing one -- so it is sent as null, never dropped.
+    const maxPax = tfMaxPax.trim() === "" ? null : parseInt(tfMaxPax, 10);
+    if (maxPax !== null && (isNaN(maxPax) || maxPax < 1)) {
+      setTransferError("Max guests must be a whole number of 1 or more, or left empty");
+      return;
+    }
+    const maxAdults = tfMaxAdults.trim() === "" ? null : parseInt(tfMaxAdults, 10);
+    if (maxAdults !== null && (isNaN(maxAdults) || maxAdults < 1)) {
+      setTransferError("Max adults must be a whole number of 1 or more, or left empty");
+      return;
+    }
+    // Decision 198: an adult limit above the total is meaningless and would
+    // only mislead whoever reads the row later.
+    if (maxAdults !== null && maxPax !== null && maxAdults > maxPax) {
+      setTransferError("Max adults cannot exceed max guests");
+      return;
+    }
+    let payload: Record<string, unknown>;
+    if (tfBasis === "per_vehicle") {
+      const vehicle = parseFloat(tfVehicle);
+      if (isNaN(vehicle) || vehicle < 0) {
+        setTransferError("Enter the fare for one vehicle, round trip");
+        return;
+      }
+      payload = {
+        transfer_type: type,
+        transfer_name: tfName.trim() || null,
+        pricing_basis: "per_vehicle",
+        price_per_vehicle: vehicle,
+        price_adult: 0,
+        price_child: 0,
+        price_infant: null,
+        max_passengers: maxPax,
+        max_adults: maxAdults,
+      };
+    } else {
+      const adult = parseFloat(tfAdult);
+      const child = parseFloat(tfChild);
+      if (isNaN(adult) || adult < 0 || isNaN(child) || child < 0) {
+        setTransferError("Enter both the adult and the child price");
+        return;
+      }
+      const infant = tfInfant.trim() === "" ? null : parseFloat(tfInfant);
+      if (infant !== null && (isNaN(infant) || infant < 0)) {
+        setTransferError("Infant price must be a number, or left empty");
+        return;
+      }
+      payload = {
+        transfer_type: type,
+        transfer_name: tfName.trim() || null,
+        pricing_basis: "per_person",
+        price_adult: adult,
+        price_child: child,
+        price_infant: infant,
+        max_passengers: maxPax,
+        max_adults: maxAdults,
+      };
+    }
+    try {
+      setSavingTransfer(true);
+      setTransferError(null);
+      if (editingTransferId) {
+        await fetchJson(`/contract-engine/contract-transfer-options/${editingTransferId}`, token(), {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await fetchJson(`/contract-engine/contract-transfer-options`, token(), {
+          method: "POST",
+          body: JSON.stringify({ ...payload, contract_id: detailContract.id }),
+        });
+      }
+      await refreshDetailTransfers();
+      setTransferFormOpen(false);
+      setEditingTransferId(null);
+    } catch (err: any) {
+      setTransferError(err.message || "Failed to save transfer");
+    } finally {
+      setSavingTransfer(false);
+    }
+  }
+
+  async function handleDeleteTransfer(o: ContractTransferOption) {
+    if (
+      !window.confirm(
+        `Delete "${o.transfer_name ?? o.transfer_type}"? Bookings that already used it keep the fare they were charged.`
+      )
+    )
+      return;
+    try {
+      setSavingTransfer(true);
+      await fetchJson(`/contract-engine/contract-transfer-options/${o.id}`, token(), {
+        method: "DELETE",
+      });
+      await refreshDetailTransfers();
+    } catch (err: any) {
+      alert(err.message || "Failed to delete transfer");
+    } finally {
+      setSavingTransfer(false);
+    }
+  }
+
+  function token() {
+    return localStorage.getItem("token") || "";
   }
 
   function seasonName(seasonId: number) {
@@ -774,23 +966,239 @@ const Contracts = () => {
             </div>
           )}
 
-          {/* ===== Transfers ===== */}
-          <h4 className="mb-2 mt-6 font-display text-base font-semibold text-ink">
-            Transfers ({detailTransferOptions.length})
-          </h4>
+          {/* ===== Transfers (Decision 196) ===== */}
+          <div className="mb-2 mt-6 flex flex-wrap items-center justify-between gap-2">
+            <h4 className="font-display text-base font-semibold text-ink">
+              Transfers ({detailTransferOptions.length})
+            </h4>
+            {!transferFormOpen && (
+              <button
+                type="button"
+                onClick={openNewTransferForm}
+                className="appearance-none rounded-lg border-0 bg-teal px-4 py-2 text-xs font-medium text-white transition-transform hover:-translate-y-0.5"
+              >
+                Add transfer
+              </button>
+            )}
+          </div>
+          <p className="mb-2.5 text-xs text-slate/50">
+            Priced either per person (a seaplane seat) or per vehicle (a car — one fare whoever rides
+            in it). Agents can always choose to go without a transfer unless this contract makes one
+            mandatory.
+          </p>
           {detailTransferOptions.length === 0 ? (
             <p className="text-sm text-slate/50">No transfers defined.</p>
           ) : (
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {detailTransferOptions.map((t) => (
                 <div key={t.id} className="rounded-xl border border-ink/10 bg-white p-3.5">
-                  <p className="font-medium text-ink">{t.transfer_name ?? t.transfer_type}</p>
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="font-medium text-ink">{t.transfer_name ?? t.transfer_type}</p>
+                    <span
+                      className={
+                        t.status === "Active"
+                          ? "shrink-0 rounded-full bg-success/10 px-2 py-0.5 text-[10px] font-semibold text-success"
+                          : "shrink-0 rounded-full bg-ink/5 px-2 py-0.5 text-[10px] font-semibold text-slate/60"
+                      }
+                    >
+                      {t.status}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 font-mono text-[10px] text-slate/40">{t.transfer_type}</p>
                   <p className="mt-1 text-xs text-slate/60">
-                    Adult: {t.price_adult} · Child: {t.price_child}
-                    {t.price_infant != null ? ` · Infant: ${t.price_infant}` : ""}
+                    {t.pricing_basis === "per_vehicle" ? (
+                      <>
+                        {detailContract.currency} {t.price_per_vehicle} · per vehicle, round trip
+                      </>
+                    ) : (
+                      <>
+                        Adult: {t.price_adult} · Child: {t.price_child}
+                        {t.price_infant != null ? ` · Infant: ${t.price_infant}` : ""} · per person
+                      </>
+                    )}
+                    {t.max_passengers != null ? ` · up to ${t.max_passengers} guests` : ""}
+                    {t.max_adults != null ? ` (max ${t.max_adults} aged 12+)` : ""}
                   </p>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => openEditTransferForm(t)}
+                      className="rounded border border-ink/15 bg-white px-2 py-0.5 text-[11px] font-medium text-ink/70 hover:bg-sand"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteTransfer(t)}
+                      className="rounded border border-danger/25 bg-white px-2 py-0.5 text-[11px] font-medium text-danger hover:bg-danger/5"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {transferFormOpen && (
+            <div className="mt-3 rounded-xl border border-ink/15 bg-sand/40 p-4">
+              <p className="mb-3 text-sm font-semibold text-ink">
+                {editingTransferId ? "Edit transfer" : "New transfer"}
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="flex flex-col text-xs text-slate/60">
+                  Type code
+                  <input
+                    value={tfType}
+                    onChange={(e) => setTfType(e.target.value)}
+                    placeholder="sedan_standard"
+                    className="mt-1 rounded-lg border border-ink/15 bg-white px-2.5 py-1.5 text-sm text-ink focus:border-gold focus:outline-none"
+                  />
+                </label>
+                <label className="flex flex-col text-xs text-slate/60">
+                  Name shown to the agent
+                  <input
+                    value={tfName}
+                    onChange={(e) => setTfName(e.target.value)}
+                    placeholder="Standard Sedan 2025"
+                    className="mt-1 rounded-lg border border-ink/15 bg-white px-2.5 py-1.5 text-sm text-ink focus:border-gold focus:outline-none"
+                  />
+                </label>
+              </div>
+
+              {/* Built from buttons rather than native radios: the legacy
+                  global input{width:100%;padding:14px} rule stretches every
+                  native radio across its container. */}
+              <div className="mt-3">
+                <p className="text-xs text-slate/60">Priced</p>
+                <div className="mt-1 flex gap-2">
+                  {(["per_person", "per_vehicle"] as const).map((basis) => (
+                    <button
+                      key={basis}
+                      type="button"
+                      onClick={() => setTfBasis(basis)}
+                      className={
+                        tfBasis === basis
+                          ? "rounded-lg border border-gold bg-gold/15 px-3 py-1.5 text-xs font-semibold text-ink"
+                          : "rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-slate/60 hover:bg-sand"
+                      }
+                    >
+                      {basis === "per_person" ? "Per person" : "Per vehicle"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {tfBasis === "per_vehicle" ? (
+                <label className="mt-3 flex max-w-xs flex-col text-xs text-slate/60">
+                  Fare for one vehicle, round trip ({detailContract.currency})
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={tfVehicle}
+                    onChange={(e) => setTfVehicle(e.target.value)}
+                    placeholder="220"
+                    className="mt-1 rounded-lg border border-ink/15 bg-white px-2.5 py-1.5 text-sm text-ink focus:border-gold focus:outline-none"
+                  />
+                  <span className="mt-1 text-[11px] text-slate/50">
+                    Party size does not change this. One option selected means one vehicle.
+                  </span>
+                </label>
+              ) : (
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <label className="flex flex-col text-xs text-slate/60">
+                    Adult ({detailContract.currency})
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={tfAdult}
+                      onChange={(e) => setTfAdult(e.target.value)}
+                      className="mt-1 rounded-lg border border-ink/15 bg-white px-2.5 py-1.5 text-sm text-ink focus:border-gold focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex flex-col text-xs text-slate/60">
+                    Child ({detailContract.currency})
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={tfChild}
+                      onChange={(e) => setTfChild(e.target.value)}
+                      className="mt-1 rounded-lg border border-ink/15 bg-white px-2.5 py-1.5 text-sm text-ink focus:border-gold focus:outline-none"
+                    />
+                  </label>
+                  <label className="flex flex-col text-xs text-slate/60">
+                    Infant — optional
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={tfInfant}
+                      onChange={(e) => setTfInfant(e.target.value)}
+                      placeholder="leave empty if free"
+                      className="mt-1 rounded-lg border border-ink/15 bg-white px-2.5 py-1.5 text-sm text-ink focus:border-gold focus:outline-none"
+                    />
+                  </label>
+                </div>
+              )}
+
+              {/* Decision 197: capacity applies to both bases -- a car has
+                  seats, and so does a shared speedboat -- so this sits outside
+                  the per-person / per-vehicle branch. */}
+              <div className="mt-3 grid max-w-lg gap-3 sm:grid-cols-2">
+                <label className="flex flex-col text-xs text-slate/60">
+                  Max guests in total — optional
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    value={tfMaxPax}
+                    onChange={(e) => setTfMaxPax(e.target.value)}
+                    placeholder="no limit"
+                    className="mt-1 rounded-lg border border-ink/15 bg-white px-2.5 py-1.5 text-sm text-ink focus:border-gold focus:outline-none"
+                  />
+                </label>
+                <label className="flex flex-col text-xs text-slate/60">
+                  Of those, max aged 12+ — optional
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    value={tfMaxAdults}
+                    onChange={(e) => setTfMaxAdults(e.target.value)}
+                    placeholder="no separate limit"
+                    className="mt-1 rounded-lg border border-ink/15 bg-white px-2.5 py-1.5 text-sm text-ink focus:border-gold focus:outline-none"
+                  />
+                </label>
+              </div>
+              <p className="mt-1.5 max-w-lg text-[11px] leading-relaxed text-slate/50">
+                Two separate limits, because a car has both. A sedan is <strong>4 in total, of
+                which 2 aged 12+</strong>: 2 adults + 2 children fits, 3 adults does not, 1 adult +
+                3 children fits again. Leave a field empty for no limit — a seaplane has neither.
+                Infants count toward the total: a seat belt cannot be shared. An option that cannot
+                take the party is not offered to the agent, and is refused if requested anyway.
+              </p>
+
+              {transferError && <p className="mt-2 text-xs text-danger">{transferError}</p>}
+              <div className="mt-3 flex gap-2.5">
+                <button
+                  type="button"
+                  onClick={handleSaveTransferForm}
+                  disabled={savingTransfer}
+                  className="appearance-none rounded-lg border-0 bg-coral px-4 py-2 text-sm font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+                >
+                  {savingTransfer ? "..." : editingTransferId ? "Save changes" : "Add"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTransferFormOpen(false);
+                    setEditingTransferId(null);
+                  }}
+                  disabled={savingTransfer}
+                  className="appearance-none rounded-lg border border-ink/15 bg-white px-4 py-2 text-sm font-medium text-slate/70 transition-colors hover:bg-sand/60 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
 
