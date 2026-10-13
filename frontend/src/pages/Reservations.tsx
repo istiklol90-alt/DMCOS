@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
@@ -173,6 +173,7 @@ interface MealPlanInfo {
 interface UserRecord {
   id: number;
   name: string;
+  role?: string | null;
   company_name?: string | null;
 }
 
@@ -339,6 +340,92 @@ export interface AdminBookingExtensions {
   // component. Best-effort by contract -- the approval has already
   // succeeded by the time this runs and must never be undone by it.
   onAfterRoomApproved?: (bookingRoomId: number) => Promise<void> | void;
+  // Replaces the list's table (and only the table) for the admin queue.
+  // Same mechanism and same reason as every slot above: the admin layout
+  // lives in an admin-only file, so the agent's list -- which never passes
+  // adminExtensions -- keeps rendering the table below exactly as written,
+  // not a permission-gated variant of a shared one. Data loading, filters,
+  // sorting state, pagination and the detail view all stay here.
+  renderTable?: (ctx: AdminListTableCtx) => ReactNode;
+  // Decision 200: the work queues (All / Unassigned / Mine / Needs attention)
+  // and the screen header, drawn between the insight strip and the filter
+  // bar. Supplying it is what switches queues on; the agent's list never
+  // does, so its request to the server is the one it has always sent.
+  renderQueueBar?: (ctx: AdminQueueBarCtx) => ReactNode;
+  // What the Needs-attention queue shows in place of the filter bar and the
+  // table -- that queue is a different list (review notes, not bookings).
+  renderAttentionQueue?: (ctx: { showBooking: (bookingNumber: string) => void }) => ReactNode;
+}
+
+export type AdminQueue = "all" | "unassigned" | "mine" | "attention";
+
+// Stage B2: everything about the list that a refresh should not lose. The
+// admin queue saves and restores it (adminViewState.ts); see BookingsList's
+// `initialListState` / `onListStateChange`.
+export interface BookingsListState {
+  statusFilter: string;
+  hotelFilter: string;
+  agentFilter: string;
+  searchQuery: string;
+  queue: AdminQueue;
+  ownerFilter: string;
+  dateModeView: "staying" | "created" | "cancellations";
+  dateFrom: string;
+  dateTo: string;
+  sortKey: "created_at" | "arrival_date" | "status";
+  sortDir: "asc" | "desc";
+  page: number;
+}
+
+export interface AdminQueueBarCtx {
+  queue: AdminQueue;
+  onQueueChange: (queue: AdminQueue) => void;
+  // "all", or a user id as a string -- the owner filter of the All queue.
+  ownerFilter: string;
+  onOwnerFilterChange: (value: string) => void;
+  managers: { id: number; name: string }[];
+  // The status / hotel / agent / search filters currently applied, as a
+  // query string. The queue counts are requested with exactly these, so a
+  // tab's number is the number of rows that tab shows.
+  countsQuery: string;
+  // The complete filter string of the All queue (date scope included), for
+  // its own count while another queue is selected.
+  allQuery: string;
+  // The server's total for the list currently shown.
+  total: number;
+  loading: boolean;
+  pageBookings: Booking[];
+  // Bumped whenever a booking on this screen changes owner or status, so the
+  // counts are re-read.
+  mutationTick: number;
+}
+
+// Forward-looking, rule-based warnings about one booking -- the same two
+// rules the AIInsightStrip reports, handed over as data rather than as a
+// finished sentence so the admin table can word and rank them itself.
+export type AdminListFlag =
+  | { kind: "pending_soon"; daysUntilArrival: number }
+  | { kind: "cancellation_deadline"; daysUntilCross: number; nextThreshold: number };
+
+export interface AdminListTableCtx {
+  bookings: Booking[];
+  hotels: Record<number, string>;
+  roomTypes: Record<number, string>;
+  // user id -> name; covers agents and the managers who claim bookings.
+  userNames: Record<number, string>;
+  companyNames: Record<number, string>;
+  flagsByBooking: Record<number, AdminListFlag[]>;
+  isFirstLoad: boolean;
+  isBackgroundRefresh: boolean;
+  error: string | null;
+  sortKey: "created_at" | "arrival_date" | "status";
+  sortDir: "asc" | "desc";
+  onSort: (key: "created_at" | "arrival_date" | "status") => void;
+  onOpen: (booking: Booking) => void;
+  canClaim: boolean;
+  // Call with the server's response after a successful claim: updates the
+  // row and runs the same onAfterClaim side effect as every other claim path.
+  onClaimed: (updated: Booking) => void;
 }
 
 const TERMINAL_STATUSES = ["Cancelled", "Rejected", "Completed"];
@@ -412,7 +499,7 @@ function RowTakeButton({
 // BookingStatus Literal — deliberately a fixed list rather than "whatever
 // statuses happen to be on screen", which with pagination would mean a page
 // of 50 Pending rows leaves "Pending" as the only status still selectable.
-const BOOKING_STATUSES = [
+export const BOOKING_STATUSES = [
   "Draft",
   "Pending",
   "Waiting Hotel",
@@ -506,8 +593,20 @@ function daysBetween(fromDateStr: string, toDateStr: string): number {
   return Math.round((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+// TODAY in the browser's own timezone -- the calendar date the person is
+// actually living in, and the date the server's date.today() returns for an
+// office in the same timezone.
+//
+// This used to be new Date().toISOString().slice(0, 10), which is the date in
+// UTC. East of Greenwich that is still YESTERDAY for the first hours of every
+// day (00:00-05:00 at UTC+5): the admin queue asked the server for "created
+// yesterday", the server's carry-forward of unowned bookings (which only
+// applies to a range containing ITS today) did not fire, and the default
+// view came up empty every night. West of Greenwich the same thing happened
+// in the evening, a day ahead. The cancellation-fee preview and the
+// "arrives in N days" flags were off by the same day in the same window.
 function todayStr(): string {
-  return new Date().toISOString().slice(0, 10);
+  return toIsoDate(new Date());
 }
 
 // Decision 153. The backend refuses a flight more than a year from the stay,
@@ -565,8 +664,7 @@ function describeFlightDateIssues(
 
 // Local calendar date as "YYYY-MM-DD". Deliberately NOT toISOString(), which
 // converts to UTC first and can therefore report yesterday or tomorrow
-// depending on the timezone — fine for todayStr()'s existing uses, wrong for
-// a horizon the server will compare against plain Date columns.
+// depending on the timezone. todayStr() above is built on this.
 function toIsoDate(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
@@ -5077,9 +5175,21 @@ const BookingsList = ({
   adminExtensions,
   compactFilters,
   initialDateMode,
+  initialListState,
+  onListStateChange,
 }: {
   scope: Scope;
   permissions: Permissions;
+  // Stage B2, admin queue only. `initialListState` is where the list starts
+  // (anything it omits takes the normal default); `onListStateChange` is told
+  // every time one of those values changes, so the caller can save them.
+  //
+  // The agent's own dashboard passes neither, and for it nothing here
+  // differs: every initial value below is `initialListState?.x ?? <the
+  // default it always had>`, and the effects that exist only for a restored
+  // state are switched off by `restoredList` being false.
+  initialListState?: Partial<BookingsListState>;
+  onListStateChange?: (state: BookingsListState) => void;
   adminExtensions?: AdminBookingExtensions;
   // Admin-only (Decision: 2026-07-27 "make Bookings tidy at 100+/day
   // volume") -- drops the Status/Hotel/Agent dropdowns (a proper
@@ -5105,10 +5215,31 @@ const BookingsList = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [hotelFilter, setHotelFilter] = useState<string>("all");
-  const [agentFilter, setAgentFilter] = useState<string>("all");
-  const [searchQuery, setSearchQuery] = useState<string>("");
+  const restoredList = initialListState !== undefined;
+  const [statusFilter, setStatusFilter] = useState<string>(initialListState?.statusFilter ?? "all");
+  const [hotelFilter, setHotelFilter] = useState<string>(initialListState?.hotelFilter ?? "all");
+  const [agentFilter, setAgentFilter] = useState<string>(initialListState?.agentFilter ?? "all");
+  const [searchQuery, setSearchQuery] = useState<string>(initialListState?.searchQuery ?? "");
+  // Decision 200 -- admin work queues. Both stay at their defaults for the
+  // agent's list (nothing there can change them), and at their defaults they
+  // add nothing to the request.
+  const [queue, setQueue] = useState<AdminQueue>(initialListState?.queue ?? "all");
+  const [ownerFilter, setOwnerFilter] = useState<string>(initialListState?.ownerFilter ?? "all");
+  const [managers, setManagers] = useState<{ id: number; name: string }[]>([]);
+  const [mutationTick, setMutationTick] = useState(0);
+  const [reloadTick, setReloadTick] = useState(0);
+  // Owner's decision (2026-10-13), reversing the first version of the
+  // queues: the date range applies in EVERY queue. At a hundred applications
+  // a day -- cancellations among them -- "no manager" or "my bookings" with
+  // no date is a list that only ever grows; each queue has to be readable
+  // for the dates being worked on. The server already takes the date scope
+  // together with `unassigned` / `mine` (one shared filter function), so
+  // nothing changes there.
+  //
+  // Kept as a named constant rather than deleted so the four places that
+  // read it stay as they are. Never true for the agent's list either way --
+  // its queue is always "all".
+  const queueIgnoresDates = false;
   // "By date" view. dateModeView chooses between three genuinely
   // different questions for the selected range: who's actually staying
   // at any point in it (excludes Cancelled/Rejected -- they were never
@@ -5129,12 +5260,12 @@ const BookingsList = ({
   const dateModeRequired = initialDateMode !== undefined;
   const [dateModeEnabled, setDateModeEnabled] = useState(initialDateMode !== undefined);
   const [dateModeView, setDateModeView] = useState<"staying" | "created" | "cancellations">(
-    initialDateMode?.view ?? "staying"
+    initialListState?.dateModeView ?? initialDateMode?.view ?? "staying"
   );
-  const [dateFrom, setDateFrom] = useState<string>(todayStr());
-  const [dateTo, setDateTo] = useState<string>(todayStr());
-  const [sortKey, setSortKey] = useState<SortKey>("created_at");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [dateFrom, setDateFrom] = useState<string>(initialListState?.dateFrom ?? todayStr());
+  const [dateTo, setDateTo] = useState<string>(initialListState?.dateTo ?? todayStr());
+  const [sortKey, setSortKey] = useState<SortKey>(initialListState?.sortKey ?? "created_at");
+  const [sortDir, setSortDir] = useState<SortDir>(initialListState?.sortDir ?? "desc");
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
 
   // Decision 152: real pagination. `total` is what the server says matches
@@ -5143,7 +5274,7 @@ const BookingsList = ({
   // database, 500 fetched, 72 silently invisible with nothing in the UI
   // saying so — at 100 applications/day that cap is one working week.
   const PAGE_SIZE = 50;
-  const [page, setPage] = useState(0);
+  const [page, setPage] = useState(initialListState?.page ?? 0);
   const [total, setTotal] = useState(0);
 
   // Server-side date scoping for the "created" (By date) view only --
@@ -5193,7 +5324,7 @@ const BookingsList = ({
   // search used to only ever look inside whatever was already fetched
   // for the current date window, so a real booking outside that
   // window was invisible to search even though it exists.
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState((initialListState?.searchQuery ?? "").trim());
   useEffect(() => {
     const handle = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 300);
     return () => clearTimeout(handle);
@@ -5218,7 +5349,7 @@ const BookingsList = ({
       // Search deliberately OVERRIDES the date scope entirely (Decision
       // 125) — a booking outside the current window must still be findable.
       p.set("search", debouncedSearch);
-    } else if (createdDateKey) {
+    } else if (createdDateKey && !queueIgnoresDates) {
       const [view, from, to] = createdDateKey.split("|");
       p.set("date_view", view);
       p.set("date_from", from);
@@ -5227,15 +5358,70 @@ const BookingsList = ({
     if (statusFilter !== "all") p.set("status", statusFilter);
     if (hotelFilter !== "all") p.set("hotel_id", hotelFilter);
     if (scope.type === "all" && agentFilter !== "all") p.set("agent_id", agentFilter);
+    if (queue === "unassigned") p.set("unassigned", "true");
+    if (queue === "mine") p.set("mine", "true");
+    if (queue === "all" && ownerFilter !== "all") p.set("claimed_by", ownerFilter);
     return p.toString();
-  }, [scope.type, scopedAgentId, debouncedSearch, createdDateKey, statusFilter, hotelFilter, agentFilter]);
+  }, [
+    scope.type, scopedAgentId, debouncedSearch, createdDateKey, statusFilter, hotelFilter, agentFilter,
+    queue, queueIgnoresDates, ownerFilter,
+  ]);
+
+  // What the queue bar needs to count the OTHER queues under the filters now
+  // applied. Built from the same state as listFilterQuery above, so the
+  // numbers on the tabs and the rows under them answer the same question.
+  const countsQuery = useMemo(() => {
+    const p = new URLSearchParams();
+    if (debouncedSearch) p.set("search", debouncedSearch);
+    if (statusFilter !== "all") p.set("status", statusFilter);
+    if (hotelFilter !== "all") p.set("hotel_id", hotelFilter);
+    if (scope.type === "all" && agentFilter !== "all") p.set("agent_id", agentFilter);
+    return p.toString();
+  }, [scope.type, debouncedSearch, statusFilter, hotelFilter, agentFilter]);
+
+  const allQuery = useMemo(() => {
+    const p = new URLSearchParams(countsQuery);
+    if (!debouncedSearch && createdDateKey) {
+      const [view, from, to] = createdDateKey.split("|");
+      p.set("date_view", view);
+      p.set("date_from", from);
+      p.set("date_to", to || from);
+    }
+    if (ownerFilter !== "all") p.set("claimed_by", ownerFilter);
+    return p.toString();
+  }, [countsQuery, debouncedSearch, createdDateKey, ownerFilter]);
 
   // Any change of scope must send the reader back to the first page —
   // staying on page 7 of a result set that now has 2 pages would show an
   // empty screen with no explanation.
+  //
+  // Keyed on what the scope WAS, not on "this effect ran": the first run sees
+  // the scope it started with and does nothing, so a restored page number
+  // (Stage B2) is not thrown away on mount. It previously called setPage(0)
+  // on mount unconditionally, which was a no-op only because the page always
+  // started at 0.
+  const pageScopeKey = `${listFilterQuery}|${sortKey}|${sortDir}`;
+  const lastPageScopeKey = useRef(pageScopeKey);
   useEffect(() => {
+    if (lastPageScopeKey.current === pageScopeKey) return;
+    lastPageScopeKey.current = pageScopeKey;
     setPage(0);
-  }, [listFilterQuery, sortKey, sortDir]);
+  }, [pageScopeKey]);
+
+  // Stage B2: report the list's state to whoever is saving it. A no-op for
+  // the agent's list, which passes no callback.
+  useEffect(() => {
+    onListStateChange?.({
+      statusFilter, hotelFilter, agentFilter, searchQuery, queue, ownerFilter,
+      dateModeView, dateFrom, dateTo, sortKey, sortDir, page,
+    });
+    // onListStateChange is deliberately not a dependency: only a change in the
+    // values themselves is worth reporting.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    statusFilter, hotelFilter, agentFilter, searchQuery, queue, ownerFilter,
+    dateModeView, dateFrom, dateTo, sortKey, sortDir, page,
+  ]);
 
   useEffect(() => {
     const load = async () => {
@@ -5279,6 +5465,13 @@ const BookingsList = ({
           });
           setAgentNames(userMap);
           setCompanyNames(companyMap);
+          // Who can own a booking: everyone who is not an agent. Only the
+          // admin queue's owner filter reads this.
+          setManagers(
+            usersData
+              .filter((u) => (u.role ?? "").toLowerCase() !== "agent")
+              .map((u) => ({ id: u.id, name: u.name })),
+          );
         }
 
         const uniqueHotelIds = Array.from(new Set(bookingsData.map((b) => b.hotel_id)));
@@ -5360,7 +5553,23 @@ const BookingsList = ({
     // only when the active "created" date window or the debounced
     // search term actually changes, per the same rule.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listFilterQuery, page, sortKey, sortDir]);
+  }, [listFilterQuery, page, sortKey, sortDir, reloadTick]);
+
+  // Stage B2: a restored state was valid when it was saved, which is not the
+  // same as valid now. Once the lists have loaded, a hotel, agent or manager
+  // that no longer exists goes back to "all" -- otherwise the dropdown would
+  // show nothing selected over a list filtered by something invisible -- and
+  // a page past the end of the results goes back to the first. Runs only for
+  // a list that was handed a saved state; the agent's never is.
+  useEffect(() => {
+    if (!restoredList || loading || error) return;
+    if (hotelFilter !== "all" && Object.keys(hotels).length > 0 && !(hotelFilter in hotels)) setHotelFilter("all");
+    if (agentFilter !== "all" && Object.keys(agentNames).length > 0 && !(agentFilter in agentNames)) setAgentFilter("all");
+    if (ownerFilter !== "all" && managers.length > 0 && !managers.some((m) => String(m.id) === ownerFilter)) {
+      setOwnerFilter("all");
+    }
+    if (page > 0 && bookings.length === 0) setPage(0);
+  }, [restoredList, loading, error, hotels, agentNames, managers, hotelFilter, agentFilter, ownerFilter, page, bookings.length]);
 
   // Decision 108: the "recently changed"/"recently cancelled" flags that
   // used to live here (24h ephemeral, no acknowledgment) were retired --
@@ -5427,6 +5636,21 @@ const BookingsList = ({
       ...computeCancellationDeadlineFlags(flagBookings, cancellationTiers),
     ];
   }, [flagBookings, cancellationTiers]);
+
+  // The same flags, keyed by booking, for the admin table's per-row reason
+  // (adminExtensions.renderTable). Unused -- and never read -- by the agent's
+  // own list.
+  const flagsByBooking = useMemo(() => {
+    const map: Record<number, AdminListFlag[]> = {};
+    for (const f of aiFlags) {
+      const entry: AdminListFlag =
+        f.kind === "pending_soon"
+          ? { kind: "pending_soon", daysUntilArrival: f.daysUntilArrival }
+          : { kind: "cancellation_deadline", daysUntilCross: f.daysUntilCross, nextThreshold: f.nextThreshold };
+      (map[f.booking.id] ??= []).push(entry);
+    }
+    return map;
+  }, [aiFlags]);
 
   // Decision 152: these drive the filter dropdowns, so they must NOT be
   // derived from the current page — a page of 50 Pending rows would leave
@@ -5506,6 +5730,34 @@ const BookingsList = ({
       {flagsTruncated && (
         <p className="-mt-2 mb-3 text-xs text-warning">{t("bookingsList.flagsTruncated")}</p>
       )}
+
+      {adminExtensions?.renderQueueBar?.({
+        queue,
+        onQueueChange: setQueue,
+        ownerFilter,
+        onOwnerFilterChange: setOwnerFilter,
+        managers,
+        countsQuery,
+        allQuery,
+        total,
+        loading,
+        pageBookings: filteredSorted,
+        mutationTick,
+      })}
+
+      {queue === "attention" && adminExtensions?.renderAttentionQueue ? (
+        adminExtensions.renderAttentionQueue({
+          // Land on the booking itself: back to the full list, searched by
+          // its number -- which overrides the date range, so it is found
+          // whenever it was created.
+          showBooking: (bookingNumber) => {
+            setQueue("all");
+            setOwnerFilter("all");
+            setSearchQuery(bookingNumber);
+          },
+        })
+      ) : (
+      <>
 
       {/* One toolbar. Search + filters and the date range/view used to be two
           separate rows -- the second one a sand-filled panel of its own -- so
@@ -5620,6 +5872,7 @@ const BookingsList = ({
               setStatusFilter("all");
               setHotelFilter("all");
               setAgentFilter("all");
+              setOwnerFilter("all");
               setSearchQuery("");
               // Restores the screen's own opening default (e.g. the
               // admin Bookings tab opens scoped to "today, by created
@@ -5637,7 +5890,7 @@ const BookingsList = ({
             {t("bookingsList.resetFilters")}
           </button>
         )}
-        {dateModeEnabled && (
+        {dateModeEnabled && !queueIgnoresDates && (
           <>
             {/* A hairline that separates "what to show" from "when", without
                 the two becoming separate blocks again. */}
@@ -5681,7 +5934,7 @@ const BookingsList = ({
           inside it: inline it collided with the view pills as soon as the
           window narrowed, and it is the one element here that legitimately
           wraps. */}
-      {dateModeEnabled && (
+      {dateModeEnabled && !queueIgnoresDates && (
         <p className="mt-1.5 px-1 text-xs text-slate/50">
           {dateModeView === "staying"
             ? t("bookingsList.dateModeStayingDescription")
@@ -5701,6 +5954,38 @@ const BookingsList = ({
           This same component is the agent's own list, where a handful of
           rows needs no spreadsheet -- and restyling a screen nobody asked
           about is exactly what the opt-in density prop exists to avoid. */}
+      {/* The admin queue supplies its own table (AdminBookingsTable.tsx). When
+          it does, the table below is not rendered at all; when it does not --
+          the agent's list -- the table below is everything, unchanged. */}
+      {adminExtensions?.renderTable ? (
+        adminExtensions.renderTable({
+          bookings: filteredSorted,
+          hotels,
+          roomTypes,
+          userNames: agentNames,
+          companyNames,
+          flagsByBooking,
+          isFirstLoad,
+          isBackgroundRefresh,
+          error,
+          sortKey,
+          sortDir,
+          onSort: toggleSort,
+          onOpen: setSelectedBooking,
+          canClaim: permissions.canClaim,
+          onClaimed: (updated) => {
+            const replaceRow = (next: Booking) =>
+              setBookings((prev) => prev.map((row) => (row.id === next.id ? next : row)));
+            replaceRow(updated);
+            adminExtensions?.onAfterClaim?.({ booking: updated, onBookingUpdated: replaceRow });
+            setMutationTick((n) => n + 1);
+            // In the Unassigned queue a taken booking no longer belongs on
+            // screen; re-read the page rather than leave a row the queue's
+            // own count has already stopped counting.
+            if (queue === "unassigned") setReloadTick((n) => n + 1);
+          },
+        })
+      ) : (
       <TableShell
         minWidth="1320px"
         density={isAdminQueue ? "grid" : "comfortable"}
@@ -5851,6 +6136,7 @@ const BookingsList = ({
             )}
           </tbody>
       </TableShell>
+      )}
 
       {/* Decision 152: real pagination. The count is the server's answer for
           the CURRENT filters, so nothing is hidden without saying so — the
@@ -5912,6 +6198,8 @@ const BookingsList = ({
         <p className="mt-3 text-xs text-slate/50">{t("bookingsList.summaryPageScoped")}</p>
       )}
       {adminExtensions?.renderListSummary?.(filteredSorted)}
+      </>
+      )}
 
       {selectedBooking && (
         <BookingDetail
@@ -5926,6 +6214,9 @@ const BookingsList = ({
           onBookingUpdated={(updated) => {
             setBookings((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
             setSelectedBooking(updated);
+            // An edit inside the detail can change owner or status, and with
+            // them the queue counts. Read only by the admin queue bar.
+            setMutationTick((n) => n + 1);
           }}
           permissions={permissions}
           claimerNames={agentNames}

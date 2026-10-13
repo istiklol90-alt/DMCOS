@@ -16,38 +16,54 @@ export interface NavItem {
   children?: NavItem[];
 }
 
+// Admin restructure, Stage A: grouped by the work a person does, not by the
+// module that implements it. Every screen that existed before is still here;
+// nothing was removed, only regrouped and renamed.
+//
+//   * Bookings is first and is one entry: the application queue, nothing
+//     else. Arrivals / Departures / Transfers were briefly views inside it;
+//     by the owner's decision (2026-10-13) they are their own section,
+//     "Transfer list", at the foot of the menu -- a different job (meeting
+//     and seeing off guests on given dates) done by different people.
+//   * "Needs Attention" is no longer a menu item: it was the same list as the
+//     Bookings screen's own "Changes to review" queue, reachable two ways.
+//   * "Counteragents" was two unrelated jobs on one page -- a price (our
+//     markup) and a list of people (agents with special rates). The price
+//     sits with contracts and prices, the people with agents and staff.
+//
+// Only sections that have a screen are listed. Home, Hotels and Settings are
+// agreed parts of the target structure but have nothing behind them yet, and
+// a menu item that opens an empty page is worse than no item.
 export const NAV_STRUCTURE: NavItem[] = [
-  { key: "users", label: "Users" },
-  {
-    key: "bookings-group",
-    label: "Bookings",
-    children: [
-      { key: "bookings-needs-attention", label: "Needs Attention" },
-      { key: "reservations", label: "Bookings" },
-      { key: "bookings-transfers", label: "Transfers" },
-      { key: "bookings-arrival", label: "Arrival" },
-      { key: "bookings-departure", label: "Departure" },
-    ],
-  },
+  { key: "reservations", label: "Bookings" },
   {
     key: "contracts-group",
-    label: "Contracts",
+    label: "Contracts & prices",
     children: [
       { key: "contracts", label: "Contracts" },
-      { key: "contracts-ai", label: "Contracts — AI" },
+      { key: "contracts-ai", label: "Import from PDF" },
+      { key: "price-calculator", label: "Price calculator" },
+      { key: "markup", label: "Our markup" },
     ],
   },
-  { key: "price-calculator", label: "Price calculator" },
-  { key: "counteragents", label: "Counteragents" },
   {
     key: "finance-group",
     label: "Finance",
     children: [
       { key: "invoices", label: "Invoices" },
-      { key: "balance", label: "Balance" },
-      { key: "cashback", label: "Cashback" },
+      { key: "balance", label: "Agent statements" },
+      { key: "cashback", label: "Hotel cashback" },
     ],
   },
+  {
+    key: "agents-group",
+    label: "Agents & staff",
+    children: [
+      { key: "users", label: "Users & applications" },
+      { key: "special-agents", label: "Special-rate agents" },
+    ],
+  },
+  { key: "transfer-list", label: "Transfer list" },
 ];
 
 interface AdminNavProps {

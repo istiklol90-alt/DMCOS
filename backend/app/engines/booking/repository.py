@@ -71,6 +71,9 @@ def list_bookings(
     date_to: date | None = None,
     sort_by: str | None = None,
     sort_dir: str | None = None,
+    claimed_by: int | None = None,
+    unassigned: bool = False,
+    mine_user_id: int | None = None,
 ) -> list[Booking]:
     """Return a page of bookings across all agents/hotels, for admin listing screens.
 
@@ -101,6 +104,7 @@ def list_bookings(
     query = _apply_booking_filters(
         db.query(Booking), created_from, created_to, search, status, hotel_id, agent_id,
         arrival_from, arrival_to, date_view, date_from, date_to,
+        claimed_by=claimed_by, unassigned=unassigned, mine_user_id=mine_user_id,
     )
     return query.order_by(*_booking_order_by(sort_by, sort_dir)).offset(skip).limit(limit).all()
 
@@ -132,6 +136,22 @@ def _booking_order_by(sort_by: str | None, sort_dir: str | None) -> tuple:
     return (column.desc() if descending else column.asc(), Booking.id.desc())
 
 
+# Statuses after which a booking is no longer anyone's open work. The same
+# three Decision 164's carry-forward has always excluded.
+_CLOSED_STATUSES = ("Cancelled", "Rejected", "Completed")
+
+
+def _unassigned_open():
+    """Decision 200: "nobody has taken this on, and it is still open".
+
+    ONE expression, used by both the "created today" carry-forward (Decision
+    164) and the Unassigned work queue, so the two can never come to mean
+    slightly different things. Decision 177: this is about the owner, not
+    about the status being Pending -- a Confirmed booking with no owner is
+    still unowned."""
+    return and_(Booking.claimed_by.is_(None), Booking.status.notin_(_CLOSED_STATUSES))
+
+
 def _apply_booking_filters(
     query,
     created_from: date | None,
@@ -145,10 +165,31 @@ def _apply_booking_filters(
     date_view: str | None,
     date_from: date | None,
     date_to: date | None,
+    *,
+    claimed_by: int | None = None,
+    unassigned: bool = False,
+    mine_user_id: int | None = None,
 ):
     """Shared by list_bookings and count_bookings so the page and its total
     can never be computed from different filter sets -- the classic way a
-    paginated list ends up claiming "1-50 of 400" while only 120 rows exist."""
+    paginated list ends up claiming "1-50 of 400" while only 120 rows exist.
+
+    Decision 200 adds the three keyword-only owner filters. Each one adds a
+    condition only when supplied, so a call without them builds exactly the
+    query it built before."""
+    # A plain "whose is it" filter -- no status condition, so a manager's
+    # finished bookings stay findable.
+    if claimed_by is not None:
+        query = query.filter(Booking.claimed_by == claimed_by)
+    # The two work queues. Both mean OPEN work: a cancelled booking nobody
+    # owned is not waiting for anyone.
+    if unassigned:
+        query = query.filter(_unassigned_open())
+    if mine_user_id is not None:
+        query = query.filter(
+            Booking.claimed_by == mine_user_id,
+            Booking.status.notin_(_CLOSED_STATUSES),
+        )
     if created_from is not None:
         query = query.filter(Booking.created_at >= datetime.combine(created_from, time.min))
     if created_to is not None:
@@ -203,15 +244,7 @@ def _apply_booking_filters(
             # not have today's backlog float into it.
             today = date.today()
             if date_from <= today <= date_to:
-                query = query.filter(
-                    or_(
-                        in_range,
-                        and_(
-                            Booking.claimed_by.is_(None),
-                            Booking.status.notin_(("Cancelled", "Rejected", "Completed")),
-                        ),
-                    )
-                )
+                query = query.filter(or_(in_range, _unassigned_open()))
             else:
                 query = query.filter(in_range)
         elif date_view == "cancellations":
@@ -236,12 +269,16 @@ def count_bookings(
     date_view: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    claimed_by: int | None = None,
+    unassigned: bool = False,
+    mine_user_id: int | None = None,
 ) -> int:
     """How many bookings match the same filters list_bookings would apply,
     ignoring skip/limit -- what a paginated screen needs to say "of N"."""
     query = _apply_booking_filters(
         db.query(Booking), created_from, created_to, search, status, hotel_id, agent_id,
         arrival_from, arrival_to, date_view, date_from, date_to,
+        claimed_by=claimed_by, unassigned=unassigned, mine_user_id=mine_user_id,
     )
     return query.count()
 

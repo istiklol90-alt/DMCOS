@@ -8232,6 +8232,128 @@ Status: **Built and verified.** `npx tsc -b` at the 2-error dead-file baseline, 
 
 ---
 
+# Decision 200 — BUILT
+
+Date: 2026-10-13
+
+Decision: **The admin booking queue gets real work queues — Unassigned, Mine, Needs Attention — whose counts and lists are computed by the server over the whole database, never over the page that happens to be loaded.** Booking Engine (LOCKED) is extended, additively, with three optional list filters and one read-only counts endpoint. Recorded here before the LOCKED module is touched.
+
+Owner's requirement: the queues "должны работать по всей базе, а не только по текущей странице … Не допускай двойного учёта или расхождения между счётчиком и списком. Сохрани прежнее поведение всех существующих API-запросов без новых параметров."
+
+## Why the API has to change at all
+
+`GET /booking-engine/bookings` could filter by status, hotel, agent and dates, but not by who is responsible. The admin screen paginates (Decision 152), so "bookings nobody has taken" could only be counted inside the 50 rows on screen — the exact "answer that looks right and isn't" Decision 152 exists to prevent. No amount of frontend work produces a correct whole-database count from one page.
+
+## Scope — exactly this, nothing else
+
+Three optional query parameters, on **both** `GET /bookings` and `GET /bookings/count`:
+
+- `claimed_by: int` — bookings whose responsible manager is that user. A plain filter, no status condition.
+- `unassigned: bool` — `claimed_by IS NULL` **and** status not in (Cancelled, Rejected, Completed).
+- `mine: bool` — `claimed_by` = the caller (taken from the JWT, never from the query string) **and** status not in the same three.
+
+One new read-only endpoint, `GET /booking-engine/bookings/queue-counts`, returning `{"unassigned": N, "mine": N}`. It accepts the same optional `status` / `hotel_id` / `agent_id` / `search` filters as the list, so a tab's number is always the number of rows that tab will show under the filters currently applied.
+
+**"Unassigned" is not a new rule.** It is the predicate `_apply_booking_filters` already uses for Decision 164's carry-forward ("a booking nobody has taken on carries forward to today"), lifted into one shared expression so the carry-forward and the queue cannot drift apart. Decision 177 established that "nobody has taken this" is about the owner, not about the status being Pending; the same reading applies here.
+
+**No date scope on queue counts, deliberately.** A booking nobody owns is unowned regardless of the day it was created. The screen drops its date range while a queue is selected, the same way the booking-number search already overrides it (Decision 125).
+
+Not changed: the database schema (no column, no index, no migration), `BookingResponse`, the claim endpoint, any pricing/allotment/cancellation logic, any other engine.
+
+## How "count equals list" is guaranteed rather than hoped for
+
+The counts endpoint does not have its own SQL. It calls the same `_apply_booking_filters` the list and `/bookings/count` call, with the same arguments the screen sends when that tab is selected. A tab's number and its list are therefore the same query with and without `LIMIT` — the property Decision 152 already relies on for "1–50 of N".
+
+Needs Attention needs no API change: `GET /finance-engine/bookings/urgent` (Decision 108) already returns the complete, unpaginated set, so its count and its list are one response.
+
+## Backward compatibility
+
+All three parameters default to "not supplied", and each adds a `.filter()` only when supplied — a request without them builds byte-identical SQL to before. The new route is declared above `/bookings/{booking_id}`, whose `int` path parameter would otherwise swallow it (the bug `api/routes.py`'s `/agent-registrations/stats` still has).
+
+## Known limits, accepted
+
+- `claimed_by` has no index. Irrelevant at today's 79 rows; worth adding when the table is large enough to measure, as its own decision (it is a schema change).
+- A queue is a point-in-time read. Two managers looking at Unassigned see the same row until one takes it; the claim endpoint is what arbitrates, exactly as before.
+
+Reason: project owner — quoted above; plan presented and approved before implementation.
+
+Approved By: Daler (2026-10-13)
+
+## What was built
+
+Backend (`booking/repository.py`, `service.py`, `api.py`): the three filters, `_unassigned_open()` shared with the carry-forward, `service.count_work_queues`, and `GET /bookings/queue-counts` (admin-only, declared above `/bookings/{booking_id}`). `mine` reaches the repository as `mine_user_id`, set by `api.py` from the JWT.
+
+Frontend, admin only: `AdminBookingsQueues.tsx` (header + queue tabs), wired through two new optional slots on `AdminBookingExtensions` (`renderQueueBar`, `renderAttentionQueue`). `Reservations.tsx` holds the queue state because the fetch lives there, but at its defaults — which is all the agent's list can ever have — it adds nothing to the request.
+
+The selected tab does not show a separately-fetched count: it shows the list's own total, the figure the pagination footer prints. A tab and its rows are one number.
+
+## Verified
+
+All write scenarios ran against an **isolated contour**: the real backend code started on port 8002 over a *copy* of the database (a launcher rebinds `database.db`'s engine before anything imports it; the hardcoded path in `db.py` was not edited). The working database was not written to by any check.
+
+- **Existing calls unchanged:** 49 list/count/detail calls without the new parameters, response bodies hashed before and after — 49 of 49 identical.
+- **Counts against independent SQL** (written from the definitions, not copied from the repository): unassigned 10/10, mine 18/18; under eight filter combinations (status, hotel, agent, search, combined) every count equalled both the SQL and the number of rows the list returned across pages.
+- **No double counting:** Unassigned and Mine are disjoint; no closed booking appears in either; no row repeats across pages.
+- **Unassigned → Mine:** taking a booking moved exactly one from one queue to the other (10→9, 18→19), it left the Unassigned list and appeared in Mine; a repeated claim (400) left both counts unchanged.
+- **Access and failure:** no token 401, bad token 401, agent 403, malformed filter 422, `/bookings/{id}` and `/bookings/count` still resolve.
+- **In the browser, same contour:** 28 checks — each tab's number against SQL, tab = rows = footer in every queue, counts following a status filter, the owner filter reaching the server, a Needs-attention row leading to its booking, and a failed counts request showing no number and a Retry (never a 0) while the list keeps working.
+
+Status: **Built and verified.** `tsc -b` at the 2-error dead-file baseline, `vite build` clean, `oxlint` 0 errors. Not committed at the time of writing.
+
+---
+
+# Decision 201 — BUILT (not yet committed)
+
+Date: 2026-10-13
+
+Decision: **Which admin screen is showing is read from the URL, not held in component state** (Admin restructure, Stage B1). Two query parameters on the existing `/admin-panel` route: `section` (which screen) and `view` (which view of Bookings).
+
+Owner's requirement: the selected section and Bookings view must survive a page refresh, Back and Forward must work, and an invalid address must fall back safely to the defaults.
+
+## Context this builds on
+
+Stage A (2026-10-13, approved by the owner, **not separately recorded in this log**) regrouped the admin menu into Bookings / Contracts & prices / Finance / Agents & staff, moved Arrivals / Departures / Transfers inside the Bookings screen as views, removed the duplicate "Needs Attention" menu item, and made Bookings the opening screen. This supersedes Decision 088's menu layout. B1 changes none of that; it only changes where "which screen" is stored.
+
+## Address format
+
+| Address | Screen |
+|---|---|
+| `/admin-panel` | Bookings, the list |
+| `/admin-panel?view=arrivals` (`departures`, `transfers`) | Bookings, that view |
+| `/admin-panel?section=invoices` | Invoices |
+
+`section` values: `contracts`, `import`, `price-calculator`, `markup`, `invoices`, `statements`, `cashback`, `users`, `special-agents`. They follow what the menu calls the screen, not the internal key (`statements`, not `balance`).
+
+- **Query parameters, not path segments**, so `router.tsx` — shared with the agent panel — does not change.
+- **The default screen carries no parameters**, so the address `Login.tsx` and `Home.tsx` navigate to, and every existing bookmark, means what it meant.
+- **An invalid address is never half-trusted**: an unknown, empty, repeated or hostile `section` resolves to the plain default screen, `view` included. The address is then corrected with `replace`, so the bad one is not left in history. The screen is derived before the correction runs, so correcting remounts nothing and requests nothing.
+- Parameters this code does not own are left untouched and in place.
+- Choosing the screen already showing adds no history entry. Closing a page from the top bar uses `replace`.
+
+## Files
+
+`frontend/src/pages/adminLocation.ts` (new; pure functions, no storage, no network) and `frontend/src/pages/AdminPanel.tsx`. Nothing else: no API, no schema, no `Reservations.tsx`, no shared component, no agent file.
+
+## Verified
+
+On an isolated backend over a copy of the database — 97 checks: all 10 sections and 3 views open from their address and survive a refresh; Back and Forward walk the screens both ways with the menu and top-bar tab following; 9 kinds of invalid address give a safe screen and a corrected address; every screen opened by address makes exactly the requests it made by click before B1 (recorded beforehand, two identical baseline runs); agent-panel requests identical to the pre-B1 record; zero write requests. Stage A's 40 checks still pass. `tsc -b` at the 2-error dead-file baseline, `oxlint` 0 errors, `vite build` clean.
+
+## Open limitation — pixel comparison of the agent panel
+
+The 28-screenshot agent comparison, 28/28 identical in every earlier stage, was **not stable** during B1: three runs gave 27, 26 and 25 identical, a different handful differing each time and none twice. **The cause is not established.** In the one run whose images were kept, two of the three differing screenshots differ only by 1–2 levels out of 255 in gradient areas (not a content change); the third differs by 343 pixels in text bands, cause unknown. An earlier attribution to low memory was a guess with no measurement behind it and is withdrawn. Until this is explained, "the agent panel is unchanged" rests on the request comparison and on which files changed, not on pixels.
+
+## Not covered (later sub-stages)
+
+Filters, queue, sort and page number still reset on refresh and on leaving a section (B2). The open-page tabs in the top bar are not restored after a refresh. An open booking is not in the address.
+
+Reason: project owner — requirement above; plan presented and B1 approved before implementation.
+
+Approved By: Daler (2026-10-13), provisionally, pending his own review.
+
+Status: **Built and verified as described; uncommitted.**
+
+---
+
 # Decision Template
 
 Decision Number:

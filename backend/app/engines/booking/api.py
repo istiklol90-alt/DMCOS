@@ -299,6 +299,9 @@ def list_bookings(
     date_to: date | None = None,
     sort_by: str | None = None,
     sort_dir: str | None = None,
+    claimed_by: int | None = None,
+    unassigned: bool = False,
+    mine: bool = False,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -316,7 +319,11 @@ def list_bookings(
     exist so the admin screen can paginate honestly. Filtering and sorting
     a single loaded page in the browser would answer "within this page",
     which looks correct and isn't. All six default to the previous
-    behavior, so no existing caller changes."""
+    behavior, so no existing caller changes.
+
+    Decision 200: claimed_by/unassigned/mine filter by who is responsible --
+    see repository._apply_booking_filters. `mine` is resolved from the JWT
+    here, never from the query string: "my bookings" is whoever is asking."""
     return _run(
         lambda: service.list_bookings(
             db, skip=skip, limit=limit, created_from=created_from, created_to=created_to,
@@ -324,6 +331,8 @@ def list_bookings(
             arrival_from=arrival_from, arrival_to=arrival_to,
             date_view=date_view, date_from=date_from, date_to=date_to,
             sort_by=sort_by, sort_dir=sort_dir,
+            claimed_by=claimed_by, unassigned=unassigned,
+            mine_user_id=current_user.id if mine else None,
         )
     )
 
@@ -346,6 +355,9 @@ def count_bookings(
     date_view: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    claimed_by: int | None = None,
+    unassigned: bool = False,
+    mine: bool = False,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -356,7 +368,30 @@ def count_bookings(
         status=status, hotel_id=hotel_id, agent_id=agent_id,
         arrival_from=arrival_from, arrival_to=arrival_to,
         date_view=date_view, date_from=date_from, date_to=date_to,
+        claimed_by=claimed_by, unassigned=unassigned,
+        mine_user_id=current_user.id if mine else None,
     )})
+
+
+# Decision 200. Like /bookings/count above, MUST stay above
+# /bookings/{booking_id} or that route's int parameter swallows it.
+@router.get("/bookings/queue-counts")
+def count_work_queues(
+    search: str | None = None,
+    status: str | None = None,
+    hotel_id: int | None = None,
+    agent_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """How many bookings are in each work queue -- {"unassigned", "mine"} --
+    over the whole database, under the same optional filters the list takes.
+    Read-only. Admin-only: a queue of unowned bookings is internal state, the
+    same boundary claim_booking itself sits behind."""
+    _require_admin(current_user)
+    return _run(lambda: service.count_work_queues(
+        db, current_user.id, search=search, status=status, hotel_id=hotel_id, agent_id=agent_id,
+    ))
 
 
 @router.get("/bookings/{booking_id}", response_model=BookingResponse)

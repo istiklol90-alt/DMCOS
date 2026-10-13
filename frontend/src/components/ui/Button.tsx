@@ -45,8 +45,13 @@ interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "cla
 // (sidebar active state, key highlights), never the default CTA fill.
 // primary/dark now render identically (both solid navy) -- disclosed,
 // not accidental; see the ButtonVariant comment above.
+//
+// `admin:` utilities apply only inside the admin panel (see tailwind.css).
+// There a primary button does not lift or cast a shadow -- on a screen with
+// a dozen actions per row that motion is noise -- it just darkens.
 const VARIANT_CLASSES: Record<ButtonVariant, string> = {
-  primary: "border-0 bg-ink text-white shadow-sm shadow-ink/30 hover:-translate-y-0.5",
+  primary:
+    "border-0 bg-ink text-white shadow-sm shadow-ink/30 hover:-translate-y-0.5 admin:shadow-none admin:hover:translate-y-0 admin:hover:bg-ink/90",
   secondary: "border-0 bg-ink/8 text-ink hover:bg-ink/12",
   outline: "border border-ink/25 bg-transparent text-ink hover:bg-ink/5",
   dark: "border-0 bg-ink text-white hover:bg-ink/90",
@@ -80,6 +85,9 @@ export default function Button({
       disabled={disabled}
       className={[
         "appearance-none",
+        // A visible keyboard focus state, admin only for now -- the agent
+        // screens keep whatever the browser gives them until their own pass.
+        "admin:focus-visible:outline-2 admin:focus-visible:outline-offset-2 admin:focus-visible:outline-ink/50",
         shape,
         transition,
         VARIANT_CLASSES[variant],

@@ -1,0 +1,16 @@
+{
+  "statusBadge": {
+    "waitingHotel": "Awaiting hotel reply",
+    "cancellationRequested": "Cancelling — awaiting hotel"
+  },
+  "bookingsList": {
+    "dateModeStaying": "Stay dates",
+    "dateModeCreated": "Booking date",
+    "dateModeCancellations": "Cancelled arrivals"
+  },
+  "bookingDetail": {
+    "claim": "Assign to me",
+    "claimFailed": "Could not assign the booking",
+    "notClaimedYet": "No manager yet"
+  }
+}

@@ -81,7 +81,10 @@ export function TableHeadRow({ children }: { children: ReactNode }) {
         className={
           grid
             ? "text-ink"
-            : "border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50"
+            : // Admin: the header is the one line every row is read against,
+              // so it gets real contrast and a faint band instead of the
+              // 50%-grey label style (roughly 3:1 on white).
+              "border-b border-ink/10 text-xs uppercase tracking-wide text-slate/50 admin:bg-sand/70 admin:text-slate/75"
         }
       >
         {children}
@@ -108,7 +111,7 @@ export function TableHeadCell({
         // reads as a head rather than as one more row.
         grid
           ? "border-b-2 border-r border-ink/25 px-3 py-2.5 font-semibold"
-          : "px-4 py-3 font-medium",
+          : "px-4 py-3 font-medium admin:px-3 admin:py-2.5 admin:font-semibold",
         onClick ? "cursor-pointer select-none" : "",
         className,
       ]
@@ -161,11 +164,20 @@ export function TableRow({
 // call site's intent silently may or may not apply (real, recurring bug
 // class in this project). The default is therefore dropped whenever the
 // caller sets any text color of its own.
-const TEXT_COLOR_CLASS = /(^|\s)text-(slate|ink|white|gold|gold-deep|danger|warning|success|cancelled)\b/;
+const TEXT_COLOR_CLASS = /(^|\s)text-(slate|ink|white|gold|gold-deep|danger|warning|success|cancelled|info)\b/;
+// Same rule for vertical padding: the admin row height below is a default,
+// and a caller that sets its own `py-*` keeps it.
+const PADDING_Y_CLASS = /(^|\s)py-/;
 
 export function TableCell({ children, className = "" }: { children: ReactNode; className?: string }) {
   const grid = useDensity() === "grid";
-  const padding = grid ? "border-b border-r border-ink/20 px-3 py-2" : "px-4 py-3.5";
+  // Comfortable rows are ~52px, sized for the agent's short lists. Inside
+  // the admin panel the same density drops to ~44px: still two-line
+  // capable, but a third more rows per screen.
+  const comfortable = PADDING_Y_CLASS.test(className)
+    ? "px-4 py-3.5 admin:px-3"
+    : "px-4 py-3.5 admin:px-3 admin:py-2.5";
+  const padding = grid ? "border-b border-r border-ink/20 px-3 py-2" : comfortable;
   // Grid mode reads at near-black by default (the reference the owner
   // supplied), comfortable mode keeps its muted slate. Either way the
   // caller's own colour still wins -- see TEXT_COLOR_CLASS above.

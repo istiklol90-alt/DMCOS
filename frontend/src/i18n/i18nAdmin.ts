@@ -3,6 +3,7 @@ import i18next from "i18next";
 import reservationsEn from "./locales/en/reservations.json";
 import hotelSearchEn from "./locales/en/hotelSearch.json";
 import commonEn from "./locales/en/common.json";
+import reservationsAdmin from "./locales/admin/reservations.json";
 
 // A second, independent i18next instance -- deliberately NOT the shared
 // singleton in ./i18n.ts. AdminPanel.tsx renders Reservations.tsx's shared
@@ -51,6 +52,36 @@ import commonEn from "./locales/en/common.json";
 // instance having used this plugin -- it just passes the instance through
 // context -- so removing it here fixes the leak with no loss of function
 // for AdminPanel.tsx's own subtree.
+// Admin-only wording, layered over the shared English catalog.
+//
+// The same components render in the agent panel from the same
+// reservations.json, so changing a label there would change what agents read.
+// This instance is used by AdminPanel.tsx alone, so a word a manager needs
+// ("Assign to me", "Awaiting hotel reply") can differ here without the shared
+// file -- or the agent's screen -- changing at all. Labels only: no key
+// carries a status VALUE, which is still the string the server stores.
+//
+// Built as a NEW object, never merged into the imported one. i18next keeps
+// the very object it is handed, and reservationsEn is the same module object
+// the agent's own instance (i18n.ts) holds -- so the obvious
+// adminI18n.addResourceBundle(..., deep, overwrite) mutates it in place and
+// silently rewrites the agent's English too. That is exactly what the first
+// version of this did; caught by the agent-panel screenshot comparison, where
+// the English booking detail and date views came back changed.
+type Catalog = { [key: string]: string | Catalog };
+
+function withOverrides(base: Catalog, overrides: Catalog): Catalog {
+  const out: Catalog = { ...base };
+  for (const [key, value] of Object.entries(overrides)) {
+    const existing = out[key];
+    out[key] =
+      typeof value === "object" && typeof existing === "object" ? withOverrides(existing, value) : value;
+  }
+  return out;
+}
+
+const reservationsForAdmin = withOverrides(reservationsEn as Catalog, reservationsAdmin as Catalog);
+
 const adminI18n = i18next.createInstance();
 
 adminI18n.init({
@@ -59,7 +90,7 @@ adminI18n.init({
   ns: ["common", "reservations", "hotelSearch"],
   defaultNS: "common",
   resources: {
-    en: { common: commonEn, reservations: reservationsEn, hotelSearch: hotelSearchEn },
+    en: { common: commonEn, reservations: reservationsForAdmin, hotelSearch: hotelSearchEn },
   },
   interpolation: { escapeValue: false },
   returnNull: false,

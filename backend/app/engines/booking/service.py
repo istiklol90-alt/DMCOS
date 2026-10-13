@@ -339,6 +339,9 @@ def list_bookings(
     date_to: date_type | None = None,
     sort_by: str | None = None,
     sort_dir: str | None = None,
+    claimed_by: int | None = None,
+    unassigned: bool = False,
+    mine_user_id: int | None = None,
 ) -> list[Booking]:
     """Return a page of bookings across all agents/hotels, optionally scoped
     to a created_at date range, an arrival_date range, a status, a hotel,
@@ -352,6 +355,7 @@ def list_bookings(
         arrival_from=arrival_from, arrival_to=arrival_to,
         date_view=date_view, date_from=date_from, date_to=date_to,
         sort_by=sort_by, sort_dir=sort_dir,
+        claimed_by=claimed_by, unassigned=unassigned, mine_user_id=mine_user_id,
     )
     return attach_application_totals(db, bookings)
 
@@ -418,6 +422,9 @@ def count_bookings(
     date_view: str | None = None,
     date_from: date_type | None = None,
     date_to: date_type | None = None,
+    claimed_by: int | None = None,
+    unassigned: bool = False,
+    mine_user_id: int | None = None,
 ) -> int:
     """Decision 152: how many bookings match the same filters, ignoring
     pagination -- so a paginated screen can say "1-50 of N" truthfully
@@ -427,7 +434,31 @@ def count_bookings(
         status=status, hotel_id=hotel_id, agent_id=agent_id,
         arrival_from=arrival_from, arrival_to=arrival_to,
         date_view=date_view, date_from=date_from, date_to=date_to,
+        claimed_by=claimed_by, unassigned=unassigned, mine_user_id=mine_user_id,
     )
+
+
+def count_work_queues(
+    db: Session,
+    user_id: int,
+    search: str | None = None,
+    status: str | None = None,
+    hotel_id: int | None = None,
+    agent_id: int | None = None,
+) -> dict:
+    """Decision 200: how many bookings sit in each work queue, over the whole
+    database.
+
+    Deliberately NOT its own SQL: each figure is count_bookings called with
+    exactly the arguments the list is called with when that queue is selected,
+    so a queue's number and the rows it shows are one query with and without
+    LIMIT. No date scope -- an unowned booking is unowned whatever day it was
+    created on."""
+    common = dict(search=search, status=status, hotel_id=hotel_id, agent_id=agent_id)
+    return {
+        "unassigned": repository.count_bookings(db, unassigned=True, **common),
+        "mine": repository.count_bookings(db, mine_user_id=user_id, **common),
+    }
 
 
 def list_bookings_by_agent(db: Session, agent_id: int) -> list[Booking]:

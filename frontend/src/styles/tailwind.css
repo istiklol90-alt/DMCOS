@@ -67,6 +67,226 @@
      purpose. shadow-xl remains reserved for actual overlays (dropdowns,
      modals), unchanged. */
   --shadow-card: 0 1px 2px rgba(27, 35, 64, 0.04), 0 1px 3px rgba(27, 35, 64, 0.08);
+
+  /* Admin design system: "something is in progress on the other side"
+     (waiting on a hotel), a state amber and green cannot express without
+     reading as a warning or as done. Defined globally because @theme has no
+     scoped form, but nothing outside the admin panel references it. */
+  --color-info: #2f5bd3;
+}
+
+/* ---------------------------------------------------------------------
+   Admin design system -- scoped, not global.
+
+   Everything below applies ONLY beneath an element carrying the
+   `admin-theme` class, which AdminShell.tsx puts on the admin panel's
+   root and nothing else in the app does. The agent panel, HotelSearch,
+   Login and Home have no such ancestor, so none of this can reach them
+   -- the isolation is structural, not a matter of remembering to gate
+   each rule.
+
+   Two mechanisms, both keyed to that one class:
+
+   1. TOKEN OVERRIDES. Tailwind's utilities compile to var() references
+      (`.bg-sand { background-color: var(--color-sand) }`,
+      `.rounded-2xl { border-radius: var(--radius-2xl) }`), so redefining
+      the variable on `.admin-theme` restyles every existing admin screen
+      -- including the hand-rolled ones that never adopted components/ui/
+      -- without editing their markup, and without changing what the same
+      utility means anywhere else.
+
+   2. THE `admin:` VARIANT, for the few things a token cannot express
+      (a hover lift, a table header's contrast). `:is()` rather than
+      `:where()` on purpose: it carries the class's specificity, so an
+      `admin:` utility beats the plain utility it sits next to regardless
+      of stylesheet order -- the two-utilities-one-property trap this
+      project has hit repeatedly cannot occur here.
+   --------------------------------------------------------------------- */
+@custom-variant admin (&:is(.admin-theme *));
+
+.admin-theme {
+  /* A neutral work surface. The warm sand stays the agent/public
+     background; on a dense table screen it tints every white panel and
+     makes status colors harder to tell apart. */
+  --color-sand: #f5f6f8;
+  /* Body text, slightly cooler and darker so the /60-/70 secondary tints
+     the admin pages already use land closer to readable contrast. */
+  --color-slate: #1f2637;
+
+  /* One typeface. Fraunces is a display serif -- right for a hero title,
+     wrong for figures in a table, where its digits are neither tabular
+     nor quick to scan. */
+  --font-display: var(--font-sans);
+
+  /* Tighter corners: 16px on a table wrapper spends space and reads as a
+     consumer card. Pills (rounded-full) are untouched. */
+  --radius-lg: 0.375rem;
+  --radius-xl: 0.5rem;
+  --radius-2xl: 0.5rem;
+
+  /* Status colors deep enough to stay legible as TEXT on their own 15%
+     tint (the Badge pattern) -- the brand values pass as fills but fall
+     to roughly 3:1 as text. */
+  --color-success: #1f7a4d;
+  --color-warning: #b45309;
+  --color-danger: #c0392b;
+}
+
+/* components.css gives every <select> `width: 100%`, so the three filter
+   dropdowns in the admin bookings toolbar each claimed a full row. Corrected
+   here for exactly those dropdowns -- direct children of that screen's
+   sticky filter bar -- and inside the same `legacy` layer, so the rule only
+   out-ranks the legacy one it corrects and any width utility still wins.
+   The agent's own list has no `.admin-bookings-list` ancestor. */
+@layer legacy {
+  .admin-bookings-list > div > div.sticky > select {
+    width: auto;
+  }
+}
+
+/* The Bookings controls -- queue bar, filter bar, and the line under it --
+   fold away and unfold (AdminBookingsQueues.tsx, useBookingsControlsReveal).
+
+   Two of the three are rendered by the shared booking list, which is not
+   edited for this: they are reached by position under the admin-only
+   `.admin-bookings-list` wrapper, so none of it can apply to the agent's
+   list. Unlayered on purpose -- these have to out-rank the utility classes
+   those elements already carry (their padding, margin and border).
+
+   `interpolate-size` is what lets `height` animate to and from `auto`. A
+   browser without it still folds and unfolds correctly, just without the
+   slide. */
+.admin-bookings-list > div > .admin-bk-queuebar,
+.admin-bookings-list > div > div.sticky,
+.admin-bookings-list > div > div.sticky + p {
+  interpolate-size: allow-keywords;
+  transition:
+    height 250ms ease-out,
+    opacity 250ms ease-out,
+    padding 250ms ease-out,
+    margin 250ms ease-out,
+    border-width 250ms ease-out,
+    visibility 0s linear 0s;
+}
+
+.admin-bookings-list.bk-collapsed > div > .admin-bk-queuebar,
+.admin-bookings-list.bk-collapsed > div > div.sticky,
+.admin-bookings-list.bk-collapsed > div > div.sticky + p {
+  height: 0;
+  min-height: 0;
+  margin-block: 0;
+  padding-block: 0;
+  border-block-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  /* Hidden only once the fold has finished, so the closing can be seen; and
+     hidden for real, so folded controls are out of the tab order. */
+  visibility: hidden;
+  transition:
+    height 250ms ease-out,
+    opacity 250ms ease-out,
+    padding 250ms ease-out,
+    margin 250ms ease-out,
+    border-width 250ms ease-out,
+    visibility 0s linear 250ms;
+}
+
+/* The opened controls as ONE panel hanging from the navy bar: white, framed
+   in the same navy, the filter fields a single compact height. The filter
+   bar and the line under it come from the shared list with classes meant for
+   a full-bleed strip on the page background (negative side margins, the page
+   colour, roomy fields); here they are a section of a panel instead. */
+.admin-bookings-list > div > .admin-bk-queuebar,
+.admin-bookings-list > div > div.sticky,
+.admin-bookings-list > div > div.sticky + p {
+  margin-inline: 0;
+  background-color: #fff;
+  border-inline: 1px solid color-mix(in oklab, var(--color-ink) 22%, transparent);
+}
+.admin-bookings-list > div > .admin-bk-queuebar {
+  margin-bottom: 0;
+  padding: 0.75rem 1rem 0.625rem;
+  border-bottom: 1px solid color-mix(in oklab, var(--color-ink) 22%, transparent);
+}
+.admin-bookings-list > div > div.sticky {
+  position: static;
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid color-mix(in oklab, var(--color-ink) 22%, transparent);
+}
+.admin-bookings-list > div > div.sticky + p {
+  margin-top: 0;
+  padding: 0.375rem 1rem;
+  background-color: color-mix(in oklab, var(--color-ink) 4%, #fff);
+  border-bottom: 1px solid color-mix(in oklab, var(--color-ink) 22%, transparent);
+  color: color-mix(in oklab, var(--color-slate) 80%, transparent);
+}
+/* One height and one border for every field in the filter row. */
+.admin-bookings-list > div > div.sticky > input,
+.admin-bookings-list > div > div.sticky > select {
+  height: 2.25rem;
+  padding: 0 0.75rem;
+  font-size: 0.8125rem;
+  border-color: color-mix(in oklab, var(--color-ink) 28%, transparent);
+  color: var(--color-ink);
+}
+/* "Reset filters" -- the only plain button that is a direct child of the
+   filter row. It undoes everything else in the row, so it must not look like
+   one more field. Given the same amber as the Pending status badge
+   (--color-warning on its own 15% tint), which is already the colour this
+   screen uses for "not settled yet". */
+.admin-bookings-list > div > div.sticky > button {
+  height: 2.25rem;
+  border-color: color-mix(in oklab, var(--color-warning) 45%, transparent);
+  background-color: color-mix(in oklab, var(--color-warning) 15%, transparent);
+  color: var(--color-warning);
+  font-weight: 600;
+  cursor: pointer;
+}
+.admin-bookings-list > div > div.sticky > button:hover {
+  background-color: color-mix(in oklab, var(--color-warning) 26%, transparent);
+}
+/* The date-range button is the shared picker's own trigger and carries no
+   border or background of its own, so here it showed the browser's default
+   grey bevelled button. Given the same frame as the fields beside it. Only
+   the trigger: the calendar's own buttons sit deeper and are not matched. */
+.admin-bookings-list > div > div.sticky > div.relative > button,
+.admin-theme .transfer-list > div > div.relative > button {
+  appearance: none;
+  height: 2.25rem;
+  padding: 0 0.75rem;
+  border: 1px solid color-mix(in oklab, var(--color-ink) 28%, transparent);
+  border-radius: var(--radius-lg);
+  background-color: #fff;
+  color: var(--color-ink);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+/* The three date-view buttons carry no border reset of their own, so the
+   browser drew its default bevel around each. */
+.admin-bookings-list > div > div.sticky > div.p-0\.5 > button {
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+}
+
+/* Clipped while growing, and only then: once open, the date picker's
+   calendar has to be free to hang below the filter bar. */
+.admin-bookings-list.bk-opening > div > .admin-bk-queuebar,
+.admin-bookings-list.bk-opening > div > div.sticky,
+.admin-bookings-list.bk-opening > div > div.sticky + p {
+  overflow: hidden;
+}
+
+/* `!important` because the folded-state rule above is more specific than
+   this one and would otherwise put its own transition back. */
+@media (prefers-reduced-motion: reduce) {
+  .admin-bookings-list > div > .admin-bk-queuebar,
+  .admin-bookings-list > div > div.sticky,
+  .admin-bookings-list > div > div.sticky + p {
+    transition: none !important;
+  }
 }
 
 /* ---------------------------------------------------------------------

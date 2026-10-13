@@ -73,7 +73,11 @@ function formatDate(dateStr: string) {
   return new Date(dateStr).toLocaleDateString("en-US");
 }
 
-const Counteragents = () => {
+// Stage A: the menu shows this screen as two entries -- "Our markup" (a
+// price) under Contracts & prices and "Special-rate agents" (people) under
+// Agents & staff. `section` picks which half to draw; omitted, both render as
+// before. Loading, saving and every request are unchanged.
+const Counteragents = ({ section }: { section?: "markup" | "agents" }) => {
   // Decision 193: one markup row per currency, keyed by currency code.
   const [settings, setSettings] = useState<PricingSettings[]>([]);
   const [markupInputs, setMarkupInputs] = useState<Record<string, string>>({});
@@ -189,11 +193,12 @@ const Counteragents = () => {
 
   return (
     <div className="pb-10">
-      {/* ===== Global markup setting ===== */}
-      <Card padding="md" className="mt-6">
-        <h3 className="font-display text-lg font-semibold text-ink">Global markup</h3>
+      {/* ===== Markup setting ===== */}
+      {section !== "agents" && (
+      <Card padding="md" className={section ? "" : "mt-6"}>
+        <h3 className="font-display text-lg font-semibold text-ink">Our markup per night</h3>
         <p className="mt-1 text-sm text-slate/60">
-          A flat per-night amount added to the room price (Net from Contract Engine) for all agents.
+          A fixed amount per night that we add to the hotel's contract price of the room, for every agent.
           {/* Decision 193: one figure per currency. The markup is an absolute
               amount, not a percentage, so a single global number applied to a
               EUR contract would charge 10 EUR where 10 USD was configured --
@@ -240,7 +245,19 @@ const Counteragents = () => {
         </div>
         {settingsError && <p className="mt-2 text-sm text-red-600">{settingsError}</p>}
       </Card>
+      )}
 
+      {section !== "markup" && (
+      <>
+      {section === "agents" && (
+        <div>
+          <h2 className="text-xl font-semibold text-ink">Special-rate agents</h2>
+          <p className="mt-0.5 text-sm text-slate/70">
+            Agents on this list receive the special discounts set in a contract, where a contract has any. Every other
+            agent is a standard agent.
+          </p>
+        </div>
+      )}
       {/* ===== Sub-tabs ===== */}
       <div className="mt-6 flex gap-2 border-b border-ink/10">
         <button
@@ -259,7 +276,7 @@ const Counteragents = () => {
             subTab === "exclusive" ? "border-coral text-ink" : "border-transparent text-slate/60 hover:text-ink"
           }`}
         >
-          Exclusive agents ({exclusiveAgents.length})
+          Special-rate agents ({exclusiveAgents.length})
         </button>
       </div>
 
@@ -303,7 +320,7 @@ const Counteragents = () => {
             </TableHeadRow>
             <tbody>
               {exclusiveAgents.length === 0 ? (
-                <TableEmptyState colSpan={4}>No exclusive agents yet</TableEmptyState>
+                <TableEmptyState colSpan={4}>No special-rate agents yet</TableEmptyState>
               ) : (
                 exclusiveAgents.map((a) => (
                   <TableRow key={a.id}>
@@ -328,9 +345,9 @@ const Counteragents = () => {
         </>
       )}
 
-      {/* ===== Add to exclusive modal ===== */}
+      {/* ===== Add special-rate agent modal ===== */}
       <Modal open={showAddModal} onClose={() => setShowAddModal(false)}>
-        <h3 className="font-display text-lg font-semibold text-ink">Add to exclusive</h3>
+        <h3 className="font-display text-lg font-semibold text-ink">Add a special-rate agent</h3>
         <Input
           type="text"
           autoFocus
@@ -368,6 +385,8 @@ const Counteragents = () => {
           Cancel
         </Button>
       </Modal>
+      </>
+      )}
     </div>
   );
 };

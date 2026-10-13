@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import type { ReactNode } from "react";
 
 // ---------------------------------------------------------------------------
@@ -5,10 +6,9 @@ import type { ReactNode } from "react";
 // markup that was hand-rolled byte-for-byte three times independently
 // (Cashback.tsx, Counteragents.tsx, financeShared.tsx's InvoiceDetailModal)
 // -- confirmed via direct comparison before extracting, not assumed.
-// Deliberately no new behavior: no focus trap, no Escape-key handling,
-// since none of the three original instances had that either. Click on
-// the dark overlay closes (matches all three originals); click inside the
-// panel is stopped from bubbling to the overlay's onClick, same as before.
+// Click on the dark overlay closes (matches all three originals); click
+// inside the panel is stopped from bubbling to the overlay's onClick, same
+// as before.
 // ---------------------------------------------------------------------------
 
 interface ModalProps {
@@ -25,6 +25,11 @@ interface ModalProps {
   // closed that way; anything wrapped here keeps its original behavior
   // rather than silently inheriting click-to-dismiss.
   closeOnBackdrop?: boolean;
+  // Escape closes the dialog. Opt-in, default off, for the same reason as
+  // closeOnBackdrop above: every existing caller -- the checkout wizard in
+  // particular -- was built with no Escape handling, and gaining one
+  // silently would let a single keypress discard a half-filled form.
+  closeOnEscape?: boolean;
   // Replaces (not extends) the panel's own padding/extras, so a caller can
   // set p-8 or a max-height without two competing padding utilities landing
   // in one class list.
@@ -38,8 +43,18 @@ export default function Modal({
   maxWidth = "max-w-md",
   align = "center",
   closeOnBackdrop = true,
+  closeOnEscape = false,
   panelClassName = "p-5",
 }: ModalProps) {
+  useEffect(() => {
+    if (!open || !closeOnEscape) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, closeOnEscape, onClose]);
+
   if (!open) return null;
   const overlay =
     align === "top"
@@ -48,6 +63,8 @@ export default function Modal({
   return (
     <div className={overlay} onClick={closeOnBackdrop ? onClose : undefined}>
       <div
+        role="dialog"
+        aria-modal="true"
         className={`w-full ${maxWidth} rounded-2xl bg-white shadow-xl ${panelClassName}`}
         onClick={(e) => e.stopPropagation()}
       >

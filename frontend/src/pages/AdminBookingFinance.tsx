@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { InvoiceReviewNote, BookingCommercialLine, CommercialLineCategory, BookingListFinancials } from "./financeShared";
 import {
   computeBookingFinancials,
@@ -11,7 +11,11 @@ import {
   hasDateSnapshot,
 } from "./financeShared";
 import BookingsList from "./Reservations";
-import type { Booking, BookingRoom, Permissions, Scope, AdminBookingExtensions, DetailCtx, BookingCorrespondenceRow } from "./Reservations";
+import AdminBookingsTable from "./AdminBookingsTable";
+import AdminQueueBar, { BookingsControlsHandle, useBookingsControlsReveal } from "./AdminBookingsQueues";
+import { loadBookingsListState, saveBookingsListState } from "./adminViewState";
+import { useFeedback } from "../components/ui/Feedback";
+import type { Booking, BookingRoom, Permissions, Scope, AdminBookingExtensions, DetailCtx, BookingCorrespondenceRow, BookingsListState } from "./Reservations";
 import Badge from "../components/ui/Badge";
 import Button from "../components/ui/Button";
 import Input from "../components/ui/Input";
@@ -48,9 +52,13 @@ function formatMoney(amount: number | null | undefined, currency: string) {
   return `${amount.toFixed(2)} ${currency}`;
 }
 
+// The bookings list's money columns: grouped thousands, two decimals, no
+// currency symbol (the row's currency is printed once, under the sale price).
+const listAmountFormat = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 function formatNumber(amount: number | null | undefined) {
   if (amount === null || amount === undefined) return "—";
-  return amount.toFixed(2);
+  return listAmountFormat.format(amount);
 }
 
 function formatDate(dateStr: string) {
@@ -2002,10 +2010,16 @@ function ListSummaryBar({
   bookings,
   financialsByBooking,
   onFinancialsLoaded,
+  inline,
 }: {
   bookings: Booking[];
   financialsByBooking: Record<number, BookingListFinancials>;
   onFinancialsLoaded: (map: Record<number, BookingListFinancials>) => void;
+  // The header form: one line of figures instead of the block under the
+  // table. `total` is the server's count for the whole filtered list; the
+  // cancelled and profit figures are for the rows on this page, and say so
+  // whenever the page is not the whole list.
+  inline?: { total: number };
 }) {
   // Bulk-fetches live (commercial-line-aware) financials for exactly
   // whatever the list currently has visible -- one request per distinct
@@ -2054,6 +2068,30 @@ function ListSummaryBar({
     profitByCurrency[b.currency] = (profitByCurrency[b.currency] ?? 0) + profit;
   }
   const profitEntries = Object.entries(profitByCurrency);
+
+  if (inline) {
+    const partial = inline.total > bookings.length;
+    return (
+      <p className="flex flex-wrap items-baseline gap-x-4 gap-y-0.5 text-sm text-slate/70">
+        <span>
+          <strong className="font-semibold tabular-nums text-ink">{inline.total}</strong> bookings
+        </span>
+        <span>
+          {partial ? "On this page: " : ""}
+          <strong className="font-semibold tabular-nums text-ink">{cancelled}</strong> cancelled
+        </span>
+        <span title={anyUncomputed ? "Excludes bookings without a computed profit (created before the Pricing Engine)" : undefined}>
+          {partial ? "page profit " : "profit "}
+          <strong className="font-semibold tabular-nums text-ink">
+            {profitEntries.length === 0
+              ? "\u2014"
+              : profitEntries.map(([currency, amount]) => formatMoney(amount, currency)).join(" \u00b7 ")}
+          </strong>
+          {anyUncomputed ? " *" : ""}
+        </span>
+      </p>
+    );
+  }
 
   return (
     <div className="mt-4 flex flex-wrap items-center gap-6 rounded-xl border border-ink/10 bg-sand/30 p-4">
@@ -2262,18 +2300,27 @@ function UrgentBookingsPanel({
   loading,
   onAcknowledge,
   acknowledgingId,
+  embedded,
+  onOpen,
 }: {
   bookings: UrgentBookingSummary[];
   loading: boolean;
   onAcknowledge: (bookingId: number) => void;
   acknowledgingId: number | null;
+  // Inside the bookings screen's own Needs-attention queue: the queue tab is
+  // already the heading and already carries the count.
+  embedded?: boolean;
+  // Go to the booking a row is about. Absent on the standalone page.
+  onOpen?: (bookingNumber: string) => void;
 }) {
   return (
-    <div className="mt-6">
+    <div className={embedded ? "" : "mt-6"}>
+      {!embedded && (
       <h3 className="flex items-center gap-2 font-display text-lg font-semibold text-ink">
         Needs Attention
         {bookings.length > 0 && <Badge tone="coral">{bookings.length}</Badge>}
       </h3>
+      )}
       {loading ? (
         <p className="mt-3 text-sm text-slate/60">Loading...</p>
       ) : bookings.length === 0 ? (
@@ -2294,7 +2341,20 @@ function UrgentBookingsPanel({
               {bookings.map((b, index) => (
                 <TableRow key={b.booking_id} className="hover:bg-sand/40 transition-colors">
                   <TableCell className="py-2 text-slate/50">{index + 1}</TableCell>
-                  <TableCell className="whitespace-nowrap py-2 font-medium text-ink">{b.booking_number}</TableCell>
+                  <TableCell className="whitespace-nowrap py-2 font-medium text-ink">
+                    {onOpen ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpen(b.booking_number)}
+                        title="Show this booking in the list"
+                        className="appearance-none border-0 bg-transparent p-0 font-medium text-ink underline decoration-ink/25 underline-offset-2 hover:decoration-ink"
+                      >
+                        {b.booking_number}
+                      </button>
+                    ) : (
+                      b.booking_number
+                    )}
+                  </TableCell>
                   <TableCell className="py-2">
                     {b.latest_note ? <CompactChangeSummary note={b.latest_note} currency={b.currency} /> : "—"}
                   </TableCell>
@@ -2350,6 +2410,7 @@ const FULL_ADMIN_PERMISSIONS: Permissions = {
 // different, smaller use of the same data, not worth threading through
 // two nav destinations just to share one HTTP call.
 export function AdminNeedsAttentionView() {
+  const { confirm, toast } = useFeedback();
   const [urgentBookings, setUrgentBookings] = useState<UrgentBookingSummary[]>([]);
   const [urgentLoading, setUrgentLoading] = useState(true);
   const [acknowledgingId, setAcknowledgingId] = useState<number | null>(null);
@@ -2377,15 +2438,19 @@ export function AdminNeedsAttentionView() {
 
   async function handleAcknowledge(bookingId: number) {
     const summary = urgentByBooking[bookingId];
-    const confirmMessage = `⚠ ${(summary && latestNoteText(summary)) ?? ""}\n\nMark as reviewed?`;
-    if (!window.confirm(confirmMessage)) return;
+    const ok = await confirm({
+      title: `Mark ${summary?.booking_number ?? "this booking"} as reviewed?`,
+      message: (summary && latestNoteText(summary)) || undefined,
+      confirmLabel: "Mark as reviewed",
+    });
+    if (!ok) return;
     const token = localStorage.getItem("token") || "";
     try {
       setAcknowledgingId(bookingId);
       await fetchJson(`/finance-engine/bookings/${bookingId}/acknowledge-review`, token, { method: "POST" });
       await loadUrgentBookings();
     } catch (err: any) {
-      alert(err.message || "Failed to mark booking as reviewed");
+      toast(err.message || "Failed to mark booking as reviewed", "error");
     } finally {
       setAcknowledgingId(null);
     }
@@ -2401,7 +2466,34 @@ export function AdminNeedsAttentionView() {
   );
 }
 
-export default function AdminBookingsList({ scope }: { scope: Scope }) {
+export default function AdminBookingsList({
+  scope,
+  heading,
+}: {
+  scope: Scope;
+  // The Bookings screen's title + view switch (Stage A), shown in the list's
+  // own header row. Presentation only.
+  heading?: ReactNode;
+}) {
+  const { confirm, toast } = useFeedback();
+  // Stage B2: where the list starts. Read ONCE, when this screen mounts --
+  // which is also what makes it survive a visit to another section, since
+  // leaving unmounts this component and coming back mounts it again.
+  const [initialListState] = useState(loadBookingsListState);
+  // The controls above the table are hidden until pointed at (see
+  // AdminBookingsQueues.tsx). The list's current state is mirrored here only
+  // so the slim bar left in their place can say what they are set to.
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const controls = useBookingsControlsReveal(wrapRef);
+  const [listState, setListState] = useState<BookingsListState | null>(null);
+  function handleListStateChange(state: BookingsListState) {
+    saveBookingsListState(state);
+    setListState(state);
+  }
+  // null = not loaded yet or the request failed -- shown as no number on the
+  // tab, never as 0.
+  const [urgentLoaded, setUrgentLoaded] = useState<boolean | null>(null);
+  const [acknowledgingId, setAcknowledgingId] = useState<number | null>(null);
   // Decision 108: keyed by booking_id, populated from ONE bulk
   // GET /bookings/urgent call -- the booking-rooted source of truth,
   // replacing the old invoice-only urgentInvoicesByBooking. Now only
@@ -2428,13 +2520,47 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
     setFinancialsByBooking((prev) => ({ ...prev, ...map }));
   }
 
-  useEffect(() => {
+  // ONE list. The Needs-attention tab's number, the rows that queue shows and
+  // the per-row "changed" flag in the main table are all read from this same
+  // array, so they cannot disagree with each other.
+  function loadUrgent() {
     const token = localStorage.getItem("token") || "";
-    fetchJson<UrgentBookingSummary[]>("/finance-engine/bookings/urgent", token)
-      .then(setUrgentBookings)
-      .catch(() => setUrgentBookings([]));
+    return fetchJson<UrgentBookingSummary[]>("/finance-engine/bookings/urgent", token)
+      .then((rows) => {
+        setUrgentBookings(rows);
+        setUrgentLoaded(true);
+      })
+      .catch(() => {
+        setUrgentBookings([]);
+        setUrgentLoaded(false);
+      });
+  }
+
+  useEffect(() => {
+    loadUrgent();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope.type, scope.type === "agent" ? scope.agentId : null]);
+
+  async function acknowledge(bookingId: number) {
+    const summary = urgentBookings.find((b) => b.booking_id === bookingId);
+    const ok = await confirm({
+      title: `Mark ${summary?.booking_number ?? "this booking"} as reviewed?`,
+      message: (summary && latestNoteText(summary)) || undefined,
+      confirmLabel: "Mark as reviewed",
+    });
+    if (!ok) return;
+    const token = localStorage.getItem("token") || "";
+    try {
+      setAcknowledgingId(bookingId);
+      await fetchJson(`/finance-engine/bookings/${bookingId}/acknowledge-review`, token, { method: "POST" });
+      await loadUrgent();
+      toast(`${summary?.booking_number ?? "Booking"} marked as reviewed`);
+    } catch (err: any) {
+      toast(err.message || "Failed to mark booking as reviewed", "error");
+    } finally {
+      setAcknowledgingId(null);
+    }
+  }
 
   const urgentByBooking: Record<number, UrgentBookingSummary> = {};
   urgentBookings.forEach((b) => {
@@ -2519,10 +2645,65 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
         }
       />
     ),
-    renderListSummary: (bookings) => (
-      <ListSummaryBar bookings={bookings} financialsByBooking={financialsByBooking} onFinancialsLoaded={mergeFinancials} />
+    // The summary moved into the header (renderQueueBar below), so the block
+    // under the table -- and its "these figures are for this page" footnote --
+    // is no longer rendered.
+    renderListSummary: undefined,
+    renderQueueBar: (ctx) => (
+      <AdminQueueBar
+        ctx={ctx}
+        heading={heading}
+        attentionCount={urgentLoaded ? urgentBookings.length : undefined}
+        summary={
+          <ListSummaryBar
+            bookings={ctx.pageBookings}
+            financialsByBooking={financialsByBooking}
+            onFinancialsLoaded={mergeFinancials}
+            inline={{ total: ctx.total }}
+          />
+        }
+      />
     ),
+    renderAttentionQueue: ({ showBooking }) =>
+      urgentLoaded === false ? (
+        <p className="flex items-center gap-2 rounded-2xl border border-danger/30 bg-white px-4 py-4 text-sm text-danger">
+          The list of bookings needing attention could not be loaded.
+          <Button variant="outline" size="sm" onClick={() => loadUrgent()}>
+            Retry
+          </Button>
+        </p>
+      ) : (
+      <UrgentBookingsPanel
+        embedded
+        bookings={urgentBookings}
+        loading={urgentLoaded === null}
+        onAcknowledge={acknowledge}
+        acknowledgingId={acknowledgingId}
+        onOpen={showBooking}
+      />
+      ),
     renderRoomsTotal: (ctx) => <RoomsAgentTotal booking={ctx.booking} />,
+    renderTable: (ctx) => (
+      <AdminBookingsTable
+        ctx={ctx}
+        changeNoteFor={(bookingId) => {
+          const summary = urgentByBooking[bookingId];
+          return summary ? latestNoteText(summary) ?? "The booking changed after its invoice was created." : undefined;
+        }}
+        financialsFor={(booking) => {
+          // Same source and same fallback as renderFinancialColumnCells above:
+          // the live, commercial-ledger-aware figures once loaded, the frozen
+          // booking columns until then.
+          const bulk = financialsByBooking[booking.id];
+          const frozen = computeBookingFinancials(booking);
+          return {
+            netTotal: bulk ? bulk.net_total : frozen.netTotal,
+            profit: bulk ? bulk.profit : frozen.profit,
+            adjusted: Boolean(bulk?.has_manual_adjustment),
+          };
+        }}
+      />
+    ),
     onAfterRoomApproved: async (bookingRoomId) => {
       // Decision 166: the voucher the approve dialog promised the manager.
       // Best-effort by contract -- the room is already approved; a failure
@@ -2554,13 +2735,17 @@ export default function AdminBookingsList({ scope }: { scope: Scope }) {
   };
 
   return (
-    <div>
+    // The class scopes one legacy-CSS correction to this screen's filter bar
+    // -- see `.admin-bookings-list` in styles/tailwind.css.
+    <div ref={wrapRef} className={`admin-bookings-list bk-${controls.phase}`}>
+      <BookingsControlsHandle phase={controls.phase} listState={listState} handleProps={controls.handleProps} />
       <BookingsList
         scope={scope}
         permissions={FULL_ADMIN_PERMISSIONS}
         adminExtensions={adminExtensions}
-        compactFilters
         initialDateMode={{ view: "created" }}
+        initialListState={initialListState}
+        onListStateChange={handleListStateChange}
       />
     </div>
   );

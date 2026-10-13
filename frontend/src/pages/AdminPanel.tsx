@@ -1,10 +1,11 @@
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { I18nextProvider } from "react-i18next";
 import adminI18n from "../i18n/i18nAdmin";
 import { API_URL } from "../config";
-import AdminBookingsList, { AdminNeedsAttentionView } from "./AdminBookingFinance";
-import { TransfersView, ArrivalView, DepartureView } from "./BookingsSubViews";
+import AdminBookingsList from "./AdminBookingFinance";
+import { DEFAULT_VIEW, readAdminLocation, writeAdminLocation, type AdminSection } from "./adminLocation";
+import TransferListScreen, { type TransferListView } from "./BookingsSubViews";
 import Contracts from "./Contracts";
 import ContractsAI from "./ContractsAI";
 import PriceCalculator from "./PriceCalculator";
@@ -17,7 +18,9 @@ import Card from "../components/ui/Card";
 import Badge, { type BadgeTone } from "../components/ui/Badge";
 import Button from "../components/ui/Button";
 import Input from "../components/ui/Input";
-import { Skeleton, SkeletonText, SkeletonRow } from "../components/ui/Skeleton";
+import ViewTabs from "../components/ui/ViewTabs";
+import { FeedbackProvider, useFeedback } from "../components/ui/Feedback";
+import { SkeletonRow } from "../components/ui/Skeleton";
 import {
   TableShell,
   TableHeadRow,
@@ -29,20 +32,8 @@ import {
 
 type StatKey = "all" | "agent" | "admin" | "active" | "never_logged" | "inactive";
 type RegStatus = "pending" | "approved" | "rejected";
-type AdminTab =
-  | "users"
-  | "bookings-needs-attention"
-  | "reservations"
-  | "bookings-transfers"
-  | "bookings-arrival"
-  | "bookings-departure"
-  | "contracts"
-  | "contracts-ai"
-  | "price-calculator"
-  | "counteragents"
-  | "invoices"
-  | "balance"
-  | "cashback";
+// The set of screens is defined once, next to the URL names they go by.
+type AdminTab = AdminSection;
 
 const statusBadgeTones: Record<RegStatus, BadgeTone> = {
   pending: "warning",
@@ -56,38 +47,93 @@ const statusBadgeLabels: Record<RegStatus, string> = {
   rejected: "Rejected",
 };
 
-const AdminPanel = () => {
+const AdminPanelContent = () => {
   const navigate = useNavigate();
+  const { confirm, promptText, toast } = useFeedback();
   const [users, setUsers] = useState<any[]>([]);
   const [registrations, setRegistrations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterType, setFilterType] = useState("all");
-  const [activeTab, setActiveTab] = useState<AdminTab>("users");
+  // Stage B1: the screen being shown is READ FROM THE URL, not held in
+  // component state. That one change is what makes a refresh land where you
+  // were, Back and Forward move between screens, and a pasted link open the
+  // screen it was copied from -- there is no second copy of "where am I" to
+  // fall out of step with the address bar. See adminLocation.ts for the
+  // address format and how an invalid one is resolved.
+  //
+  // Stage A's default still holds: no parameters means Bookings, the list.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { section: activeTab, view: transferView } = useMemo(
+    () => readAdminLocation(searchParams),
+    [searchParams],
+  );
+
+  // The view the Transfer list was last showing. The address only names a
+  // view while that section is on screen, so this is what lets "Transfer
+  // list (Departures) -> Invoices -> Transfer list" return to Departures.
+  const lastTransferView = useRef<TransferListView>(transferView);
+  useEffect(() => {
+    if (activeTab === "transfer-list") lastTransferView.current = transferView;
+  }, [activeTab, transferView]);
+
+  function goTo(section: AdminTab, view: TransferListView, options: { replace?: boolean } = {}) {
+    const next = writeAdminLocation(searchParams, { section, view });
+    // Choosing the screen you are already on must not add a history entry --
+    // Back would then appear to do nothing.
+    if (next.toString() === searchParams.toString()) return;
+    setSearchParams(next, { replace: options.replace ?? false });
+  }
+
+  function setTransferView(view: TransferListView) {
+    goTo("transfer-list", view);
+  }
+
+  // An address that is valid but not written the standard way -- or not valid
+  // at all -- is corrected in place. `replace`, so the bad address is not left
+  // behind in history for Back to return to. The screen itself is already
+  // right before this runs (it is derived above), so correcting the address
+  // remounts nothing and requests nothing.
+  useEffect(() => {
+    const canonical = writeAdminLocation(searchParams, { section: activeTab, view: transferView });
+    if (canonical.toString() !== searchParams.toString()) setSearchParams(canonical, { replace: true });
+  }, [searchParams, activeTab, transferView, setSearchParams]);
+
   // Decision 187: which pages are open, oldest first. Selecting a nav item
   // adds it rather than replacing what you were on, so switching to Invoices
   // to check something and coming back to Bookings is two clicks, not a
   // reload of a screen you had already filtered.
-  const [openTabs, setOpenTabs] = useState<AdminTab[]>(["users"]);
+  const [openTabs, setOpenTabs] = useState<AdminTab[]>([activeTab]);
+  // The page being closed, between removing it from the bar and the address
+  // moving off it. Those are two separate updates, and the address one may
+  // land a render later; without this the effect below would see "the screen
+  // in the address is not an open page" in between and put the tab back.
+  const closingTab = useRef<AdminTab | null>(null);
+  // Whatever screen the address names is an open page -- including one
+  // reached by Back, Forward or a pasted link rather than through the menu.
+  useEffect(() => {
+    if (closingTab.current === activeTab) return;
+    closingTab.current = null;
+    setOpenTabs((tabs) => (tabs.includes(activeTab) ? tabs : [...tabs, activeTab]));
+  }, [activeTab, openTabs]);
 
   function openTab(key: AdminTab) {
-    setActiveTab(key);
-    setOpenTabs((tabs) => (tabs.includes(key) ? tabs : [...tabs, key]));
+    goTo(key, key === "transfer-list" ? lastTransferView.current : DEFAULT_VIEW);
   }
 
   function closeTab(key: AdminTab) {
-    setOpenTabs((tabs) => {
-      const next = tabs.filter((t) => t !== key);
-      // Closing the page you are looking at has to land you somewhere: the
-      // one to its left, or the first remaining. Never an empty screen --
-      // if it was the last tab it simply stays open.
-      if (next.length === 0) return tabs;
-      if (key === activeTab) {
-        const i = tabs.indexOf(key);
-        setActiveTab(next[Math.max(0, i - 1)]);
-      }
-      return next;
-    });
+    const next = openTabs.filter((t) => t !== key);
+    // Closing the page you are looking at has to land you somewhere: the
+    // one to its left, or the first remaining. Never an empty screen --
+    // if it was the last tab it simply stays open.
+    if (next.length === 0) return;
+    if (key === activeTab) closingTab.current = key;
+    setOpenTabs(next);
+    if (key === activeTab) {
+      const target = next[Math.max(0, openTabs.indexOf(key) - 1)];
+      // `replace`: a page you closed should not come back on Back.
+      goTo(target, target === "transfer-list" ? lastTransferView.current : DEFAULT_VIEW, { replace: true });
+    }
   }
 
   const loadData = async () => {
@@ -148,36 +194,79 @@ const AdminPanel = () => {
     return <Badge tone={statusBadgeTones[key] ?? "neutral"}>{statusBadgeLabels[key] ?? status}</Badge>;
   };
 
+  // The server's own explanation of a refusal, when it gave one. FastAPI puts
+  // it under "detail" -- a string for a deliberate refusal, a list of
+  // {loc, msg} objects for a validation failure.
+  const describeFailure = async (res: Response, fallback: string): Promise<string> => {
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string" && body.detail.trim()) return body.detail;
+      if (Array.isArray(body?.detail)) {
+        const lines = body.detail.map((d: any) => d?.msg).filter(Boolean);
+        if (lines.length) return lines.join("; ");
+      }
+      if (typeof body?.message === "string" && body.message.trim()) return body.message;
+    } catch {
+      // not JSON -- fall through to the generic message
+    }
+    return `${fallback} (server answered ${res.status})`;
+  };
+
   const handleApprove = async (id: number) => {
-    if (!window.confirm("Approve this application?")) return;
+    const ok = await confirm({
+      title: "Approve this application?",
+      message: "An agent account is created and its temporary password is emailed to the applicant.",
+      confirmLabel: "Approve",
+    });
+    if (!ok) return;
     try {
       const token = localStorage.getItem("token");
-      await fetch(`${API_URL}/agent-registrations/${id}/approve`, {
+      const res = await fetch(`${API_URL}/agent-registrations/${id}/approve`, {
         method: "PUT",
         headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ comments: "Approved" })
       });
-      alert("Application approved!");
+      // fetch() resolves for ANY answer the server gives, including a refusal;
+      // only a 2xx means the application was actually approved. This used to
+      // announce success for a 400 or a 500 alike. On failure nothing is
+      // reloaded, so the application and its buttons stay exactly where they
+      // were and the action can simply be tried again.
+      if (!res.ok) {
+        toast(await describeFailure(res, "The application was not approved"), "error");
+        return;
+      }
+      toast("Application approved");
       loadData();
-    } catch (err) {
-      alert("Error while approving");
+    } catch {
+      toast("The application was not approved — the server could not be reached. Try again.", "error");
     }
   };
 
   const handleReject = async (id: number) => {
-    const reason = prompt("Enter the rejection reason:");
+    // One dialog instead of prompt() followed by confirm(): the reason and
+    // the decision are the same step, and the reason is required in place.
+    const reason = await promptText({
+      title: "Reject this application?",
+      inputLabel: "Rejection reason",
+      placeholder: "Shown to the applicant",
+      confirmLabel: "Reject",
+      tone: "danger",
+    });
     if (!reason) return;
-    if (!window.confirm("Reject this application?")) return;
     try {
       const token = localStorage.getItem("token");
-      await fetch(`${API_URL}/agent-registrations/${id}/reject?comments=${encodeURIComponent(reason)}`, {
+      const res = await fetch(`${API_URL}/agent-registrations/${id}/reject?comments=${encodeURIComponent(reason)}`, {
         method: "PUT",
         headers: { "Authorization": `Bearer ${token}` }
       });
-      alert("Application rejected");
+      if (!res.ok) {
+        toast(await describeFailure(res, "The application was not rejected"), "error");
+        return;
+      }
+      toast("Application rejected");
       loadData();
-    } catch (err) {
-      alert("Error while rejecting");
+    } catch {
+      toast("The application was not rejected — the server could not be reached. Try again.", "error");
     }
   };
 
@@ -218,7 +307,6 @@ const AdminPanel = () => {
   // `loading`, matching Google Material's skeleton-screen guidance.
 
   return (
-    <I18nextProvider i18n={adminI18n}>
       <AdminShell
         activeTab={activeTab}
         onSelect={(key) => openTab(key as AdminTab)}
@@ -227,7 +315,9 @@ const AdminPanel = () => {
         userLabel={userLabel}
         onLogout={handleLogout}
       >
-        {activeTab === "counteragents" && <Counteragents />}
+        {activeTab === "markup" && <Counteragents section="markup" />}
+
+        {activeTab === "special-agents" && <Counteragents section="agents" />}
 
         {activeTab === "invoices" && <Invoices />}
 
@@ -235,15 +325,11 @@ const AdminPanel = () => {
 
         {activeTab === "cashback" && <Cashback />}
 
-        {activeTab === "bookings-needs-attention" && <AdminNeedsAttentionView />}
-
         {activeTab === "reservations" && <AdminBookingsList scope={{ type: "all" }} />}
 
-        {activeTab === "bookings-transfers" && <TransfersView />}
-
-        {activeTab === "bookings-arrival" && <ArrivalView />}
-
-        {activeTab === "bookings-departure" && <DepartureView />}
+        {/* Arrivals, departures and transfers for chosen dates -- its own
+            section, not a view of Bookings. */}
+        {activeTab === "transfer-list" && <TransferListScreen view={transferView} onViewChange={setTransferView} />}
 
         {activeTab === "contracts" && <Contracts />}
 
@@ -254,64 +340,48 @@ const AdminPanel = () => {
         {activeTab === "users" && (
         <>
         {/* ===== PAGE HEADER ===== */}
-        <div className="mt-6">
-          <h2 className="font-display text-2xl font-semibold text-ink">Users</h2>
-          <p className="mt-1 text-sm text-slate/60">Manage agent and admin accounts, review registration applications.</p>
-        </div>
-
-        {/* ===== STATS ===== */}
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
-          {loading ? (
-            Array.from({ length: 7 }).map((_, i) => (
-              <Card key={i} padding="sm" shadow="card">
-                <SkeletonText width="60%" className="h-3" />
-                <Skeleton className="mt-2 h-6 w-10" />
-              </Card>
-            ))
-          ) : (
-            <>
-              {statCards.map((card) => (
-                <Card
-                  key={card.key}
-                  padding="sm"
-                  shadow="card"
-                  onClick={() => handleFilter(card.key)}
-                  className={`relative cursor-pointer transition-colors ${
-                    filterType === card.key ? "border-coral bg-coral/5" : "hover:border-coral/30"
-                  }`}
-                >
-                  {filterType === card.key && (
-                    <span className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-coral text-[10px] text-white">
-                      ✓
-                    </span>
-                  )}
-                  <p className="text-xs font-medium uppercase tracking-wide text-slate/50">{card.label}</p>
-                  <p className="mt-1 font-display text-2xl font-semibold text-ink">{card.value}</p>
-                </Card>
-              ))}
-              <Card padding="sm" shadow="card" className={stats.pending > 0 ? "border-coral/30 bg-coral/5" : ""}>
-                <p className="text-xs font-medium uppercase tracking-wide text-slate/50">Applications</p>
-                <p className={`mt-1 font-display text-2xl font-semibold ${stats.pending > 0 ? "text-coral" : "text-ink"}`}>
-                  {stats.pending}
-                </p>
-              </Card>
-            </>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold text-ink">Users & applications</h2>
+            <p className="mt-0.5 text-sm text-slate/70">Everyone who can sign in, and agents who have applied for an account.</p>
+          </div>
+          {/* Was the seventh stat card. Not a filter of the user list, so it
+              is not a view -- it is a count of work waiting below. */}
+          {!loading && (
+            <Badge tone={stats.pending > 0 ? "warning" : "neutral"} dot={stats.pending > 0}>
+              {stats.pending} pending {stats.pending === 1 ? "application" : "applications"}
+            </Badge>
           )}
         </div>
 
+        {/* ===== VIEWS ===== */}
+        {/* The same six filters the stat cards used to be, as one line of
+            named views with their counts. Selecting the active view again
+            still returns to "Total", exactly as clicking a card did. */}
+        <ViewTabs
+          className="mt-4"
+          tabs={statCards.map((card) => ({
+            key: card.key,
+            label: card.label,
+            count: loading ? undefined : card.value,
+          }))}
+          activeKey={filterType}
+          onSelect={handleFilter}
+        />
+
         {/* ===== APPLICATIONS ===== */}
         {pendingRegs.length > 0 && (
-          <div className="mt-8">
-            <h3 className="mb-3 flex items-center gap-2 font-display text-lg font-semibold text-ink">
+          <div className="mt-6">
+            <h3 className="mb-2 flex items-center gap-2 text-base font-semibold text-ink">
               Registration applications
-              <Badge tone="coral">{pendingRegs.length}</Badge>
+              <Badge tone="warning">{pendingRegs.length}</Badge>
             </h3>
             <div className="space-y-3">
               {pendingRegs.map((reg: any) => (
-                <Card key={reg.id} padding="lg" shadow="card">
+                <Card key={reg.id} padding="sm">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-baseline gap-3">
-                      <span className="font-display text-lg font-semibold text-ink">{reg.full_name || reg.company_name}</span>
+                      <span className="text-base font-semibold text-ink">{reg.full_name || reg.company_name}</span>
                       <span className="text-sm text-slate/60">{reg.email}</span>
                     </div>
                     {getStatusBadge(reg.status)}
@@ -322,11 +392,11 @@ const AdminPanel = () => {
                     <span>City: {reg.city}</span>
                     <span>Company: {reg.company_name}</span>
                   </div>
-                  <div className="mt-4 flex gap-2.5">
-                    <Button variant="dark" onClick={() => handleApprove(reg.id)}>
+                  <div className="mt-3 flex gap-2">
+                    <Button size="sm" onClick={() => handleApprove(reg.id)}>
                       Approve
                     </Button>
-                    <Button variant="danger" onClick={() => handleReject(reg.id)}>
+                    <Button size="sm" variant="outline" onClick={() => handleReject(reg.id)}>
                       Reject
                     </Button>
                   </div>
@@ -337,8 +407,8 @@ const AdminPanel = () => {
         )}
 
         {/* ===== USERS ===== */}
-        <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
-          <h3 className="font-display text-lg font-semibold text-ink">All users</h3>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <h3 className="text-base font-semibold text-ink">All users</h3>
           <div className="flex flex-wrap items-center gap-2.5">
             <Input
               type="text"
@@ -360,7 +430,7 @@ const AdminPanel = () => {
           </div>
         </div>
 
-        <div className="overflow-hidden rounded-2xl shadow-card">
+        <div className="overflow-hidden rounded-2xl">
         <TableShell minWidth="820px">
           <TableHeadRow>
             <TableHeadCell>#</TableHeadCell>
@@ -404,10 +474,10 @@ const AdminPanel = () => {
                     <TableCell>{user.email || "—"}</TableCell>
                     <TableCell className="font-mono text-slate/40">••••••••</TableCell>
                     <TableCell>
-                      <Badge tone={isAdmin ? "ink" : "success"}>{user.role || "agent"}</Badge>
+                      <Badge tone={isAdmin ? "ink" : "neutral"}>{user.role || "agent"}</Badge>
                     </TableCell>
                     <TableCell>
-                      <Badge tone={statusTone}>{statusLabel}</Badge>
+                      <Badge tone={statusTone} dot>{statusLabel}</Badge>
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
                       {user.last_login ? new Date(user.last_login).toLocaleString() : "—"}
@@ -442,8 +512,19 @@ const AdminPanel = () => {
         </>
         )}
       </AdminShell>
-    </I18nextProvider>
   );
 };
+
+// Providers live here, one level above the screen itself, because the
+// screen's own handlers call useFeedback() -- a hook can only read a provider
+// that is above the component calling it. The dialog/toast layers render
+// beside AdminShell rather than inside it, hence the theme class passed down.
+const AdminPanel = () => (
+  <I18nextProvider i18n={adminI18n}>
+    <FeedbackProvider layerClassName="admin-theme font-sans text-slate">
+      <AdminPanelContent />
+    </FeedbackProvider>
+  </I18nextProvider>
+);
 
 export default AdminPanel;

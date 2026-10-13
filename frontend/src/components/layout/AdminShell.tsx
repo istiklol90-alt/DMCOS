@@ -104,7 +104,9 @@ export default function AdminShell({
   }
 
   return (
-    <div className="flex min-h-screen bg-sand font-sans text-slate">
+    // `admin-theme` scopes the admin design system (styles/tailwind.css) to
+    // this subtree. It is the only place the class is applied to a page.
+    <div className="admin-theme flex min-h-screen bg-sand font-sans text-slate">
       {!collapsed && (
       <aside className="hidden w-60 shrink-0 flex-col bg-ink px-4 py-6 text-white md:flex">
         <div className="mb-8 flex items-center justify-between gap-2.5 px-2">
