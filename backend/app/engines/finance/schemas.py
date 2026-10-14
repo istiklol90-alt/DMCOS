@@ -92,9 +92,22 @@ class InvoiceResponse(BaseModel):
     approved_at: Optional[datetime] = None
     voided_by: Optional[int] = None
     voided_at: Optional[datetime] = None
+    # Decision 202
+    submitted_for_posting_by: Optional[int] = None
+    submitted_for_posting_at: Optional[datetime] = None
+    returned_by: Optional[int] = None
+    returned_at: Optional[datetime] = None
+    return_note: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+
+class ReturnInvoiceRequest(BaseModel):
+    """Decision 202: accounting hands a Ready-for-posting invoice back to
+    reservations. The note is required -- a return without a reason leaves
+    the manager guessing what to fix."""
+    note: str
 
 
 class FlagForReviewRequest(BaseModel):
@@ -157,6 +170,10 @@ class BookingCommercialSummaryResponse(BaseModel):
     net_total: float
     sale_total: float
     has_manual_adjustment: bool
+    # Decision 202: the agent price the commercial breakdown now says,
+    # manual price corrections included. Equal to sale_total until someone
+    # corrects a price; it reaches the agent only on a posted invoice.
+    ledger_sale_total: Optional[float] = None
     # Decision 191: ONE hotel confirmation for the whole application.
     hotel_confirmed_amount: Optional[float] = None
     hotel_reference: Optional[str] = None
@@ -219,6 +236,16 @@ class UrgentBookingResponse(BaseModel):
     booking_number: str
     currency: str
     latest_note: Optional[InvoiceReviewNoteResponse] = None
+    # Decision 204: why a booking is in the queue. review_pending = the
+    # booking changed and nobody has marked it reviewed (the original
+    # reason; latest_note is only filled then). invoice_returned_* = its
+    # invoice is back with reservations, with accounting's note.
+    review_pending: bool = True
+    invoice_returned_note: Optional[str] = None
+    invoice_returned_at: Optional[datetime] = None
+    # Decision 205: the booking's manager, so the queue can be narrowed to
+    # one manager's own bookings.
+    claimed_by: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------

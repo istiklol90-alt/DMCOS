@@ -3,7 +3,6 @@ import type { KeyboardEvent, MouseEvent } from "react";
 import type { AdminListFlag, AdminListTableCtx, Booking } from "./Reservations";
 import { fetchJson, formatDate } from "./financeShared";
 import Badge, { type BadgeTone } from "../components/ui/Badge";
-import Button from "../components/ui/Button";
 import { SkeletonRow } from "../components/ui/Skeleton";
 import { useFeedback } from "../components/ui/Feedback";
 import { useTranslation } from "react-i18next";
@@ -128,8 +127,15 @@ function reasonsFor(
   booking: Booking,
   flags: AdminListFlag[],
   changeNote: string | undefined,
+  invoiceReturnNote?: string,
 ): Reason[] {
-  const reasons: Reason[] = flags.map(flagReason);
+  const reasons: Reason[] = [];
+  // Decision 204: accounting sent the invoice back -- the manager's move,
+  // so it leads the cell. The note is the hover detail.
+  if (invoiceReturnNote) {
+    reasons.push({ severity: "attention", text: "Invoice returned by accounting", detail: invoiceReturnNote });
+  }
+  reasons.push(...flags.map(flagReason));
   if (booking.status === "Cancellation Requested") {
     reasons.push({ severity: "attention", text: "Cancellation awaiting hotel" });
   }
@@ -186,15 +192,32 @@ function partyText(b: Booking): string {
 
 const SUB = "mt-0.5 block text-xs text-slate/65";
 
+// Rows nobody has taken on: a quiet wash of the same amber the Pending badge
+// and "No manager" already use, so the queue of unowned work reads as one
+// block at a glance -- light enough that the text, the status badge and the
+// red/amber edge stay the strongest marks in the row. Each state carries its
+// own complete hover/focus pair: two background utilities in one class list
+// are settled by stylesheet order, not by their order here.
+const UNOWNED_ROW = "bg-warning/[0.07] hover:bg-warning/[0.13] focus-visible:bg-warning/[0.13]";
+const OWNED_ROW = "bg-white hover:bg-sand/60 focus-visible:bg-sand/60";
+
+// The one action an unowned row asks for, in the row's own amber: white
+// against the wash so it is the first thing the eye lands on.
+const ASSIGN_BUTTON =
+  "appearance-none rounded-md border border-warning/50 bg-white px-3 py-1.5 text-xs font-semibold text-warning shadow-sm transition-colors hover:border-warning hover:bg-warning hover:text-white disabled:cursor-not-allowed disabled:opacity-60";
+
 export default function AdminBookingsTable({
   ctx,
   changeNoteFor,
+  invoiceReturnFor,
   financialsFor,
 }: {
   ctx: AdminListTableCtx;
   // The latest "booking changed after it was invoiced" note for a booking,
   // already formatted, or undefined when there is nothing to review.
   changeNoteFor: (bookingId: number) => string | undefined;
+  // Decision 204: accounting's note when the invoice was returned.
+  invoiceReturnFor?: (bookingId: number) => string | undefined;
   // Net cost and profit for a booking. profit is null when it was never
   // computed (a booking older than the Pricing Engine) -- shown as a dash,
   // never as zero, which would read as a real zero-margin sale.
@@ -269,13 +292,21 @@ export default function AdminBookingsTable({
           <TableEmptyState colSpan={columnCount}>No bookings match these filters</TableEmptyState>
         ) : (
           ctx.bookings.map((b) => {
-            const reasons = reasonsFor(b, ctx.flagsByBooking[b.id] ?? [], changeNoteFor(b.id));
+            const reasons = reasonsFor(
+              b,
+              ctx.flagsByBooking[b.id] ?? [],
+              changeNoteFor(b.id),
+              invoiceReturnFor?.(b.id),
+            );
             const severity: Severity | null = reasons.some((r) => r.severity === "urgent")
               ? "urgent"
               : reasons.length > 0
                 ? "attention"
                 : null;
             const open = !TERMINAL_STATUSES.includes(b.status);
+            // Nobody has taken this booking on. Told apart from the bookings
+            // that are being worked by the whole row, not only by a 3px edge.
+            const unowned = open && b.claimed_by === null;
             const company = ctx.companyNames[b.agent_id];
             const money = financialsFor(b);
             return (
@@ -284,7 +315,9 @@ export default function AdminBookingsTable({
                 tabIndex={0}
                 onClick={() => ctx.onOpen(b)}
                 onKeyDown={(e) => openOnKey(e, b)}
-                className="cursor-pointer border-b border-ink/5 align-top last:border-b-0 hover:bg-sand/60 focus-visible:bg-sand/60 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ink/40"
+                className={`cursor-pointer border-b border-ink/5 align-top last:border-b-0 ${
+                  unowned ? UNOWNED_ROW : OWNED_ROW
+                } focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ink/40`}
               >
                 <TableCell className={`whitespace-nowrap ${severity ? EDGE[severity] : ""}`}>
                   <span className="font-semibold text-ink">{b.booking_number}</span>
@@ -322,14 +355,14 @@ export default function AdminBookingsTable({
                       {ctx.userNames[b.claimed_by] ?? `#${b.claimed_by}`}
                     </span>
                   ) : open && ctx.canClaim ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
+                    <button
+                      type="button"
                       onClick={(e) => take(e, b)}
                       disabled={takingId !== null}
+                      className={ASSIGN_BUTTON}
                     >
                       {takingId === b.id ? "Assigning…" : "Assign to me"}
-                    </Button>
+                    </button>
                   ) : (
                     <span className="text-slate/35">—</span>
                   )}

@@ -223,14 +223,15 @@ def send_invoice_email(data: dict) -> bool:
     caller-resolves/function-only-formats-and-sends split as
     send_booking_confirmation_email.
     """
+    # Decision 203: `lines` are the agent-facing charge lines the caller
+    # built (finance/service.py's agent_invoice_lines) -- our net cost and
+    # commission are never in this email.
     rows = [
         ("№ счёта", data["invoice_number"]),
         ("Отель", data["hotel_name"]),
+        ("Бронирование", data["booking_number"]),
         ("Дата выставления", data["issue_date"]),
-        ("Сумма номера (нетто)", data["subtotal"]),
-        ("Скидка", data["discount"]),
-        ("Комиссия", data["commission"]),
-        ("Налог", data["tax"]),
+        *data["lines"],
         ("ИТОГО К ОПЛАТЕ", f"{data['total']} {data['currency']}"),
     ]
 

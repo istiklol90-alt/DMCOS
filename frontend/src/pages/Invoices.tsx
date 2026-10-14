@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Invoice, AgentOption } from "./financeShared";
 import { DateRangePicker } from "./HotelSearch";
+import { useFeedback } from "../components/ui/Feedback";
 import {
   TableShell,
   TableHeadRow,
@@ -68,7 +69,7 @@ function InvoiceTable({
   // stable in every engine this runs on.
   const attentionRank = (inv: Invoice): number => {
     if (isUrgentFlag(inv) && flagKind(inv) === "money") return 0;
-    if (isUrgentFlag(inv) || inv.status === "Draft") return 1;
+    if (isUrgentFlag(inv) || inv.status === "Draft" || inv.status === READY) return 1;
     return 2;
   };
   const sorted = [...invoices].sort((a, b) => attentionRank(a) - attentionRank(b));
@@ -105,7 +106,9 @@ function InvoiceTable({
                   // red for as long as that is true, whatever else is or
                   // isn't flagged on it -- the owner's rule, and the reason
                   // it also refuses to leave today's list.
-                  inv.status === "Draft"
+                  // Decision 202: so is one waiting with accounting -- still
+                  // money the agent has not been sent.
+                  inv.status === "Draft" || inv.status === READY
                     ? "border-l-8 border-l-red-600 bg-red-500/20 hover:bg-red-500/30"
                     : !isUrgentFlag(inv)
                       ? "hover:bg-sand/40"
@@ -120,6 +123,21 @@ function InvoiceTable({
                     {inv.status === "Draft" && (
                       <span className="rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
                         Not sent
+                      </span>
+                    )}
+                    {/* Decision 202: handed over by reservations -- this is
+                        accounting's to check and post. */}
+                    {inv.status === READY && (
+                      <span className="rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                        To post
+                      </span>
+                    )}
+                    {inv.status === "Draft" && inv.return_note && (
+                      <span
+                        className="cursor-help rounded-full bg-warning px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                        title={`Returned to reservations: ${inv.return_note}`}
+                      >
+                        Returned
                       </span>
                     )}
                     {isUrgentFlag(inv) && (() => {
@@ -171,14 +189,21 @@ function InvoiceTable({
                     >
                       Details
                     </button>
+                    {/* Decision 202: a Draft is still with reservations --
+                        accounting posts only what the manager sent over. */}
                     {inv.status === "Draft" && (
+                      <span className="self-center whitespace-nowrap text-xs text-slate/50">With reservations</span>
+                    )}
+                    {/* Decision 205: Return lives inside Details, where the
+                        figures it is about are on screen. */}
+                    {inv.status === READY && (
                       <button
                         type="button"
                         onClick={() => onApprove(inv)}
                         disabled={approvingId === inv.id}
                         className="appearance-none rounded-lg border-0 bg-teal px-3.5 py-1.5 text-xs font-medium text-white transition-transform hover:-translate-y-0.5 disabled:opacity-50"
                       >
-                        {approvingId === inv.id ? "..." : "Approve & send"}
+                        {approvingId === inv.id ? "..." : "Post & send to agent"}
                       </button>
                     )}
                     {inv.status === "Issued" && isUrgentFlag(inv) && (
@@ -211,6 +236,9 @@ function InvoiceTable({
   );
 }
 
+// Decision 202: the reservations manager has handed the invoice over.
+const READY = "Ready for posting";
+
 // Local so this page doesn't reach into Reservations.tsx for one helper.
 function todayStr(): string {
   const d = new Date();
@@ -220,6 +248,8 @@ function todayStr(): string {
 const LIST_PAGE_SIZE = 25;
 const ALL_STATUS_TABS: { label: string; value: string | null }[] = [
   { label: "All", value: null },
+  // Decision 202: accounting's own to-do -- what reservations has sent over.
+  { label: "Ready for posting", value: READY },
   // Draft first after All: these are the ones nobody has sent yet, which is
   // the only state on this screen where money is actually waiting.
   { label: "Draft", value: "Draft" },
@@ -255,6 +285,7 @@ const Invoices = () => {
   const [approvingId, setApprovingId] = useState<number | null>(null);
   const [acknowledgingId, setAcknowledgingId] = useState<number | null>(null);
   const [detailInvoice, setDetailInvoice] = useState<Invoice | null>(null);
+  const { confirm, toast } = useFeedback();
 
 
   // Decision 182: the all-invoices list. Debounced on the search box so
@@ -313,7 +344,7 @@ const Invoices = () => {
       ALL_STATUS_TABS.map((tab) =>
         fetchJson<{ total: number }>(
           `/finance-engine/invoices/count?date_from=${listFrom}&date_to=${listTo}` +
-            (tab.value ? `&status=${tab.value}` : "") +
+            (tab.value ? `&status=${encodeURIComponent(tab.value)}` : "") +
             (selectedAgent ? `&agent_id=${selectedAgent.id}` : ""),
           token,
         ).then((r) => [tab.value ?? "all", r.total] as const),
@@ -354,22 +385,44 @@ const Invoices = () => {
     }
   }
 
+  // Decision 202: accounting's final step -- only for an invoice the
+  // reservations manager has sent over (the server refuses anything else).
   async function handleApproveAndSend(invoice: Invoice) {
-    const confirmMessage = isUrgentFlag(invoice)
-      ? `⚠ WARNING:\n${formatReviewNotes(invoice.review_notes, invoice.currency)}\n\nApprove and send the invoice to the agent anyway?`
-      : "Approve and send the invoice to the agent?";
-    if (!window.confirm(confirmMessage)) return;
+    const ok = await confirm({
+      title: `Post ${invoice.invoice_number} and send it to the agent?`,
+      message: (
+        <div className="space-y-2">
+          <p>
+            Amount: <strong className="text-ink">{formatMoney(invoice.total, invoice.currency)}</strong>
+            {invoice.booking_number ? <> · {invoice.booking_number}</> : null}
+          </p>
+          <p>The agent receives the invoice by email and can download it from their panel from now on.</p>
+          {isUrgentFlag(invoice) && (
+            <p className="whitespace-pre-line rounded-md bg-warning/10 px-2.5 py-2 text-warning">
+              The booking changed after this invoice was created:
+              {"\n"}
+              {formatReviewNotes(invoice.review_notes, invoice.currency)}
+            </p>
+          )}
+        </div>
+      ),
+      confirmLabel: "Post & send to agent",
+    });
+    if (!ok) return;
     const token = localStorage.getItem("token") || "";
     try {
       setApprovingId(invoice.id);
       await fetchJson<Invoice>(`/finance-engine/invoices/${invoice.id}/approve-and-send`, token, { method: "POST" });
+      toast(`${invoice.invoice_number} posted and sent to the agent`, "success");
       await refreshBoth();
     } catch (err: any) {
-      alert(err.message || "Failed to approve and send invoice");
+      toast(err.message || "Failed to post the invoice", "error");
     } finally {
       setApprovingId(null);
     }
   }
+
+
 
 
   async function handleAcknowledge(invoice: Invoice) {
@@ -569,6 +622,11 @@ const Invoices = () => {
           invoice={detailInvoice}
           onClose={() => setDetailInvoice(null)}
           onAcknowledged={async () => {
+            setDetailInvoice(null);
+            await refreshBoth();
+          }}
+          onReturned={async () => {
+            toast(`${detailInvoice.invoice_number} returned to reservations`, "success");
             setDetailInvoice(null);
             await refreshBoth();
           }}

@@ -429,7 +429,9 @@ export default function AdminQueueBar({
           activeKey={ctx.queue}
           onSelect={(key) => ctx.onQueueChange(key as AdminQueue)}
         />
-        {ctx.queue === "all" && (
+        {/* Decision 205: also on "Changes to review", so each manager can
+            see the returned invoices and changes on their own bookings. */}
+        {(ctx.queue === "all" || ctx.queue === "attention") && (
           <label className="flex items-center gap-2 pb-1 text-xs font-medium text-slate/70">
             Manager
             <Select
@@ -450,7 +452,8 @@ export default function AdminQueueBar({
 
       {ctx.queue === "attention" && (
         <p className="mt-1.5 text-xs text-slate/70">
-          Every change still waiting for review, whenever it happened — this list is not narrowed by the dates.
+          Every change and returned invoice still waiting, whenever it happened — this list is not narrowed by the
+          dates, only by the manager you choose.
         </p>
       )}
 

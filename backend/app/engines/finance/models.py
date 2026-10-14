@@ -108,6 +108,17 @@ class Invoice(Base):
     approved_at = Column(DateTime(timezone=True), nullable=True)
     voided_by = Column(Integer, nullable=True)
     voided_at = Column(DateTime(timezone=True), nullable=True)
+    # Decision 202: the reservations manager's hand-over to accounting.
+    # Draft (with reservations) -> "Ready for posting" (with accounting) ->
+    # Issued (posted and sent to the agent). Accounting can hand a Ready
+    # invoice back to Draft with a note; the note and who/when stay on the
+    # row after a re-submit, so the last return is never lost. Added by
+    # raw ALTER TABLE (Decision 084/089 technique), all nullable.
+    submitted_for_posting_by = Column(Integer, nullable=True)
+    submitted_for_posting_at = Column(DateTime(timezone=True), nullable=True)
+    returned_by = Column(Integer, nullable=True)
+    returned_at = Column(DateTime(timezone=True), nullable=True)
+    return_note = Column(Text, nullable=True)
 
 
 class InvoiceReviewNote(Base):

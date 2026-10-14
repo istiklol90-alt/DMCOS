@@ -17,6 +17,7 @@ from app.engines.finance.repository import get_db
 from app.engines.booking import service as booking_service
 from app.engines.finance.schemas import (
     InvoiceResponse,
+    ReturnInvoiceRequest,
     FlagForReviewRequest,
     UrgentBookingResponse,
     CreditNoteResponse,
@@ -387,6 +388,31 @@ def void_invoice(invoice_id: int, db: Session = Depends(get_db), current_user=De
 def approve_and_send_invoice(invoice_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _require_admin(current_user)
     return _run(lambda: service.approve_and_send_invoice(db, invoice_id, approved_by=current_user.id))
+
+
+@router.post("/bookings/{booking_id}/submit-for-posting", response_model=InvoiceResponse)
+def submit_invoice_for_posting(booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    """Decision 202: the reservations manager confirms the amounts and hands
+    the invoice to accounting. Creates the invoice if the booking has none,
+    and refreshes it from the commercial breakdown. Admin-only for now --
+    the owner plans separate manager/accountant roles later."""
+    _require_admin(current_user)
+    return _run(lambda: service.submit_invoice_for_posting(db, booking_id, submitted_by=current_user.id))
+
+
+@router.post("/invoices/{invoice_id}/return", response_model=InvoiceResponse)
+def return_invoice_to_reservations(
+    invoice_id: int,
+    payload: ReturnInvoiceRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Decision 202: accounting sends a Ready-for-posting invoice back to
+    the reservations manager, with a note saying what to fix."""
+    _require_admin(current_user)
+    return _run(lambda: service.return_invoice_to_reservations(
+        db, invoice_id, note=payload.note, returned_by=current_user.id
+    ))
 
 
 @router.post("/invoices/{invoice_id}/acknowledge-flag", response_model=InvoiceResponse)

@@ -76,6 +76,12 @@ export interface Invoice {
   approved_at: string | null;
   voided_by: number | null;
   voided_at: string | null;
+  // Decision 202: reservations -> accounting hand-over.
+  submitted_for_posting_by?: number | null;
+  submitted_for_posting_at?: string | null;
+  returned_by?: number | null;
+  returned_at?: string | null;
+  return_note?: string | null;
 }
 
 // Decision 101: single shared source of truth for Net/Sale/Profit,
@@ -253,6 +259,8 @@ const statusBadgeClasses: Record<string, string> = {
   Issued: "bg-teal/15 text-teal",
   Void: "bg-slate/10 text-slate",
   Draft: "bg-coral/15 text-coral",
+  // Decision 202: with accounting, waiting to be posted.
+  "Ready for posting": "bg-warning/15 text-warning",
   Active: "bg-teal/15 text-teal",
   Fulfilled: "bg-ink/10 text-ink",
   Expired: "bg-slate/10 text-slate",
@@ -961,12 +969,39 @@ export function InvoiceDetailModal({
   invoice,
   onClose,
   onAcknowledged,
+  onReturned,
 }: {
   invoice: Invoice;
   onClose: () => void;
   onAcknowledged?: () => void;
+  // Decision 205: accounting returns the invoice from inside this window,
+  // writing the note while the figures are on screen.
+  onReturned?: () => void;
 }) {
   const [acknowledging, setAcknowledging] = useState(false);
+  const [returnNote, setReturnNote] = useState("");
+  const [returning, setReturning] = useState(false);
+  const [returnError, setReturnError] = useState<string | null>(null);
+  const canReturn = invoice.status === "Ready for posting" && !!onReturned;
+
+  async function handleReturn() {
+    const note = returnNote.trim();
+    if (!note) return;
+    const token = localStorage.getItem("token") || "";
+    setReturning(true);
+    setReturnError(null);
+    try {
+      await fetchJson<Invoice>(`/finance-engine/invoices/${invoice.id}/return`, token, {
+        method: "POST",
+        body: JSON.stringify({ note }),
+      });
+      onReturned?.();
+    } catch (err: any) {
+      setReturnError(err.message || "Failed to return the invoice");
+    } finally {
+      setReturning(false);
+    }
+  }
 
   async function handleAcknowledge() {
     const token = localStorage.getItem("token") || "";
@@ -997,9 +1032,14 @@ export function InvoiceDetailModal({
     const token = localStorage.getItem("token") || "";
     const ids = Array.from(
       new Set(
-        [invoice.created_by, invoice.approved_by, invoice.voided_by, invoice.flag_acknowledged_by].filter(
-          (id): id is number => id !== null
-        )
+        [
+          invoice.created_by,
+          invoice.approved_by,
+          invoice.voided_by,
+          invoice.flag_acknowledged_by,
+          invoice.submitted_for_posting_by ?? null,
+          invoice.returned_by ?? null,
+        ].filter((id): id is number => id !== null)
       )
     );
     Promise.all(
@@ -1158,7 +1198,14 @@ export function InvoiceDetailModal({
     // with content, which is exactly what made two invoices look like two
     // different windows. The header stays put and only the body scrolls, so
     // every invoice opens identically whatever it contains.
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4 py-6" onClick={onClose}>
+    // A half-written return note is not thrown away by a stray click on the
+    // backdrop -- Close still closes.
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4 py-6"
+      onClick={() => {
+        if (!returnNote.trim()) onClose();
+      }}
+    >
       <div
         className="flex h-[85vh] w-full max-w-[1400px] flex-col overflow-hidden rounded-2xl bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
@@ -1439,8 +1486,21 @@ export function InvoiceDetailModal({
               "Created 7/20, Approved 7/19" -- approved before it existed.
               It was created 19.07 19:09:12 and approved 24 seconds later. */}
           <p>Created: {actorNames[invoice.created_by] ?? `#${invoice.created_by}`}, {invoice.created_at ? formatDateTime(invoice.created_at) : formatDate(invoice.issue_date)}</p>
+          {invoice.returned_by != null && invoice.returned_at && (
+            <p>
+              Returned to reservations: {actorNames[invoice.returned_by] ?? `#${invoice.returned_by}`},{" "}
+              {formatDateTime(invoice.returned_at)}
+              {invoice.return_note ? ` — "${invoice.return_note}"` : ""}
+            </p>
+          )}
+          {invoice.submitted_for_posting_by != null && invoice.submitted_for_posting_at && (
+            <p>
+              Sent to accounting: {actorNames[invoice.submitted_for_posting_by] ?? `#${invoice.submitted_for_posting_by}`},{" "}
+              {formatDateTime(invoice.submitted_for_posting_at)}
+            </p>
+          )}
           {invoice.approved_by !== null && invoice.approved_at && (
-            <p>Approved: {actorNames[invoice.approved_by] ?? `#${invoice.approved_by}`}, {formatDateTime(invoice.approved_at)}</p>
+            <p>Posted and sent to the agent: {actorNames[invoice.approved_by] ?? `#${invoice.approved_by}`}, {formatDateTime(invoice.approved_at)}</p>
           )}
           {invoice.voided_by !== null && invoice.voided_at && (
             <p>Voided: {actorNames[invoice.voided_by] ?? `#${invoice.voided_by}`}, {formatDate(invoice.voided_at)}</p>
@@ -1450,6 +1510,39 @@ export function InvoiceDetailModal({
         </div>
         </div>
 
+        {/* Decision 205: pinned under the scrolling sections, so accounting
+            can open any of them, compare the figures and write exactly what
+            does not match -- without closing this window or opening another. */}
+        {canReturn && (
+          <div className="shrink-0 border-t border-ink/10 bg-sand/40 px-6 py-3">
+            <label htmlFor="invoice-return-note" className="text-xs font-semibold uppercase tracking-wide text-slate/60">
+              Return to reservations — what needs to be checked or corrected
+            </label>
+            <div className="mt-1.5 flex flex-wrap items-end gap-3">
+              <textarea
+                id="invoice-return-note"
+                rows={2}
+                value={returnNote}
+                onChange={(e) => setReturnNote(e.target.value)}
+                placeholder="e.g. room cost 7,300.65 does not match the hotel's confirmation 7,150.00"
+                className="min-h-[2.75rem] min-w-[16rem] flex-1 resize-y rounded-lg font-sans border border-ink/20 bg-white px-3 py-2 text-sm text-ink placeholder:text-slate/40 focus:border-gold focus:outline-none focus:ring-2 focus:ring-gold/30"
+              />
+              <button
+                type="button"
+                onClick={handleReturn}
+                disabled={!returnNote.trim() || returning}
+                className="appearance-none whitespace-nowrap rounded-lg border border-warning/50 bg-white px-4 py-2 text-sm font-semibold text-warning transition-colors hover:border-warning hover:bg-warning hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {returning ? "Returning…" : "Return to reservations"}
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-slate/55">
+              The manager sees this note on the booking, in “Needs action” and in “Changes to review”, corrects it and
+              sends the invoice again.
+            </p>
+            {returnError && <p className="mt-1 text-xs font-medium text-danger">{returnError}</p>}
+          </div>
+        )}
       </div>
     </div>
   );

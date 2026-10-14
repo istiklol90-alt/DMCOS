@@ -6,6 +6,7 @@ import {
   computeCommercialLineTotals,
   COMMERCIAL_LINE_CATEGORIES,
   fetchJson,
+  formatDateTime,
   formatSingleNote,
   hasPriceSnapshot,
   hasDateSnapshot,
@@ -81,6 +82,11 @@ interface InvoiceInfo {
   review_notes: InvoiceReviewNote[];
   flag_acknowledged_at: string | null;
   booking_id?: number;
+  // Decision 202
+  approved_at?: string | null;
+  submitted_for_posting_at?: string | null;
+  returned_at?: string | null;
+  return_note?: string | null;
 }
 
 interface RoomPriceBreakdown {
@@ -1267,6 +1273,8 @@ interface BookingCommercialSummary {
   net_total: number;
   sale_total: number;
   has_manual_adjustment: boolean;
+  // Decision 202: the agent price the breakdown states, corrections included.
+  ledger_sale_total?: number | null;
 }
 
 function RoomsAgentTotal({ booking }: { booking: Booking }) {
@@ -1634,6 +1642,8 @@ function CommercialLineItemsPanel({
   applicationTotal,
   roomLabel,
   invoiceTotal,
+  invoiceStatus,
+  ledgerApplicationTotal,
   locked,
   labels,
   rooms,
@@ -1655,6 +1665,10 @@ function CommercialLineItemsPanel({
   roomTotal?: number | null;
   applicationTotal?: number | null;
   invoiceTotal?: number | null;
+  // Decision 202: which stage the invoice is at, and the whole booking's
+  // agent price as the breakdown states it (corrections included).
+  invoiceStatus?: string | null;
+  ledgerApplicationTotal?: number | null;
   roomLabel?: string | null;
   labels?: DetailCtx["labels"];
   // Decision 180: switching rooms without leaving the ledger.
@@ -1670,13 +1684,30 @@ function CommercialLineItemsPanel({
   // own totals -- it did not, so the screen was left with no total anywhere.
   // Decision 178: the sale side is the frozen price, never the ledger's --
   // for THIS room, since this table is this room's ledger.
-  const totals = computeCommercialLineTotals(lines, roomTotal ?? 0);
+  // Decision 202 (reverses Decision 178's "the sale side is never the
+  // ledger's"): the manager may correct the agent's price here too, so the
+  // Price total is this table's own price lines. What the agent BOOKED at
+  // is still stated below -- it is what they see until accounting posts an
+  // invoice carrying the new figure.
+  const frozenTotals = computeCommercialLineTotals(lines, roomTotal ?? 0);
+  const ledgerSale = lines.reduce((sum, l) => sum + (l.base_price ?? 0) + (l.adjustment_price ?? 0), 0);
+  const saleTotal = lines.length > 0 ? ledgerSale : frozenTotals.saleTotal;
+  const totals = { netTotal: frozenTotals.netTotal, saleTotal, profit: saleTotal - frozenTotals.netTotal };
   const centsApart = (a: number, b: number) => Math.abs(Math.round((a - b) * 100)) > 1;
+  // The whole booking's price per the breakdown; the booked figure until the
+  // summary has loaded.
+  const breakdownTotal = ledgerApplicationTotal ?? applicationTotal;
+  const priceChanged =
+    applicationTotal != null && breakdownTotal != null && centsApart(applicationTotal, breakdownTotal);
   // Decision 179: the invoice covers the whole application, so it is checked
   // against the application total -- never against one room's, which cannot
-  // match it whenever there is more than one room.
+  // match it whenever there is more than one room. Decision 202: against the
+  // breakdown's total, which is what a hand-over writes onto the invoice.
   const invoiceMismatch =
-    invoiceTotal != null && applicationTotal != null && centsApart(applicationTotal, invoiceTotal);
+    invoiceTotal != null && breakdownTotal != null && centsApart(breakdownTotal, invoiceTotal);
+  // A Draft is re-written from the breakdown when it is sent, so a
+  // difference there is expected, not an error.
+  const invoiceWillRefresh = invoiceStatus === "Draft";
   const multiRoom = applicationTotal != null && roomTotal != null && centsApart(applicationTotal, roomTotal);
 
   return (
@@ -1851,23 +1882,38 @@ function CommercialLineItemsPanel({
       <div className="mt-3 space-y-1 text-xs">
         {applicationTotal != null && (
           <p className="text-slate/60">
-            Agent is billed <strong className="text-ink">{formatMoney(applicationTotal, currency)}</strong>
+            Agent booked at <strong className="text-ink">{formatMoney(applicationTotal, currency)}</strong>
             {multiRoom && roomTotal != null && (
               <> for the whole booking, of which {formatMoney(roomTotal, currency)} is this room</>
             )}{" "}
-            — the price they saw at booking, transfer included. Corrections here change our cost and
-            margin, never this figure.
+            — transfer included. This is the price the agent sees until accounting posts the invoice.
+          </p>
+        )}
+        {/* Decision 202: a corrected agent price is a real change now --
+            said in the same amber as everything else waiting on someone. */}
+        {priceChanged && breakdownTotal != null && applicationTotal != null && (
+          <p className="font-medium text-warning">
+            New agent price per this breakdown: {formatMoney(breakdownTotal, currency)} (
+            {breakdownTotal > applicationTotal ? "+" : ""}
+            {formatMoney(breakdownTotal - applicationTotal, currency)}). The agent receives it only on the
+            invoice, after accounting posts it.
           </p>
         )}
         {invoiceTotal != null && (
-          <p className={invoiceMismatch ? "font-medium text-danger" : "text-slate/60"}>
+          <p
+            className={
+              !invoiceMismatch ? "text-slate/60" : invoiceWillRefresh ? "text-slate/60" : "font-medium text-danger"
+            }
+          >
             Invoice total: {formatMoney(invoiceTotal, currency)}
-            {/* Decision 179: the comparison names what it compared. "Does not
-                match the breakdown" was both wrong (it was checked against
-                one room) and unhelpful -- it never said match WHAT. */}
-            {invoiceMismatch
-              ? " — does not match what the agent is billed; it was issued before the booking changed"
-              : " ✓ matches what the agent is billed"}
+            {/* Decision 179: the comparison names what it compared. */}
+            {!invoiceMismatch
+              ? " ✓ matches this breakdown"
+              : invoiceWillRefresh
+                ? " — it will be updated from this breakdown when you send it for post invoice"
+                : invoiceStatus === "Ready for posting"
+                  ? " — the breakdown changed after it was sent to accounting; ask accounting to return it"
+                  : " — does not match this breakdown; it was issued before the booking changed"}
           </p>
         )}
       </div>
@@ -1875,14 +1921,23 @@ function CommercialLineItemsPanel({
   );
 }
 
+// Decision 202: the figures the invoice block needs to describe and confirm
+// a hand-over, taken from the same summary the breakdown's totals use.
+interface LiveInvoiceFigures {
+  bookedTotal: number | null;
+  breakdownTotal: number | null;
+}
+
 function FinancialSummaryBlock({
   ctx,
-  invoiceSlot,
+  renderInvoice,
   invoiceTotal,
+  invoiceStatus,
 }: {
   ctx: DetailCtx;
-  invoiceSlot?: ReactNode;
+  renderInvoice?: (live: LiveInvoiceFigures) => ReactNode;
   invoiceTotal?: number | null;
+  invoiceStatus?: string | null;
 }) {
   const { booking, bookingRoomId, rooms } = ctx;
   const { lines, setLines, error: linesError, loading: linesLoading } = useCommercialLines(bookingRoomId);
@@ -1912,7 +1967,8 @@ function FinancialSummaryBlock({
   const grandTotal = summary
     ? {
         net: summary.net_total,
-        sale: summary.sale_total,
+        // Decision 202: the breakdown's own price, corrections included.
+        sale: summary.ledger_sale_total ?? summary.sale_total,
         rooms: summary.rooms.filter((r) => r.billable).length,
       }
     : null;
@@ -1979,6 +2035,8 @@ function FinancialSummaryBlock({
           onSelectRoom={ctx.onSelectRoom}
           grandTotal={grandTotal}
           invoiceTotal={invoiceTotal}
+          invoiceStatus={invoiceStatus}
+          ledgerApplicationTotal={summary?.ledger_sale_total ?? null}
           // Same rule as the rest of the detail screen: no owner, no edits.
           locked={booking.claimed_by === null && !["Cancelled", "Rejected", "Completed"].includes(booking.status)}
           labels={ctx.labels}
@@ -1988,8 +2046,13 @@ function FinancialSummaryBlock({
           Actions. It quotes a figure that must equal the breakdown's Total
           Price, and in Quick Actions the two were screens apart -- so a
           disagreement (the owner found one) was invisible. */}
-      {invoiceSlot && (
-        <div className="rounded-xl border border-ink/10 p-4">{invoiceSlot}</div>
+      {renderInvoice && (
+        <div className="rounded-xl border border-ink/10 p-4">
+          {renderInvoice({
+            bookedTotal: summary ? summary.sale_total : applicationTotal,
+            breakdownTotal: summary ? summary.ledger_sale_total ?? summary.sale_total : null,
+          })}
+        </div>
       )}
     </div>
   );
@@ -2131,17 +2194,26 @@ function ListSummaryBar({
 // this block reflect the auto-created invoice without a page reload.
 // ---------------------------------------------------------------------------
 
+// Decision 202: where the reservations manager hands the invoice to
+// accounting ("Send for post invoice"), and where they see what happened to
+// it afterwards. Draft -> Ready for posting -> Issued; accounting may return
+// a Ready invoice to Draft with a note, which is shown here.
+const READY_FOR_POSTING = "Ready for posting";
+
 function InvoiceHeaderActions({
   booking,
   cachedInvoice,
   setInvoice,
+  live,
 }: {
   booking: Booking;
   cachedInvoice: InvoiceInfo | null | undefined; // undefined = not yet fetched
   setInvoice: (inv: InvoiceInfo | null) => void;
+  live: LiveInvoiceFigures;
 }) {
-  const [creating, setCreating] = useState(false);
+  const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { confirm, toast } = useFeedback();
 
   // A 400 here just means "not yet invoiced" (the common case).
   useEffect(() => {
@@ -2153,54 +2225,153 @@ function InvoiceHeaderActions({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [booking.id, cachedInvoice]);
 
-  async function handleCreate() {
+  async function handleSend() {
     const token = localStorage.getItem("token") || "";
-    setCreating(true);
     setError(null);
+    // The dialog quotes the figures as they are this second, not as they
+    // were when the panel last refreshed.
+    let summary: BookingCommercialSummary | null = null;
     try {
-      const created = await fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/invoice`, token, {
+      summary = await fetchJson<BookingCommercialSummary>(
+        `/finance-engine/bookings/${booking.id}/commercial-summary`,
+        token,
+      );
+    } catch {
+      summary = null;
+    }
+    const currency = summary?.currency ?? booking.currency;
+    const booked = summary?.sale_total ?? live.bookedTotal;
+    const invoiced = summary ? summary.ledger_sale_total ?? summary.sale_total : live.breakdownTotal;
+    const cost = summary?.net_total ?? null;
+    const changed = booked != null && invoiced != null && Math.abs(Math.round((invoiced - booked) * 100)) > 1;
+    const row = (label: string, value: ReactNode, strong = false) => (
+      <div className="flex items-baseline justify-between gap-6 border-b border-ink/10 py-1.5 last:border-b-0">
+        <span className="text-slate/70">{label}</span>
+        <span className={`tabular-nums ${strong ? "font-semibold text-ink" : "text-ink"}`}>{value}</span>
+      </div>
+    );
+    const ok = await confirm({
+      title: "Send the invoice to accounting?",
+      message: (
+        <div className="space-y-3">
+          <p>Please confirm the amounts are correct. Accounting checks them, posts the invoice and sends it to the agent.</p>
+          <div className="rounded-lg border border-ink/15 px-3 py-1">
+            {row("Agent booked at", booked != null ? formatMoney(booked, currency) : "—")}
+            {row("Invoice amount", invoiced != null ? formatMoney(invoiced, currency) : "—", true)}
+            {cost != null && row("Our cost", formatMoney(cost, currency))}
+            {cost != null && invoiced != null && row("Our margin", formatMoney(invoiced - cost, currency))}
+          </div>
+          {changed && booked != null && invoiced != null && (
+            <p className="rounded-md bg-warning/10 px-2.5 py-2 text-warning">
+              The invoice amount differs from what the agent booked by {invoiced > booked ? "+" : ""}
+              {formatMoney(invoiced - booked, currency)}. The agent keeps seeing {formatMoney(booked, currency)} until
+              accounting posts the invoice.
+            </p>
+          )}
+        </div>
+      ),
+      confirmLabel: "Send for post invoice",
+    });
+    if (!ok) return;
+    setSending(true);
+    try {
+      const updated = await fetchJson<InvoiceInfo>(`/finance-engine/bookings/${booking.id}/submit-for-posting`, token, {
         method: "POST",
       });
-      setInvoice(created);
+      setInvoice(updated);
+      toast(`${updated.invoice_number} sent to accounting`, "success");
     } catch (err: any) {
-      setError(err.message || "Failed to create invoice");
+      setError(err.message || "Failed to send the invoice to accounting");
     } finally {
-      setCreating(false);
+      setSending(false);
     }
   }
 
   if (cachedInvoice === undefined) return null;
 
-  if (cachedInvoice) {
-    return (
-      <div className="flex flex-col items-end gap-1">
-        <div className="rounded-lg bg-ink/5 px-3 py-1.5 text-xs text-slate/70">
-          Invoice <strong className="text-ink">{cachedInvoice.invoice_number}</strong> ({cachedInvoice.status}) for{" "}
-          <strong className="text-ink">{formatMoney(cachedInvoice.total, cachedInvoice.currency)}</strong>
-        </div>
-        {error && <div className="rounded-lg bg-coral/10 px-2 py-1 text-xs font-medium text-coral">{error}</div>}
-      </div>
-    );
-  }
+  const closed =
+    booking.status === "Cancelled" || booking.status === "Rejected" || booking.status === "Cancellation Requested";
+  const status = cachedInvoice?.status ?? null;
+  const canSend = !closed && (status === null || status === "Draft");
+  // Same rule as the breakdown above it: no owner, no edits.
+  const unowned = booking.claimed_by === null;
+  const returned = status === "Draft" && !!cachedInvoice?.return_note;
+  const sentAt = cachedInvoice?.submitted_for_posting_at;
+  const staleAfterSending =
+    status === READY_FOR_POSTING &&
+    live.breakdownTotal != null &&
+    cachedInvoice != null &&
+    Math.abs(Math.round((live.breakdownTotal - cachedInvoice.total) * 100)) > 1;
 
-  if (
-    booking.status === "Cancelled" ||
-    booking.status === "Rejected" ||
-    booking.status === "Cancellation Requested"
-  ) {
-    return null;
-  }
+  if (closed && !cachedInvoice) return null;
 
   return (
-    <div className="flex flex-col items-end gap-1">
-      <button
-        type="button"
-        onClick={handleCreate}
-        disabled={creating}
-        className="rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {creating ? "Creating..." : "Create invoice"}
-      </button>
+    <div className="space-y-2.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-slate/50">Invoice</h4>
+        {cachedInvoice && (
+          <span className="text-xs text-slate/70">
+            <strong className="text-ink">{cachedInvoice.invoice_number}</strong> ·{" "}
+            <strong className="text-ink">{formatMoney(cachedInvoice.total, cachedInvoice.currency)}</strong> ·{" "}
+            {status === "Draft"
+              ? "with reservations"
+              : status === READY_FOR_POSTING
+                ? "with accounting"
+                : status === "Issued"
+                  ? "posted"
+                  : status?.toLowerCase()}
+          </span>
+        )}
+      </div>
+
+      {returned && (
+        <p className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+          <strong className="font-semibold">Returned by accounting</strong>
+          {cachedInvoice?.returned_at ? ` on ${formatDateTime(cachedInvoice.returned_at)}` : ""}:{" "}
+          {cachedInvoice?.return_note}
+        </p>
+      )}
+
+      {status === READY_FOR_POSTING && (
+        <p className="text-xs text-slate/70">
+          Sent to accounting{sentAt ? ` on ${formatDateTime(sentAt)}` : ""}. They check and post it;
+          the agent receives the invoice only after that.
+        </p>
+      )}
+      {staleAfterSending && live.breakdownTotal != null && cachedInvoice && (
+        <p className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+          The breakdown has changed since it was sent ({formatMoney(live.breakdownTotal, cachedInvoice.currency)} now,{" "}
+          {formatMoney(cachedInvoice.total, cachedInvoice.currency)} on the invoice). Ask accounting to return it, then
+          send it again.
+        </p>
+      )}
+      {status === "Issued" && (
+        <p className="text-xs text-slate/70">
+          Posted by accounting and sent to the agent
+          {cachedInvoice?.approved_at ? ` on ${formatDateTime(cachedInvoice.approved_at)}` : ""}.
+        </p>
+      )}
+
+      {canSend && (
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={handleSend}
+            disabled={sending || unowned}
+            className="inline-flex appearance-none items-center gap-2 rounded-lg border-0 bg-ink px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-ink/85 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span aria-hidden="true" className="text-gold">
+              ➜
+            </span>
+            {sending ? "Sending…" : "Send for post invoice"}
+          </button>
+          <span className="text-xs text-slate/60">
+            {unowned
+              ? "Assign the booking to yourself first."
+              : "Check the amounts above and correct them if needed, then send the invoice to accounting."}
+          </span>
+        </div>
+      )}
       {error && <div className="rounded-lg bg-coral/10 px-2 py-1 text-xs font-medium text-coral">{error}</div>}
     </div>
   );
@@ -2221,6 +2392,11 @@ interface UrgentBookingSummary {
   booking_number: string;
   currency: string;
   latest_note: InvoiceReviewNote | null;
+  // Decision 204
+  review_pending?: boolean;
+  invoice_returned_note?: string | null;
+  invoice_returned_at?: string | null;
+  claimed_by?: number | null;
 }
 
 // Decision 112: derives the display string via the exact same
@@ -2232,13 +2408,23 @@ function latestNoteText(summary: UrgentBookingSummary): string | undefined {
   return summary.latest_note ? formatSingleNote(summary.latest_note, summary.currency) : undefined;
 }
 
+// Decision 204: false only for a booking that is in the queue solely
+// because its invoice was returned -- "Mark as reviewed" does not apply.
+function reviewPending(summary: UrgentBookingSummary): boolean {
+  return summary.review_pending !== false;
+}
+
+function returnText(summary: UrgentBookingSummary): string | undefined {
+  return summary.invoice_returned_note ? `Invoice returned by accounting: ${summary.invoice_returned_note}` : undefined;
+}
+
 // renderStatusBadgeExtra slot -- same visual badge as before, now
 // sourced from the booking-rooted set instead of an invoice-only one.
 function NeedsAttentionBadge({ summary }: { summary: UrgentBookingSummary }) {
   return (
     <span
       className="inline-flex cursor-help items-center gap-1 rounded-full bg-coral/15 px-2 py-0.5 text-[11px] font-medium text-coral"
-      title={latestNoteText(summary)}
+      title={[returnText(summary), latestNoteText(summary)].filter(Boolean).join("\n\n") || undefined}
     >
       ⚠ Invoice
     </span>
@@ -2356,20 +2542,44 @@ function UrgentBookingsPanel({
                     )}
                   </TableCell>
                   <TableCell className="py-2">
-                    {b.latest_note ? <CompactChangeSummary note={b.latest_note} currency={b.currency} /> : "—"}
+                    {/* Decision 204: a returned invoice is said first, in
+                        amber, with accounting's own words. */}
+                    {b.invoice_returned_note && (
+                      <span
+                        title={b.invoice_returned_note}
+                        className="block max-w-[420px] cursor-help truncate text-xs font-medium text-warning"
+                      >
+                        Invoice returned by accounting: {b.invoice_returned_note}
+                      </span>
+                    )}
+                    {b.latest_note ? (
+                      <CompactChangeSummary note={b.latest_note} currency={b.currency} />
+                    ) : !b.invoice_returned_note ? (
+                      "—"
+                    ) : null}
                   </TableCell>
                   <TableCell className="whitespace-nowrap py-2 text-xs text-slate/50">
-                    {b.latest_note?.created_at ? formatDate(b.latest_note.created_at) : "—"}
+                    {b.latest_note?.created_at
+                      ? formatDate(b.latest_note.created_at)
+                      : b.invoice_returned_at
+                        ? formatDate(b.invoice_returned_at)
+                        : "—"}
                   </TableCell>
                   <TableCell className="py-2 text-right">
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => onAcknowledge(b.booking_id)}
-                      disabled={acknowledgingId === b.booking_id}
-                    >
-                      {acknowledgingId === b.booking_id ? "..." : "Mark as reviewed"}
-                    </Button>
+                    {reviewPending(b) ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => onAcknowledge(b.booking_id)}
+                        disabled={acknowledgingId === b.booking_id}
+                      >
+                        {acknowledgingId === b.booking_id ? "..." : "Mark as reviewed"}
+                      </Button>
+                    ) : (
+                      // Leaves the queue by itself once the invoice is sent
+                      // to accounting again.
+                      <span className="whitespace-nowrap text-xs text-slate/55">Re-send the invoice</span>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -2566,6 +2776,13 @@ export default function AdminBookingsList({
   urgentBookings.forEach((b) => {
     urgentByBooking[b.booking_id] = b;
   });
+  // Decision 205: "Changes to review" follows the Manager filter, so each
+  // manager sees the returned invoices and changes on their own bookings.
+  // The per-row "Needs action" reasons above stay unfiltered -- they are
+  // about the row on screen, whoever owns it.
+  const ownerFilter = listState?.ownerFilter ?? "all";
+  const queueBookings =
+    ownerFilter === "all" ? urgentBookings : urgentBookings.filter((b) => String(b.claimed_by ?? "") === ownerFilter);
 
   function setInvoiceFor(bookingId: number, inv: InvoiceInfo | null) {
     setInvoicesByBooking((prev) => ({ ...prev, [bookingId]: inv }));
@@ -2636,13 +2853,15 @@ export default function AdminBookingsList({
         // and it had already dropped off the urgent panel because someone
         // acknowledged the note. Acknowledging means "seen", not "fixed".
         invoiceTotal={invoicesByBooking[ctx.booking.id]?.total ?? null}
-        invoiceSlot={
+        invoiceStatus={invoicesByBooking[ctx.booking.id]?.status ?? null}
+        renderInvoice={(live) => (
           <InvoiceHeaderActions
             booking={ctx.booking}
             cachedInvoice={invoicesByBooking[ctx.booking.id]}
             setInvoice={(inv) => setInvoiceFor(ctx.booking.id, inv)}
+            live={live}
           />
-        }
+        )}
       />
     ),
     // The summary moved into the header (renderQueueBar below), so the block
@@ -2653,7 +2872,7 @@ export default function AdminBookingsList({
       <AdminQueueBar
         ctx={ctx}
         heading={heading}
-        attentionCount={urgentLoaded ? urgentBookings.length : undefined}
+        attentionCount={urgentLoaded ? queueBookings.length : undefined}
         summary={
           <ListSummaryBar
             bookings={ctx.pageBookings}
@@ -2675,7 +2894,7 @@ export default function AdminBookingsList({
       ) : (
       <UrgentBookingsPanel
         embedded
-        bookings={urgentBookings}
+        bookings={queueBookings}
         loading={urgentLoaded === null}
         onAcknowledge={acknowledge}
         acknowledgingId={acknowledgingId}
@@ -2688,8 +2907,13 @@ export default function AdminBookingsList({
         ctx={ctx}
         changeNoteFor={(bookingId) => {
           const summary = urgentByBooking[bookingId];
-          return summary ? latestNoteText(summary) ?? "The booking changed after its invoice was created." : undefined;
+          // Decision 204: only a real unreviewed change -- a booking can be
+          // in the queue for a returned invoice alone.
+          return summary && reviewPending(summary)
+            ? latestNoteText(summary) ?? "The booking changed after its invoice was created."
+            : undefined;
         }}
+        invoiceReturnFor={(bookingId) => urgentByBooking[bookingId]?.invoice_returned_note ?? undefined}
         financialsFor={(booking) => {
           // Same source and same fallback as renderFinancialColumnCells above:
           // the live, commercial-ledger-aware figures once loaded, the frozen

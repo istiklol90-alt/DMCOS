@@ -36,6 +36,23 @@ def get_db():
 # Invoice
 # ---------------------------------------------------------------------------
 
+# Decision 202: money nobody has sent yet -- with reservations (Draft) or
+# with accounting (Ready for posting). Both stay on today's list.
+UNSENT_INVOICE_STATUSES = ("Draft", "Ready for posting")
+
+
+def list_returned_invoices(db: Session) -> list[Invoice]:
+    """Decision 204: invoices accounting has handed back to reservations
+    and nobody has re-sent yet. Structural, nothing to clear: a re-send
+    moves the invoice out of Draft, so it drops out of this list by
+    itself."""
+    return (
+        db.query(Invoice)
+        .filter(Invoice.status == "Draft", Invoice.return_note.isnot(None))
+        .all()
+    )
+
+
 def get_invoice(db: Session, invoice_id: int) -> Optional[Invoice]:
     return db.query(Invoice).filter(Invoice.id == invoice_id).first()
 
@@ -95,9 +112,9 @@ def _apply_invoice_filters(
                 Invoice.status != "Void", Invoice.booking_id.in_(urgent_ids)
             ) if urgent_ids else False
             query = query.filter(
-                or_(in_range, Invoice.status == "Draft", needs_attention)
+                or_(in_range, Invoice.status.in_(UNSENT_INVOICE_STATUSES), needs_attention)
                 if urgent_ids
-                else or_(in_range, Invoice.status == "Draft")
+                else or_(in_range, Invoice.status.in_(UNSENT_INVOICE_STATUSES))
             )
         else:
             # A historical window must still answer "what was issued that
@@ -308,6 +325,13 @@ def create_invoice_room_line(db: Session, **fields) -> InvoiceRoomLine:
     db.commit()
     db.refresh(row)
     return row
+
+
+def delete_invoice_room_lines(db: Session, invoice_id: int) -> None:
+    """Decision 202: only ever called on an invoice that has not been sent
+    to anyone (Draft), when the manager's hand-over re-freezes it."""
+    db.query(InvoiceRoomLine).filter(InvoiceRoomLine.invoice_id == invoice_id).delete()
+    db.commit()
 
 
 def list_invoice_room_lines(db: Session, invoice_id: int) -> list[InvoiceRoomLine]:

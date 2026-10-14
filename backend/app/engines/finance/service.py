@@ -142,7 +142,7 @@ def compute_booking_financials(booking: Booking) -> dict:
 _NON_BILLABLE_ROOM_STATUSES = {"Rejected", "Cancelled", "Cancellation Requested"}
 
 
-def compute_application_financials(db: Session, booking: Booking) -> dict:
+def compute_application_financials(db: Session, booking: Booking, room_financials=None) -> dict:
     """
     Stage 4 (multi-room booking applications): aggregates Net/Sale/Profit
     across every currently-billable room (BookingRoom) in an application,
@@ -195,8 +195,12 @@ def compute_application_financials(db: Session, booking: Booking) -> dict:
         }
 
     room_breakdowns = []
+    # Decision 202: `room_financials` lets the hand-over to accounting price
+    # each room from the commercial breakdown instead of the frozen booking
+    # columns. Default is unchanged.
+    price_room = room_financials or compute_booking_financials
     for room in billable:
-        fin = compute_booking_financials(room)
+        fin = price_room(room)
         guests = booking_service.list_guests_for_room(db, room.id)
         guest_names = ", ".join(f"{g.first_name} {g.last_name}" for g in guests) or None
         fin = {
@@ -413,10 +417,16 @@ def create_invoice_for_booking(db: Session, booking_id: int, created_by: int) ->
     # verification). financials["rooms"] is the exact same list just used
     # to compute the grand-total columns above, so the line items and the
     # total can never disagree with each other at least at this moment.
+    _write_invoice_room_lines(db, invoice.id, financials)
+
+    return _attach_review_notes(db, invoice)
+
+
+def _write_invoice_room_lines(db: Session, invoice_id: int, financials: dict) -> None:
     for room_fin in financials["rooms"]:
         repository.create_invoice_room_line(
             db,
-            invoice_id=invoice.id,
+            invoice_id=invoice_id,
             booking_room_id=room_fin["booking_room_id"],
             sequence_number=room_fin["sequence_number"],
             guest_names=room_fin["guest_names"],
@@ -432,8 +442,6 @@ def create_invoice_for_booking(db: Session, booking_id: int, created_by: int) ->
             sale_total=room_fin["sale_total"],
             profit=room_fin["profit"],
         )
-
-    return _attach_review_notes(db, invoice)
 
 
 def get_invoice(db: Session, invoice_id: int) -> Invoice:
@@ -807,22 +815,42 @@ def list_urgent_bookings(db: Session) -> list[dict]:
     currency, needed by formatSingleNote to format money) lets both
     panels share the exact same client-side formatting code.
     """
-    booking_ids = repository.list_urgent_booking_ids(db)
+    # Decision 204: a second reason to be in the queue -- the invoice was
+    # returned by accounting. Added here only, NOT to list_urgent_booking_ids,
+    # which also drives Invoices' own urgency and the "Mark as reviewed"
+    # acknowledgment; a return is cleared by re-sending, not by marking.
+    review_ids = repository.list_urgent_booking_ids(db)
+    review_set = set(review_ids)
+    returned = {inv.booking_id: inv for inv in repository.list_returned_invoices(db)}
+    booking_ids = review_ids + [bid for bid in returned if bid not in review_set]
     result = []
     for booking_id in booking_ids:
         try:
             booking = booking_service.get_booking(db, booking_id)
         except ValueError:
             continue
-        notes = repository.list_review_notes_by_booking(db, booking_id)
-        latest = notes[-1] if notes else None
+        pending = booking_id in review_set
+        latest = None
+        if pending:
+            notes = repository.list_review_notes_by_booking(db, booking_id)
+            latest = notes[-1] if notes else None
+        inv = returned.get(booking_id)
         result.append({
             "booking_id": booking_id,
             "booking_number": booking.booking_number,
             "currency": booking.currency,
             "latest_note": latest,
+            "review_pending": pending,
+            "invoice_returned_note": inv.return_note if inv else None,
+            "invoice_returned_at": inv.returned_at if inv else None,
+            "claimed_by": booking.claimed_by,
         })
-    result.sort(key=lambda r: (r["latest_note"].created_at if r["latest_note"] else None) or datetime.min, reverse=True)
+
+    def newest(r: dict) -> datetime:
+        stamps = [r["latest_note"].created_at if r["latest_note"] else None, r["invoice_returned_at"]]
+        return max((s.replace(tzinfo=None) for s in stamps if s), default=datetime.min)
+
+    result.sort(key=newest, reverse=True)
     return result
 
 
@@ -956,6 +984,137 @@ def void_invoice(db: Session, invoice_id: int, voided_by: int) -> Invoice:
     return _attach_review_notes(db, updated)
 
 
+def _ledger_room_financials(db: Session, room) -> dict:
+    """
+    Decision 202: one room's figures as its commercial breakdown now states
+    them -- cost AND price, manual corrections included -- in exactly the
+    shape compute_booking_financials returns, so the invoice columns and the
+    frozen room lines keep their meaning.
+
+    The project owner reversed half of Decision 178 for this step: the
+    manager may correct the agent's price too, but the agent only ever sees
+    the new figure on an invoice accounting has posted. Until then every
+    agent-facing surface keeps the price they booked at (the frozen
+    BookingRoom columns are never touched here).
+
+    A room whose breakdown says exactly what the frozen columns say returns
+    compute_booking_financials(room) itself, byte for byte -- an untouched
+    booking is invoiced exactly as before, including the "not computed"
+    profit of pre-Decision-069 rooms.
+
+    How the ledger maps onto the invoice's columns (all identities kept:
+    total = subtotal - discount + commission + tax, subtotal = room_net +
+    transfer, profit = sale - net):
+      transfer / tax      -> their own price lines
+      room_sale           -> every other price line (room, meal, CIP,
+                             excursion -- the invoice has no extras column)
+      discount            -> the room's frozen exclusive discount
+      commission          -> what is left, so the identity holds
+    """
+    original = compute_booking_financials(room)
+    lines = get_or_seed_commercial_lines(db, room.id)
+    if not lines:
+        return original
+    cost = {l.category: (l.base_cost or 0.0) + (l.adjustment_cost or 0.0) for l in lines}
+    price = {l.category: (l.base_price or 0.0) + (l.adjustment_price or 0.0) for l in lines}
+    net_total = sum(cost.values())
+    sale_total = sum(price.values())
+
+    def cents(value: float) -> int:
+        return round(value * 100)
+
+    if cents(net_total) == cents(original["net_total"]) and cents(sale_total) == cents(original["sale_total"]):
+        return original
+
+    transfer_price = price.get("transfer")
+    tax_price = price.get("tax")
+    tax_cost = cost.get("tax")
+    room_sale = sale_total - (transfer_price or 0.0) - (tax_price or 0.0)
+    room_net = net_total - (tax_cost or 0.0) - (transfer_price or 0.0)
+    profit = sale_total - net_total
+    discount = room.agent_exclusive_discount_amount
+    commission = profit - ((tax_price or 0.0) - (tax_cost or 0.0)) + (discount or 0.0)
+    return {
+        "booking_id": original["booking_id"],
+        "currency": original["currency"],
+        "room_net": room_net,
+        "room_sale": room_sale,
+        "transfer_amount": transfer_price,
+        "tax_amount": tax_price,
+        "discount_amount": discount,
+        "commission_amount": commission,
+        "markup_computed": True,
+        "subtotal": room_net + (transfer_price or 0.0),
+        "net_total": net_total,
+        "sale_total": sale_total,
+        "profit": profit,
+    }
+
+
+def submit_invoice_for_posting(db: Session, booking_id: int, submitted_by: int) -> Invoice:
+    """
+    Decision 202: the reservations manager has checked the amounts and
+    hands the invoice to accounting.
+
+    Creates the invoice if the booking has none yet (the claim-time draft
+    is best-effort and can be missing). Then re-freezes it from the
+    commercial breakdown as it stands now -- the draft was frozen when the
+    booking was claimed, before any correction -- and moves it Draft ->
+    "Ready for posting". A hotel confirmation number is deliberately NOT
+    required: the owner sometimes invoices urgently before the hotel
+    replies.
+
+    Nothing reaches the agent here. The invoice stays invisible to them
+    (they only ever see an Issued one) until accounting posts it.
+    """
+    booking = booking_service.get_booking(db, booking_id)
+    if booking.status in CANCELLED_BOOKING_STATUSES:
+        raise ValueError(f"Cannot send an invoice to accounting for a booking with status '{booking.status}'")
+    invoice = repository.get_invoice_by_booking(db, booking_id)
+    if invoice is None:
+        invoice = create_invoice_for_booking(db, booking_id, created_by=submitted_by)
+    if invoice.status == "Ready for posting":
+        raise ValueError(f"Invoice {invoice.invoice_number} has already been sent to accounting")
+    validators.validate_invoice_draft(invoice)
+
+    financials = compute_application_financials(
+        db, booking, room_financials=lambda room: _ledger_room_financials(db, room)
+    )
+    repository.delete_invoice_room_lines(db, invoice.id)
+    _write_invoice_room_lines(db, invoice.id, financials)
+    updated = repository.update_invoice(
+        db, invoice,
+        currency=financials["currency"],
+        subtotal=financials["subtotal"],
+        discount=financials["discount_amount"],
+        commission=financials["commission_amount"],
+        tax=financials["tax_amount"],
+        total=financials["sale_total"],
+        status="Ready for posting",
+        submitted_for_posting_by=submitted_by,
+        submitted_for_posting_at=datetime.utcnow(),
+    )
+    return _attach_review_notes(db, updated)
+
+
+def return_invoice_to_reservations(db: Session, invoice_id: int, note: str, returned_by: int) -> Invoice:
+    """Decision 202: accounting hands a Ready-for-posting invoice back to
+    the reservations manager (Ready for posting -> Draft) with a note.
+    The amounts stay as they were sent; the next hand-over re-freezes
+    them."""
+    invoice = get_invoice(db, invoice_id)
+    validators.validate_invoice_ready_for_posting(invoice)
+    validators.validate_reason(note)
+    updated = repository.update_invoice(
+        db, invoice,
+        status="Draft",
+        returned_by=returned_by,
+        returned_at=datetime.utcnow(),
+        return_note=note.strip(),
+    )
+    return _attach_review_notes(db, updated)
+
+
 def approve_and_send_invoice(db: Session, invoice_id: int, approved_by: int) -> Invoice:
     """
     Decision 081 (Stage B): "Одобрить и отправить" -- the single
@@ -995,7 +1154,9 @@ def approve_and_send_invoice(db: Session, invoice_id: int, approved_by: int) -> 
     source.
     """
     invoice = get_invoice(db, invoice_id)
-    validators.validate_invoice_draft(invoice)
+    # Decision 202: was validate_invoice_draft. Accounting now posts only
+    # an invoice the reservations manager has sent over.
+    validators.validate_invoice_ready_for_posting(invoice)
     had_flag = len(invoice.review_notes) > 0
 
     agent = db.query(User).filter(User.id == invoice.agent_id).first()
@@ -1010,11 +1171,9 @@ def approve_and_send_invoice(db: Session, invoice_id: int, approved_by: int) -> 
         "hotel_name": hotel.hotel_name,
         "booking_number": booking.booking_number,
         "issue_date": invoice.issue_date,
-        "subtotal": invoice.subtotal,
-        "discount": invoice.discount,
-        "commission": invoice.commission,
-        "tax": invoice.tax,
-        "total": invoice.total,
+        # Decision 203: agent-facing charge lines only -- no net, no commission.
+        "lines": agent_invoice_lines(db, invoice),
+        "total": f"{invoice.total:.2f}",
         "currency": invoice.currency,
         "agent_name": agent.name,
         "agent_email": agent.email,
@@ -1494,17 +1653,59 @@ def build_voucher_download_text(voucher: Voucher) -> str:
     return "\n".join(lines)
 
 
+def _money(value: float, currency: str) -> str:
+    return f"{value:.2f} {currency}"
+
+
+def agent_invoice_lines(db: Session, invoice: Invoice) -> list[tuple[str, str]]:
+    """
+    Decision 203: the charge lines an agent may see on their own invoice --
+    what they pay for, never what it costs us.
+
+    The invoice's own subtotal/discount/commission columns are an internal
+    decomposition: subtotal is our NET cost and commission is our MARGIN.
+    Both used to be printed on the agent's download and email ("Сумма номера
+    (нетто)", "Комиссия"), handing every agent our buying price and our
+    mark-up. Owner, 2026-10-14: remove them. The exclusive-agent discount
+    is not printed either -- it is already inside the room price, so a
+    separate "Скидка" line beside it would read as a second reduction.
+
+    Built from the invoice's frozen per-room lines (room price, transfer,
+    tax -- they sum to the room's sale total by construction). An invoice
+    that predates those lines falls back to total-minus-tax, which is the
+    same agent-facing figure without the split. Every figure is the agent's
+    price; the lines always add up to invoice.total.
+    """
+    currency = invoice.currency
+    room_lines = repository.list_invoice_room_lines(db, invoice.id)
+    rows: list[tuple[str, str]] = []
+    if room_lines:
+        many = len(room_lines) > 1
+        for line in room_lines:
+            prefix = f"Номер {line.sequence_number}" if many else ""
+            label = (lambda name: f"{prefix} — {name}" if many else name)
+            if many and line.guest_names:
+                rows.append((prefix, line.guest_names))
+            rows.append((label("Проживание"), _money(line.room_sale, currency)))
+            if line.transfer_amount:
+                rows.append((label("Трансфер"), _money(line.transfer_amount, currency)))
+            if line.tax_amount:
+                rows.append((label("Налог"), _money(line.tax_amount, currency)))
+    else:
+        tax = invoice.tax or 0.0
+        rows.append(("Проживание и услуги", _money(invoice.total - tax, currency)))
+        if tax:
+            rows.append(("Налог", _money(tax, currency)))
+    return rows
+
+
 def build_invoice_download_text(db: Session, invoice: Invoice) -> str:
     """
     Decision 102: only ever reachable for a status=="Issued" invoice
     (the caller/endpoint enforces this, matching the existing Draft-
     invisibility principle -- Draft content is never exposed to an
-    agent through any path). Same line items send_invoice_email has
-    already been putting in the agent's own inbox since Decision 081 --
-    Комиссия/Скидка on an agent's OWN invoice is their bill's own
-    breakdown, not the internal Profit framing Decision 102's list/
-    detail-view fix was actually about; reuses that already-approved
-    content shape here, not a more revealing new one.
+    agent through any path). Decision 203: charge lines come from
+    agent_invoice_lines -- no net cost, no commission.
     """
     booking = booking_service.get_booking(db, invoice.booking_id)
     hotel = hotel_service.get_hotel(db, invoice.hotel_id)
@@ -1514,12 +1715,10 @@ def build_invoice_download_text(db: Session, invoice: Invoice) -> str:
         f"Отель: {hotel.hotel_name}",
         f"Бронирование: {booking.booking_number}",
         f"Дата выставления: {invoice.issue_date.isoformat()}",
-        f"Сумма номера (нетто): {invoice.subtotal} {invoice.currency}",
-        f"Скидка: {invoice.discount if invoice.discount is not None else '—'} {invoice.currency}",
-        f"Комиссия: {invoice.commission if invoice.commission is not None else '—'} {invoice.currency}",
-        f"Налог: {invoice.tax if invoice.tax is not None else '—'} {invoice.currency}",
-        f"ИТОГО К ОПЛАТЕ: {invoice.total} {invoice.currency}",
+        "",
     ]
+    lines += [f"{label}: {value}" for label, value in agent_invoice_lines(db, invoice)]
+    lines += ["", f"ИТОГО К ОПЛАТЕ: {_money(invoice.total, invoice.currency)}"]
     return "\n".join(lines)
 
 
@@ -1604,6 +1803,7 @@ def get_booking_commercial_summary(db: Session, booking_id: int) -> dict:
     room_entries = []
     net_total = 0.0
     sale_total = 0.0
+    ledger_sale_total = 0.0
     has_manual_adjustment = False
 
     for room in rooms:
@@ -1645,10 +1845,18 @@ def get_booking_commercial_summary(db: Session, booking_id: int) -> dict:
         # entries, so a room whose ledger is missing a seeded category still
         # reports the full price the agent was quoted.
         room_sale = compute_booking_financials(room)["sale_total"]
+        # Decision 202: the price the breakdown itself states, corrections
+        # included -- what the invoice will carry once it is handed over.
+        room_ledger_sale = (
+            sum((line.base_price or 0.0) + (line.adjustment_price or 0.0) for line in persisted)
+            if persisted
+            else room_sale
+        )
         billable = room.status not in _NON_BILLABLE_ROOM_STATUSES
         if billable:
             net_total += room_net
             sale_total += room_sale
+            ledger_sale_total += room_ledger_sale
 
         room_entries.append(
             {
@@ -1669,6 +1877,7 @@ def get_booking_commercial_summary(db: Session, booking_id: int) -> dict:
         "rooms": room_entries,
         "net_total": net_total,
         "sale_total": sale_total,
+        "ledger_sale_total": ledger_sale_total,
         "has_manual_adjustment": has_manual_adjustment,
         # Decision 191: the hotel's single figure for the whole application,
         # and the gap against our own incoming total. Computed here so every

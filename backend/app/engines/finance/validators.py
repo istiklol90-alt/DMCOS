@@ -22,6 +22,17 @@ def validate_invoice_issued(invoice) -> None:
         )
 
 
+def validate_invoice_ready_for_posting(invoice) -> None:
+    """Decision 202: accounting posts and sends only what the reservations
+    manager has handed over. A Draft has not been checked by reservations
+    yet; Issued and Void are finished."""
+    if invoice.status != "Ready for posting":
+        raise ValueError(
+            f"Invoice {invoice.id} is not ready for posting (status={invoice.status}) -- "
+            "the reservations manager has to send it to accounting first"
+        )
+
+
 def validate_invoice_draft(invoice) -> None:
     """approve_and_send_invoice only applies to a Draft invoice --
     already-Issued means it was already approved and sent, Void means
