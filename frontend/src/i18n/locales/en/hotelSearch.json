@@ -103,7 +103,10 @@
     "infantsLabel_one": "{{count}} infant",
     "infantsLabel_other": "{{count}} infants",
     "addToTrip": "Add to trip",
-    "addedToTrip": "Added ✓"
+    "addedToTrip": "Added ✓",
+    "copyOffer": "Copy offer",
+    "copied": "Copied ✓",
+    "copyFailed": "Could not copy — select the text manually"
   },
   "hotelCard": {
     "noActiveContract": "No active contract",
@@ -181,7 +184,11 @@
     "invalidFlightDate": "Flight date is not valid — check the year",
     "flightTooFarFromStay": "The flight is more than a year from the trip dates ({{days}} days) — that isn't possible and the application will be refused. Check the year.",
     "flightReversed": "The departure flight is earlier than the arrival flight — check the dates.",
-    "flightFarFromStayWarning": "Note: the flight date is {{days}} days from the trip dates. Check it isn't a typo."
+    "flightFarFromStayWarning": "Note: the flight date is {{days}} days from the trip dates. Check it isn't a typo.",
+    "copyOne": "Copy offer",
+    "copyAll": "Copy all rooms ({{count}})",
+    "copied": "Copied ✓",
+    "copyFailed": "Could not copy"
   },
   "page": {
     "accessDenied": "⛔ Access denied! Agents only.",
@@ -217,5 +224,20 @@
     "searchErrorPrefix": "Failed to load data:",
     "noHotelsFound": "No hotels found.",
     "yearsShort": "y.o."
+  },
+  "offer": {
+    "nights_one": "{{count}} night",
+    "nights_other": "{{count}} nights",
+    "roomType": "Room type",
+    "meal": "Meal plan",
+    "accommodation": "Accommodation",
+    "transfer": "Transfer",
+    "transferFree": "included free",
+    "noTransfer": "no transfer",
+    "taxDefault": "Mandatory tax",
+    "total": "Total",
+    "roomTitle": "Room {{n}}",
+    "roomTotal": "Total for room {{n}}",
+    "grandTotal": "Total for all rooms"
   }
 }

@@ -103,7 +103,10 @@
     "infantsLabel_many": "{{count}} младенцев",
     "infantsLabel_other": "{{count}} младенцев",
     "addToTrip": "Добавить в поездку",
-    "addedToTrip": "Добавлено ✓"
+    "addedToTrip": "Добавлено ✓",
+    "copyOffer": "Скопировать предложение",
+    "copied": "Скопировано ✓",
+    "copyFailed": "Не удалось скопировать — выделите текст вручную"
   },
   "hotelCard": {
     "noActiveContract": "Нет активного контракта",
@@ -187,7 +190,11 @@
     "invalidFlightDate": "Дата рейса указана неверно — проверьте год",
     "flightTooFarFromStay": "Рейс отличается от дат поездки больше чем на год ({{days}} дн.) — так не бывает, заявка не будет принята. Проверьте год.",
     "flightReversed": "Рейс вылета раньше рейса прилёта — проверьте даты.",
-    "flightFarFromStayWarning": "Внимание: дата рейса отличается от дат поездки на {{days}} дн. Проверьте, что это не опечатка."
+    "flightFarFromStayWarning": "Внимание: дата рейса отличается от дат поездки на {{days}} дн. Проверьте, что это не опечатка.",
+    "copyOne": "Скопировать предложение",
+    "copyAll": "Скопировать все номера ({{count}})",
+    "copied": "Скопировано ✓",
+    "copyFailed": "Не удалось скопировать"
   },
   "page": {
     "accessDenied": "⛔ Доступ запрещен! Только для агентов.",
@@ -223,5 +230,22 @@
     "searchErrorPrefix": "Не удалось загрузить данные:",
     "noHotelsFound": "Отели не найдены.",
     "yearsShort": "лет"
+  },
+  "offer": {
+    "nights_one": "{{count}} ночь",
+    "nights_few": "{{count}} ночи",
+    "nights_many": "{{count}} ночей",
+    "nights_other": "{{count}} ночей",
+    "roomType": "Тип номера",
+    "meal": "Питание",
+    "accommodation": "Проживание",
+    "transfer": "Трансфер",
+    "transferFree": "включён бесплатно",
+    "noTransfer": "без трансфера",
+    "taxDefault": "Обязательный налог",
+    "total": "Итого",
+    "roomTitle": "Номер {{n}}",
+    "roomTotal": "Итого по номеру {{n}}",
+    "grandTotal": "Итого по всем номерам"
   }
 }

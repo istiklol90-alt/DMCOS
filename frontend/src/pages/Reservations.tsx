@@ -748,7 +748,9 @@ const STATUS_CLASSES: Record<string, string> = {
   Completed: "bg-success/15 text-success",
 };
 
-function StatusBadge({ status }: { status: string }) {
+// Exported for the agent home page's "next arrivals" -- one badge, so the
+// same status never looks different on two screens.
+export function StatusBadge({ status }: { status: string }) {
   const { t } = useTranslation("reservations");
   return (
     <span

@@ -20,30 +20,47 @@
   "hero": {
     "greeting": "Снова здравствуйте, {{name}}",
     "title": "Куда в этот раз?",
-    "subtitle": "Реальные тарифы, сезоны и спецпредложения уже учтены — ищите, рассчитывайте и бронируйте в одном месте."
-  },
-  "search": {
-    "searchButton": "Найти отели"
-  },
-  "trust": {
-    "bestRate": "Гарантия лучшей цены",
-    "freeTransfers": "Трансфер включён",
-    "securePayments": "Безопасные платежи",
-    "support": "Поддержка 24/7"
+    "subtitle": "Реальные тарифы, сезоны и спецпредложения уже учтены — ищите, рассчитывайте и бронируйте в одном месте.",
+    "searchButton": "Найти отели",
+    "bookingsButton": "Мои бронирования"
   },
   "quickActions": {
     "title": "Быстрые действия",
     "createBooking": "Создать бронирование",
     "myBookings": "Мои бронирования",
-    "outstandingInvoices": "Неоплаченные счета",
-    "agentStatement": "Отчёт агента",
     "downloadReports": "Скачать отчёты",
-    "comingSoon": "Скоро"
+    "comingSoon": "Скоро",
+    "createBookingHint": "Поиск отелей, цены и трансфер",
+    "myBookingsHint": "Статусы, гости, рейсы, изменения",
+    "documents": "Счета и ваучеры",
+    "documentsHint": "Скачиваются в карточке каждой брони"
   },
   "featured": {
-    "title": "Рекомендуемые отели"
+    "title": "Наши отели",
+    "cta": "Смотреть цены"
   },
-  "bookingsSection": {
-    "title": "Мои бронирования"
+  "stats": {
+    "arrivals": "Заезды в ближайшие {{days}} дней",
+    "pending": "Ждут подтверждения",
+    "confirmed": "Подтверждённые поездки"
+  },
+  "upcoming": {
+    "title": "Ближайшие заезды",
+    "viewAll": "Все бронирования",
+    "empty": "В ближайшие {{days}} дней заездов нет",
+    "failed": "Не удалось загрузить ваши бронирования",
+    "more": "и ещё {{count}} — в «Мои бронирования»",
+    "nights_one": "{{count}} ночь",
+    "nights_few": "{{count}} ночи",
+    "nights_many": "{{count}} ночей",
+    "nights_other": "{{count}} ночей",
+    "guests_one": "{{count}} гость",
+    "guests_few": "{{count}} гостя",
+    "guests_many": "{{count}} гостей",
+    "guests_other": "{{count}} гостей"
+  },
+  "bookingsPage": {
+    "title": "Мои бронирования",
+    "back": "На главную"
   }
 }

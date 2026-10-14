@@ -261,7 +261,114 @@ type CartRoom = {
   transferDeclined: boolean;
   currency: string | null;
   grandTotal: number | null;
+  // Copy-offer text (the manager or agent pastes it into WhatsApp): the
+  // parts of grandTotal, and the hotel line. Display-only, never sent to the
+  // backend; optional so a room added before this existed still renders.
+  hotelStars?: number | null;
+  hotelLocation?: string;
+  nights?: number;
+  roomTotal?: number | null;
+  transferTotal?: number | null;
+  taxLabel?: string | null;
+  taxTotal?: number | null;
 };
+
+// ---------------------------------------------------------------------------
+// Copy offer -- one click turns a priced room (or the whole trip) into a
+// plain message for WhatsApp, instead of retyping each figure by hand. Built
+// only from figures already on screen (the agent's own price, the chosen
+// transfer, the tax), so the text can never quote something the screen does
+// not. *text* is WhatsApp's bold.
+// ---------------------------------------------------------------------------
+
+function offerMoney(amount: number, currency: string | null, lang: string): string {
+  const figure = amount.toLocaleString(localeOf(lang), { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return currency ? `${currency} ${figure}` : figure;
+}
+
+function offerDate(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return d && m && y ? `${d}.${m}.${y}` : iso;
+}
+
+// The lines describing one room, without a title or total line. No blank
+// lines inside a room (owner, 2026-10-14) -- blank lines only separate rooms.
+function offerRoomLines(t: TFunction, lang: string, room: CartRoom): string[] {
+  const head = `*${room.hotelName}*${room.hotelStars ? ` ${room.hotelStars}★` : ""}${
+    room.hotelLocation ? `, ${room.hotelLocation}` : ""
+  }`;
+  const dates = `${offerDate(room.arrivalDate)} – ${offerDate(room.departureDate)}${
+    room.nights ? ` · ${t("offer.nights", { count: room.nights })}` : ""
+  }`;
+  const lines = [
+    head,
+    dates,
+    formatSearchOccupancy(t, { adults: room.adults, children: room.children, infants: room.infants }, room.childAges),
+    `${t("offer.roomType")}: ${room.roomTypeName}`,
+    `${t("offer.meal")}: ${room.mealPlanLabel}`,
+  ];
+  if (room.roomTotal != null) lines.push(`${t("offer.accommodation")}: ${offerMoney(room.roomTotal, room.currency, lang)}`);
+  if (room.transferType && room.transferTotal != null) {
+    const price = room.transferTotal === 0 ? t("offer.transferFree") : offerMoney(room.transferTotal, room.currency, lang);
+    lines.push(`${t("offer.transfer")}: ${room.transferName ?? room.transferType} — ${price}`);
+  } else if (room.transferDeclined) {
+    lines.push(`${t("offer.transfer")}: ${t("offer.noTransfer")}`);
+  }
+  if (room.taxTotal) lines.push(`${room.taxLabel ?? t("offer.taxDefault")}: ${offerMoney(room.taxTotal, room.currency, lang)}`);
+  return lines;
+}
+
+// One room: its lines and a bold total. Several rooms: each numbered, each
+// with its own total, then one grand total -- per currency, never summed
+// across currencies (there is no exchange rate in the system).
+function buildOfferText(t: TFunction, lang: string, rooms: CartRoom[]): string {
+  if (rooms.length === 1) {
+    const room = rooms[0];
+    const lines = offerRoomLines(t, lang, room);
+    if (room.grandTotal != null) lines.push(`*${t("offer.total")}: ${offerMoney(room.grandTotal, room.currency, lang)}*`);
+    return lines.join("\n");
+  }
+  const blocks: string[] = [];
+  const byCurrency = new Map<string, number>();
+  rooms.forEach((room, i) => {
+    const lines = [`*${t("offer.roomTitle", { n: i + 1 })}*`, ...offerRoomLines(t, lang, room)];
+    if (room.grandTotal != null) {
+      lines.push(`*${t("offer.roomTotal", { n: i + 1 })}: ${offerMoney(room.grandTotal, room.currency, lang)}*`);
+      const key = room.currency ?? "";
+      byCurrency.set(key, (byCurrency.get(key) ?? 0) + room.grandTotal);
+    }
+    blocks.push(lines.join("\n"));
+  });
+  const grand = [...byCurrency.entries()].map(([cur, sum]) => offerMoney(sum, cur || null, lang)).join(" + ");
+  return [...blocks, "———", `*${t("offer.grandTotal")}: ${grand}*`].join("\n\n");
+}
+
+// Clipboard API first; the old execCommand path for a page served over
+// plain http, where navigator.clipboard does not exist.
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fall through to the legacy path
+  }
+  try {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(area);
+    return ok;
+  } catch {
+    return false;
+  }
+}
 
 type ContractMealPlan = {
   id: number;
@@ -1620,6 +1727,8 @@ function RoomTypeCard({
   hotelId,
   hotelName,
   hotelCountry,
+  hotelStars,
+  hotelLocation,
   onAddToTrip,
 }: {
   rt: RoomTypeResult;
@@ -1645,6 +1754,8 @@ function RoomTypeCard({
   hotelId: number;
   hotelName: string;
   hotelCountry: string;
+  hotelStars?: number | null;
+  hotelLocation?: string;
   onAddToTrip: (room: CartRoom) => { ok: boolean; error?: string };
 }) {
   const { t, i18n: i18nInstance } = useTranslation("hotelSearch");
@@ -1659,6 +1770,7 @@ function RoomTypeCard({
   // check still runs server-side on submit).
   const [addedToTripAt, setAddedToTripAt] = useState<number | null>(null);
   const [addToTripError, setAddToTripError] = useState<string | null>(null);
+  const [copiedAt, setCopiedAt] = useState<number | null>(null);
 
   // If a transfer is mandatory (transferRequired) and there's genuinely
   // only one option to choose from, there's no real decision for the
@@ -1746,15 +1858,17 @@ function RoomTypeCard({
   // checked, so the cart carried transferType=null with no way for the
   // agent to tell which transfer, if any, would be booked) -- the single-
   // option case never hits this block since it's auto-selected above.
-  function handleAddToTrip() {
+  // The selected meal plan + transfer as a trip room -- shared by "Add to
+  // trip" and "Copy offer", so the copied text describes exactly what would
+  // be added. null (with the reason shown) when the choice is incomplete.
+  function buildSelectedRoom(): CartRoom | null {
     setAddToTripError(null);
-    if (!selectedMeal?.price) return;
+    if (!selectedMeal?.price) return null;
     if (transferRequired && !selectedTransferType) {
       setAddToTripError(t("roomTypeCard.selectTransferFirst"));
-      return;
+      return null;
     }
-
-    const room: CartRoom = {
+    return {
       key: `${hotelId}-${rt.id}-${selectedMealCode}-${Date.now()}`,
       hotelId,
       hotelName,
@@ -1774,13 +1888,35 @@ function RoomTypeCard({
       transferDeclined: transferOptions.length > 0 && selectedTransferType === null,
       currency: selectedMeal.price.currency,
       grandTotal,
+      hotelStars,
+      hotelLocation,
+      nights: selectedMeal.price.nights,
+      roomTotal: selectedMeal.agentPrice?.agent_room_total ?? null,
+      transferTotal: selectedTransferTotal,
+      taxLabel: mandatoryTax?.label ?? null,
+      taxTotal: mandatoryTax?.total ?? null,
     };
+  }
 
+  function handleAddToTrip() {
+    const room = buildSelectedRoom();
+    if (!room) return;
     const result = onAddToTrip(room);
     if (result.ok) {
       setAddedToTripAt(Date.now());
     } else {
       setAddToTripError(result.error ?? null);
+    }
+  }
+
+  async function handleCopyOffer() {
+    const room = buildSelectedRoom();
+    if (!room) return;
+    if (await copyText(buildOfferText(t, lang, [room]))) {
+      setCopiedAt(Date.now());
+      setTimeout(() => setCopiedAt(null), 2000);
+    } else {
+      setAddToTripError(t("roomTypeCard.copyFailed"));
     }
   }
 
@@ -2138,13 +2274,22 @@ function RoomTypeCard({
                   single-room booking button was removed (project owner's
                   explicit instruction, 2026-07-27): having two separate
                   ways to book was confusing, so only add-to-cart remains. */}
-              <div className="mt-3">
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                 <button
                   type="button"
                   onClick={handleAddToTrip}
-                  className="w-full rounded-xl bg-ink px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5"
+                  className="w-full rounded-xl bg-ink px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 sm:flex-1"
                 >
                   {addedToTripAt ? t("roomTypeCard.addedToTrip") : t("roomTypeCard.addToTrip")}
+                </button>
+                {/* One click instead of retyping room, meal, transfer and
+                    every figure into WhatsApp by hand. */}
+                <button
+                  type="button"
+                  onClick={handleCopyOffer}
+                  className="w-full rounded-xl border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-sand sm:w-auto"
+                >
+                  {copiedAt ? t("roomTypeCard.copied") : t("roomTypeCard.copyOffer")}
                 </button>
               </div>
               {addToTripError && (
@@ -2374,6 +2519,8 @@ function HotelCard({
                   hotelId={hotel.id}
                   hotelName={hotel.hotel_name}
                   hotelCountry={hotel.country}
+                  hotelStars={hotel.star_rating}
+                  hotelLocation={location}
                   onAddToTrip={onAddToTrip}
                 />
               ))}
@@ -2423,10 +2570,19 @@ function CartPanel({
   // list/remove/checkout logic is shared, untouched either way.
   variant?: "floating" | "pinned";
 }) {
-  const { t } = useTranslation("hotelSearch");
+  const { t, i18n: i18nInstance } = useTranslation("hotelSearch");
   const [open, setOpen] = useState(false);
   const pinned = variant === "pinned";
   const showList = pinned || open;
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+
+  // Every room in the trip as one message: numbered rooms, each with its own
+  // total, then the grand total.
+  async function handleCopyAll() {
+    const ok = await copyText(buildOfferText(t, i18nInstance.language, cart));
+    setCopyState(ok ? "copied" : "failed");
+    setTimeout(() => setCopyState("idle"), 2000);
+  }
 
   const panel = (
     <div className="overflow-hidden rounded-2xl border border-ink/10 bg-white shadow-xl">
@@ -2460,6 +2616,21 @@ function CartPanel({
         >
           {t("cart.checkout")}
         </button>
+        {cart.length > 0 && (
+          <button
+            type="button"
+            onClick={handleCopyAll}
+            className="mt-2 w-full rounded-xl border border-ink/15 bg-white px-5 py-2 text-sm font-medium text-ink transition-colors hover:bg-sand"
+          >
+            {copyState === "copied"
+              ? t("cart.copied")
+              : copyState === "failed"
+                ? t("cart.copyFailed")
+                : cart.length === 1
+                  ? t("cart.copyOne")
+                  : t("cart.copyAll", { count: cart.length })}
+          </button>
+        )}
       </div>
 
       {showList &&

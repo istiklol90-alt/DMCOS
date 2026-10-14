@@ -73,7 +73,9 @@ function getRoleLabel(role: string, t: (key: string) => string): string {
 
 interface AgentTopNavProps {
   user: SessionUser;
-  active: "search" | "dashboard";
+  // "home" highlights nothing: the home page is not "Bookings" (it used to
+  // light that item up while showing the welcome page).
+  active: "search" | "home" | "bookings";
 }
 
 // Routing fix (2026-07-29): navigation is now internal -- both consumers
@@ -103,6 +105,13 @@ export default function AgentTopNav({ user, active }: AgentTopNavProps) {
     navigate("/agent-dashboard");
   }
 
+  // The agent's bookings list -- its own screen since 2026-10-14, no longer
+  // the foot of the home page. Invoices and vouchers live inside each
+  // booking, so "Finance" leads here too.
+  function onNavigateBookings() {
+    navigate("/agent-dashboard?view=bookings");
+  }
+
   const navItemClass = (isActive: boolean) =>
     `appearance-none border-0 bg-transparent rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
       isActive ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5 hover:text-white"
@@ -116,13 +125,13 @@ export default function AgentTopNav({ user, active }: AgentTopNavProps) {
           {t("nav.search")}
         </span>
       </button>
-      <button type="button" onClick={onNavigateDashboard} className={navItemClass(active === "dashboard")}>
+      <button type="button" onClick={onNavigateBookings} className={navItemClass(active === "bookings")}>
         <span className="inline-flex items-center gap-1.5">
           <IconCheck className="h-4 w-4" />
           {t("nav.bookings")}
         </span>
       </button>
-      <button type="button" onClick={onNavigateDashboard} className={navItemClass(false)}>
+      <button type="button" onClick={onNavigateBookings} className={navItemClass(false)}>
         <span className="inline-flex items-center gap-1.5">
           <IconSend className="h-4 w-4" />
           {t("nav.finance")}
