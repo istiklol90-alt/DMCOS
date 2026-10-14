@@ -8256,7 +8256,7 @@ One new read-only endpoint, `GET /booking-engine/bookings/queue-counts`, returni
 
 **"Unassigned" is not a new rule.** It is the predicate `_apply_booking_filters` already uses for Decision 164's carry-forward ("a booking nobody has taken on carries forward to today"), lifted into one shared expression so the carry-forward and the queue cannot drift apart. Decision 177 established that "nobody has taken this" is about the owner, not about the status being Pending; the same reading applies here.
 
-**No date scope on queue counts, deliberately.** A booking nobody owns is unowned regardless of the day it was created. The screen drops its date range while a queue is selected, the same way the booking-number search already overrides it (Decision 125).
+**No date scope on queue counts, deliberately.** A booking nobody owns is unowned regardless of the day it was created. The screen drops its date range while a queue is selected, the same way the booking-number search already overrides it (Decision 125). **Superseded by Decision 208 (owner, same day): the dates now apply in every queue; the UI counts tabs through `/bookings/count` and no longer calls `/bookings/queue-counts`.**
 
 Not changed: the database schema (no column, no index, no migration), `BookingResponse`, the claim endpoint, any pricing/allotment/cancellation logic, any other engine.
 
@@ -8298,11 +8298,11 @@ All write scenarios ran against an **isolated contour**: the real backend code s
 - **Access and failure:** no token 401, bad token 401, agent 403, malformed filter 422, `/bookings/{id}` and `/bookings/count` still resolve.
 - **In the browser, same contour:** 28 checks — each tab's number against SQL, tab = rows = footer in every queue, counts following a status filter, the owner filter reaching the server, a Needs-attention row leading to its booking, and a failed counts request showing no number and a Retry (never a 0) while the list keeps working.
 
-Status: **Built and verified.** `tsc -b` at the 2-error dead-file baseline, `vite build` clean, `oxlint` 0 errors. Not committed at the time of writing.
+Status: **Built and verified.** `tsc -b` at the 2-error dead-file baseline, `vite build` clean, `oxlint` 0 errors. Not committed at the time of writing; committed in ceb6bba.
 
 ---
 
-# Decision 201 — BUILT (not yet committed)
+# Decision 201 — BUILT
 
 Date: 2026-10-13
 
@@ -8350,7 +8350,207 @@ Reason: project owner — requirement above; plan presented and B1 approved befo
 
 Approved By: Daler (2026-10-13), provisionally, pending his own review.
 
-Status: **Built and verified as described; uncommitted.**
+Status: **Built and verified as described; committed (ceb6bba).** `view` later moved from Bookings to the Transfer list (Decision 210); filters/queue/sort/page are kept by Decision 207.
+
+---
+
+# Decision 202 — BUILT
+
+Date: 2026-10-14
+
+Decision: **An invoice goes from the reservations manager to accounting, and only accounting sends it to the agent.** New invoice status **"Ready for posting"** between Draft and Issued. Finance Engine (LOCKED) is extended; plan presented and approved before implementation.
+
+Owner's requirement (paraphrased from his messages): after the hotel confirmation, the reservations manager checks every amount, corrects it if needed (the commercial breakdown's existing correction mechanism), and sends it "for post invoice". It then appears in the Invoices menu, accounting re-checks and reconciles, and only then is the invoice sent to the agent. Manual today, automatic later.
+
+## Owner's answers that shaped it
+
+1. The manager may correct **both cost and the agent's price** in the commercial breakdown. **The agent keeps seeing the price they booked at until accounting posts the invoice**; only the posted invoice carries the new figure. This **partly reverses Decision 178** ("a correction changes our cost and margin, never what the agent is billed"): the agent price may now change, but only through a posted invoice.
+2. Any administrator may send (manager or admin). Separate roles come later (the owner plans separate roles later).
+3. A hotel confirmation number is **not** required — sometimes an invoice must go out urgently before the hotel replies.
+4. Accounting can never post a Draft directly: the manager always sends first; whether accounting then posts depends on the situation.
+5. Status names Draft → Ready for posting → Issued accepted; button text from the owner ("Send for post invoice").
+
+## Flow
+
+| Step | Who | Action | Status |
+|---|---|---|---|
+| 1 | system | Claiming a booking auto-creates a Draft (Decision 080, unchanged) | Draft |
+| 2 | reservations | "Send for post invoice" under the commercial breakdown, confirming the amounts | Ready for posting |
+| 3 | accounting | Checks; may **Return** it with a required note (Decision 205: from inside Details) | → Draft |
+| 4 | accounting | "Post & send to agent" | Issued |
+
+## Backend
+
+- `POST /finance-engine/bookings/{id}/submit-for-posting` → `service.submit_invoice_for_posting`. Creates the invoice if the booking has none; refuses Cancelled/Rejected/Cancellation Requested bookings, a Ready invoice ("already sent") and Issued/Void. **Re-freezes the Draft from the commercial breakdown as it stands now** — the claim-time Draft was frozen before any correction — then sets Ready for posting and stamps who/when.
+- `POST /finance-engine/invoices/{id}/return` (body `{note}`) → `return_invoice_to_reservations`: Ready → Draft, note required (`validate_reason`), who/when stored. The note and its stamps stay on the row after a re-send, so the last return is never lost.
+- `approve_and_send_invoice` now requires Ready for posting (`validate_invoice_ready_for_posting`, replacing `validate_invoice_draft` there).
+- `_ledger_room_financials(db, room)` prices a room from its commercial lines in exactly `compute_booking_financials`' shape. **A room whose ledger says what its frozen columns say returns `compute_booking_financials(room)` itself, byte for byte**, so an untouched booking invoices exactly as before, including the "not computed" profit of pre-Decision-069 rooms. Otherwise: transfer/tax are their own price lines, room_sale is every other price line (meal/CIP/excursion included — the invoice has no extras column), discount is the frozen exclusive discount, commission is the remainder — so `total = subtotal − discount + commission + tax` still holds. `compute_application_financials` gained an optional `room_financials` callable (default unchanged).
+- `get_booking_commercial_summary` additionally returns `ledger_sale_total` (the breakdown's own agent price, corrections included); `sale_total` is still the booked price.
+- Today's Invoices list carry-forward now keeps both unsent statuses (`UNSENT_INVOICE_STATUSES = Draft, Ready for posting`).
+- Schema: 5 nullable `invoices` columns — `submitted_for_posting_by/_at`, `returned_by/_at`, `return_note` — added by raw `ALTER TABLE` after a backup (`DMC_OS_backups\dmc_2026-10-14_before_invoice_posting.db`); existing rows verified byte-identical. The plan said three columns; `returned_by/_at` were added so a return carries the same actor+time trail as every other invoice action.
+
+## Frontend
+
+- Booking detail (`AdminBookingFinance.tsx`): the invoice block under the breakdown shows the stage (with reservations / with accounting / posted), accounting's return note in amber, and the navy "Send for post invoice" button (disabled until the booking is assigned — same rule as editing the breakdown). Its confirm dialog shows Agent booked at / Invoice amount / Our cost / Our margin and flags any difference in amber.
+- The breakdown's Price total is now its own price lines; the footer states the booked price and, in amber, a corrected "New agent price" with the difference. The invoice line compares against the breakdown and explains a Draft difference as "will be updated when you send it".
+- Invoices: "Ready for posting" tab, "To post" badge, "Post & send to agent" (confirm dialog), Drafts read "With reservations" with no post button; the audit trail lists sent / returned / posted.
+
+## Known limits, accepted
+
+- The admin Bookings list's Sale/Profit columns still use the booked price, also after a posted price change.
+- Changing the breakdown after sending does not update the Ready invoice; the block says so and tells the manager to have accounting return it.
+- Admin timestamps display UTC (the open business-timezone issue); the new block uses the same `formatDateTime` as the invoice audit trail so one screen never mixes two clocks.
+- Three live bookings already had breakdown prices differing from the booked price (old corrections made under Decision 178): BK-000075 (5000.00 vs 4896.00, no invoice), BK-000077 (3442.00 vs 10546.00, Draft), BK-000080 (4736.00 vs 7309.00, Issued). Reported to the owner, data untouched.
+
+## Verified
+
+Isolated contour (real backend on :8002 over a database copy): 24 API checks (untouched booking invoices at the booked price; +100 price / −50 cost / +60 excursion correction reaches the invoice with identities intact; agent sees nothing before posting; return/re-send/post; refusals; agent 403) and 22 browser checks of the full manager → accounting → return → re-send → post → agent path. The two "failures" in those runs were number-format mismatches in the checks themselves, the values were correct. Bookings-list regressions 44/44 and 15/15. The owner then ran one real cycle on the working site himself (BK-000083, return note "test1", posted) — confirmed by him.
+
+Reason: project owner — requirement and answers above.
+
+Approved By: Daler (2026-10-14)
+
+Status: **Built, verified, committed (6049f8d).**
+
+---
+
+# Decision 203 — BUILT
+
+Date: 2026-10-14
+
+Decision: **The invoice an agent downloads or receives by email shows only the agent's own charges — never our net cost or our commission.**
+
+Found while verifying Decision 202: both the download (`build_invoice_download_text`) and the email (`send_invoice_email`) printed "Сумма номера (нетто)" (our buying price) and "Комиссия" (our margin) to the agent — every agent could read our cost and markup. Owner: "убери нетто и комиссию".
+
+- New `service.agent_invoice_lines(db, invoice)`, the single source for both documents: from the invoice's frozen room lines, per room (named with guests when there is more than one) — Проживание, Трансфер, Налог; they add up to `invoice.total` by construction. An invoice that predates room lines falls back to "Проживание и услуги" (total − tax) + "Налог".
+- The exclusive-agent discount is no longer printed either: it is already inside the room price, so a separate "Скидка" line would read as a second reduction.
+- Figures are rounded to cents (`8668.650000000001` → `8668.65`).
+- `send_invoice_email` takes the caller's `lines` instead of subtotal/discount/commission/tax; its only caller is `approve_and_send_invoice`.
+
+Not changed: the invoice's own columns, the admin views, the language of the document (still Russian).
+
+Verified on the isolated contour: one-room, two-room and pre-room-lines invoices — no net/commission/discount, lines sum to the total — and the email text rendered from the same lines. Live server checked after restart.
+
+Approved By: Daler (2026-10-14). Status: **Built, verified, committed (6049f8d).**
+
+---
+
+# Decision 204 — BUILT
+
+Date: 2026-10-14
+
+Decision: **A returned invoice reaches the manager without them having to open the booking**: it shows in the Bookings list's "Needs action" column and in the "Changes to review" queue.
+
+- `repository.list_returned_invoices`: invoices in Draft with a `return_note`. Structural — a re-send moves the invoice out of Draft, so it leaves both places by itself; nothing to acknowledge or clear.
+- `list_urgent_bookings` (the queue) adds these bookings. **Deliberately not added to `list_urgent_booking_ids`**, which also drives Invoices' own urgency and the "Mark as reviewed" acknowledgment — a return is cleared by re-sending, not by marking. `UrgentBookingResponse` gains `review_pending` (false when the return is the only reason; `latest_note` is then null), `invoice_returned_note`, `invoice_returned_at`; newest first across both kinds.
+- "Needs action": "Invoice returned by accounting", first in the cell, amber, accounting's note on hover. A booking in the queue only for a return no longer gets the false "Changed — review invoice".
+- Queue row: the note in amber; instead of "Mark as reviewed", "Re-send the invoice".
+
+Verified on the isolated contour: 15 checks (in the queue for the return alone, tab count, column text/colour/hover, no false change reason, ordinary entries keep "Mark as reviewed", re-send removes it everywhere). Bookings-list regression 44/44.
+
+Approved By: Daler (2026-10-14). Status: **Built, verified, committed (6049f8d).**
+
+---
+
+# Decision 205 — BUILT
+
+Date: 2026-10-14
+
+Decision: **(1) Accounting returns an invoice from inside its Details window; (2) "Changes to review" follows the Manager filter.**
+
+1. Owner: accounting works inside Details; a separate dialog made them close the figures they were checking and write elsewhere, when the note often needs specific numbers. The Return button left the list row (which is now Details · Post & send to agent · Void). `InvoiceDetailModal` gains an optional `onReturned`; for a Ready-for-posting invoice it shows a panel **pinned under the scrolling sections** — note field + "Return to reservations" — visible while any section is open. A half-written note is not lost to a stray backdrop click (Close still closes).
+2. Owner: when accounting returns an invoice, each manager must be able to see their own bookings in the queue. Previously the Manager filter existed only on "All". It now also shows on "Changes to review"; the list and the tab count are narrowed to that manager's bookings (`claimed_by` added to the queue response). The per-row "Needs action" reasons stay unfiltered. Bookings without a manager appear under "Anyone" only. No change to `Reservations.tsx` — `AdminBookingsList` reads the filter from the list state it already receives.
+
+Verified on the isolated contour: 15 checks (row buttons, panel present and pinned at the top and bottom of the sections, backdrop click keeps the note, return from Details, no panel on a Draft, queue entries carry their manager, Anyone vs one manager vs another — rows and tab count, survives a refresh).
+
+Pre-existing, not touched: in Details, section 1's "!" tooltip button sits inside the section's header button (React logs a nested-button warning; no functional effect).
+
+Approved By: Daler (2026-10-14). Status: **Built, verified, committed (6049f8d).**
+
+---
+
+# Decision 206 — BUILT (recorded retroactively)
+
+Date: 2026-10-13
+
+Decision: **The admin menu is grouped by task**: Bookings | Contracts & prices (Contracts, Import from PDF, Price calculator, Our markup) | Finance (Invoices, Agent statements, Hotel cashback) | Agents & staff (Users & applications, Special-rate agents) | Transfer list. Bookings is the opening screen; the separate "Needs Attention" menu item is gone (it is the "Changes to review" queue, Decision 200). Supersedes Decision 088's menu layout.
+
+This is "Stage A", referred to in Decision 201 as "not separately recorded"; numbered after 202–205 only because it is recorded later than they were. Arrivals / Departures / Transfers were briefly views inside Bookings; by the owner's decision of the same day they became their own section (Decision 210). Admin labels were reworded for meaning, labels only — status values and business logic untouched ("Assign to me", "Manager", "Needs action", "Awaiting hotel reply", date views "Stay dates / Booking date / Cancelled arrivals"); "Pending", "Issued/Draft", "Void" and "Hotel cashback" deliberately kept. The admin panel stays English. Admin-only label overrides live in their own catalog (`i18n/locales/admin/reservations.json`, loaded by `i18nAdmin.ts`) — a first version that edited the shared English catalog leaked into the agent panel and was caught by the screenshot comparison.
+
+Approved By: Daler (2026-10-13). Status: **Built, committed (ceb6bba).**
+
+---
+
+# Decision 207 — BUILT (recorded retroactively)
+
+Date: 2026-10-13
+
+Decision: **The Bookings screen remembers its working state across a refresh** (Stage B2): queue, filters, Manager, search, date mode and range, sort and page.
+
+- `pages/adminViewState.ts`: `sessionStorage` key `dmc.admin.viewState.v1`, per user and per section — another user on the same browser never inherits it. Every field is validated on read; anything unknown falls back to the default.
+- A "today" range is never stored (tomorrow it must mean tomorrow); a custom range expires at local midnight.
+- `Reservations.tsx` gained two optional props, `initialListState` / `onListStateChange` (`BookingsListState`); the agent panel passes neither, so its behaviour is unchanged. Page reset is keyed by scope.
+- `todayStr()` in `Reservations.tsx` now returns the local date, not the UTC one (the admin queue came up empty 00:00–05:00 at UTC+5) — see Known issues in `CLAUDE.md`.
+
+Not covered (possible "B3"): other admin pages' filters, including the Transfer list, are not remembered.
+
+Verified: 50 of 51 checks; the one failure is a stale expectation written before B2 ("first load makes exactly the pre-B2 requests" — it now makes 29). Agent panel 28/28 screenshots identical to the pre-B2 baseline.
+
+Approved By: Daler (2026-10-13). Status: **Built, committed (ceb6bba).**
+
+---
+
+# Decision 208 — BUILT (recorded retroactively)
+
+Date: 2026-10-13
+
+Decision: **In Bookings, the chosen dates apply in every queue.** Owner: with ~100 bookings a day, every view must show only the selected dates, otherwise large volumes load slowly and hang.
+
+**Amends Decision 200**, whose text said queue counts carry no date scope and the screen drops its date range while a queue is selected. Now `queueIgnoresDates = false`; the tab counts come from `GET /bookings/count` with the full scope plus `unassigned=true` / `mine=true`. `GET /bookings/queue-counts` still exists and works but the UI no longer calls it.
+
+Two exceptions, confirmed by the owner and explained on screen while in effect:
+1. Search by booking number ignores the dates (still paged, 50 a page).
+2. Today's list also carries forward earlier bookings nobody has taken (Decision 164) — they stay until someone takes them.
+
+Not date-filtered: "Changes to review" (it would need optional date parameters on `/finance-engine/bookings/urgent`, a LOCKED-engine change not approved); the screen says so.
+
+Verified: 15 checks for the two exceptions, plus the Bookings-controls suite.
+
+Approved By: Daler (2026-10-13). Status: **Built, committed (ceb6bba).**
+
+---
+
+# Decision 209 — BUILT (recorded retroactively)
+
+Date: 2026-10-13 / 2026-10-14
+
+Decision: **The Bookings controls fold away, and the list marks what is waiting on someone in our own amber.**
+
+- The block above the table (queues, filters, dates) is folded into a slim navy bar (`.admin-bk-handle`) showing chips for the queue, dates and filters. Owner's behaviour: it opens when the pointer comes up to it and **closes by itself when the pointer leaves** (pointer zone tracking, 120 ms open / 280 ms leave delay). It stays open while typing in the search or while a native dropdown is open; on touch a tap toggles and a tap outside closes; Escape closes; a click outside closes without being swallowed. Colours from our palette only (navy `#1b2340`, gold `#b8874a`).
+- "Reset filters" uses the Pending amber (`--color-warning` on its own tint), so it is distinguishable from the white fields.
+- **Unassigned open bookings** get a quiet amber wash on the whole row (7 %, 13 % on hover) and an amber-on-white "Assign to me" — previously an unowned booking two months old looked like one being worked. Text, status badges and the red/amber edge remain the strongest marks.
+
+Verified: Bookings-controls suite 44/44; unowned rows 7 washed / 16 white, assign still confirms first, row click still opens the booking.
+
+Approved By: Daler (2026-10-13/14). Status: **Built, committed (ceb6bba and 6049f8d).**
+
+---
+
+# Decision 210 — BUILT (recorded retroactively)
+
+Date: 2026-10-13
+
+Decision: **"Transfer list" is its own admin section** for meeting and seeing off guests on chosen dates — replacing Decision 113's Arrival / Departure / Transfers views under Bookings.
+
+- Views: Arrivals, Departures, All movements — `/admin-panel?section=transfer-list[&view=departures|transfers]`. Decision 201's `view` parameter now belongs to this section alone; an old `/admin-panel?view=arrivals` opens Bookings and is corrected.
+- Always by date: date range picker plus "Today" / "Next 7 days" (default next 7 days), local calendar dates. Hotel filter on the server. "All / With transfer / Without transfer" on every view; bookings without a transfer are listed as "No transfer", because guests are met and seen off either way. Totals line; dates as dd.mm.yyyy.
+- **Filtered on the server** (previously: the newest 500 bookings filtered in the browser, Decision 152's rule broken). Arrivals use `arrival_from/arrival_to`; departures use `date_view=staying` over [from−1, to−1] and are then cut to the departure date — no API change. Paged 200 at a time up to 10 pages, with an explicit warning if the result is incomplete.
+
+Known limit, unchanged from Decision 113: lead-guest names are fetched one request per visible row (no bulk guest endpoint).
+
+Verified: 38 checks plus a mocked no-transfer case; zero write requests.
+
+Approved By: Daler (2026-10-13). Status: **Built, committed (ceb6bba).**
 
 ---
 
