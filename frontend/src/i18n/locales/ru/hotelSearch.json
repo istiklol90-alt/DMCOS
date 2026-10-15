@@ -229,7 +229,16 @@
     "flexMonthPast": "В выбранном месяце не осталось будущих дат заезда",
     "searchErrorPrefix": "Не удалось загрузить данные:",
     "noHotelsFound": "Отели не найдены.",
-    "yearsShort": "лет"
+    "yearsShort": "лет",
+    "adultsHint": "от 12 лет",
+    "childrenHint": "до 17 лет",
+    "childAgeHint": "Возраст на дату заезда. До 2 лет — младенец, с 12 лет считается как взрослый.",
+    "ageUnderOne": "до 1 года",
+    "ageOption_one": "{{count}} год",
+    "ageOption_few": "{{count}} года",
+    "ageOption_many": "{{count}} лет",
+    "ageOption_other": "{{count}} лет",
+    "guestsDone": "Готово"
   },
   "offer": {
     "nights_one": "{{count}} ночь",

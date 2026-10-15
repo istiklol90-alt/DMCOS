@@ -669,41 +669,164 @@ async function fetchJson<T>(path: string, token: string, init?: RequestInit): Pr
 // Guest counter control
 // ---------------------------------------------------------------------------
 
-function Counter({
+// The three fields of the main search bar share one look: a white, bordered
+// box of one height, our gold on hover/focus. Tailwind utilities beat the
+// legacy global input/select CSS (cascade layer), which is why the resets
+// (border, padding, shadow) are spelled out where an input sits inside.
+const SEARCH_FIELD_CLASS =
+  "flex h-14 w-full appearance-none items-center gap-3 rounded-xl border border-ink/15 bg-white px-4 text-left text-base transition-colors hover:border-gold/60 focus:outline-none focus-visible:border-gold focus-visible:ring-2 focus-visible:ring-gold/25";
+const SEARCH_FIELD_OPEN_CLASS = "border-gold ring-2 ring-gold/20";
+
+// Guests: one field showing the party ("2 adults · 1 child"); the counters
+// and the children's ages open beneath it. Same state and handlers as the
+// two counters it replaces -- only how they are presented changed.
+function GuestsPicker({
+  adults,
+  childAges,
+  onAdultsChange,
+  onChildCountChange,
+  onChildAgeChange,
+}: {
+  adults: number;
+  childAges: number[];
+  onAdultsChange: (value: number) => void;
+  onChildCountChange: (value: number) => void;
+  onChildAgeChange: (index: number, age: number) => void;
+}) {
+  const { t } = useTranslation("hotelSearch");
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const summary = [
+    t("roomTypeCard.adultsLabel", { count: adults }),
+    childAges.length > 0 ? t("roomTypeCard.childrenLabel", { count: childAges.length }) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        title={summary}
+        className={`${SEARCH_FIELD_CLASS} ${open ? SEARCH_FIELD_OPEN_CLASS : ""}`}
+      >
+        <IconUsers className="h-5 w-5 shrink-0 text-gold-deep" />
+        <span className="min-w-0 flex-1 truncate text-ink">{summary}</span>
+        <IconChevronRight className={`h-4 w-4 shrink-0 text-slate/40 transition-transform ${open ? "-rotate-90" : "rotate-90"}`} />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full z-20 mt-2 w-80 max-w-[calc(100vw-2rem)] rounded-2xl border border-ink/10 bg-white p-5 shadow-lg">
+          <GuestStepper
+            label={t("page.adultsLabel")}
+            hint={t("page.adultsHint")}
+            value={adults}
+            min={1}
+            onChange={onAdultsChange}
+          />
+          <div className="my-3 h-px bg-ink/10" />
+          <GuestStepper
+            label={t("page.childrenLabel")}
+            hint={t("page.childrenHint")}
+            value={childAges.length}
+            min={0}
+            onChange={onChildCountChange}
+          />
+          {childAges.length > 0 && (
+            <div className="mt-3 space-y-2 rounded-xl bg-sand/50 p-3">
+              {childAges.map((age, i) => (
+                <label key={i} className="flex items-center justify-between gap-3">
+                  <span className="whitespace-nowrap text-sm text-slate/80">{t("page.childAgeLabel", { index: i + 1 })}</span>
+                  <select
+                    value={age}
+                    onChange={(e) => onChildAgeChange(i, Number(e.target.value))}
+                    className="w-28 rounded-lg border border-ink/15 bg-white px-3 py-1.5 text-sm text-ink focus:border-gold focus:shadow-none focus:outline-none"
+                  >
+                    {Array.from({ length: 18 }, (_, a) => (
+                      <option key={a} value={a}>
+                        {a === 0 ? t("page.ageUnderOne") : t("page.ageOption", { count: a })}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+              <p className="pt-1 text-[11px] leading-relaxed text-slate/55">{t("page.childAgeHint")}</p>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="mt-4 w-full appearance-none rounded-full border-0 bg-ink py-2.5 text-sm font-medium text-white transition-transform hover:-translate-y-0.5"
+          >
+            {t("page.guestsDone")}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GuestStepper({
   label,
+  hint,
   value,
   min,
   onChange,
 }: {
   label: string;
+  hint: string;
   value: number;
   min: number;
   onChange: (value: number) => void;
 }) {
   const { t } = useTranslation("hotelSearch");
+  const stepClass =
+    "flex h-9 w-9 shrink-0 appearance-none items-center justify-center rounded-full border border-ink/20 bg-white text-ink transition-colors hover:border-gold hover:bg-gold/10 disabled:cursor-not-allowed disabled:border-ink/10 disabled:text-slate/25 disabled:hover:bg-white";
   return (
     <div className="flex items-center justify-between gap-3">
-      <span className="text-xs text-slate/70">{label}</span>
-      <div className="flex items-center gap-2">
+      <span>
+        <span className="block text-sm font-medium text-ink">{label}</span>
+        <span className="block text-xs text-slate/50">{hint}</span>
+      </span>
+      <span className="flex items-center gap-3">
         <button
           type="button"
           onClick={() => onChange(Math.max(min, value - 1))}
           disabled={value <= min}
           aria-label={t("counter.decreaseAriaLabel", { label })}
-          className="flex h-6 w-6 items-center justify-center rounded-md border border-ink/15 text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+          className={stepClass}
         >
           <IconMinus />
         </button>
-        <span className="w-4 text-center text-sm font-medium text-ink">{value}</span>
+        <span className="w-5 text-center text-base font-semibold text-ink">{value}</span>
         <button
           type="button"
           onClick={() => onChange(value + 1)}
           aria-label={t("counter.increaseAriaLabel", { label })}
-          className="flex h-6 w-6 items-center justify-center rounded-md border border-ink/15 text-ink transition-colors hover:bg-sand"
+          className={stepClass}
         >
           <IconPlus />
         </button>
-      </div>
+      </span>
     </div>
   );
 }
@@ -1284,22 +1407,42 @@ export function DateRangePicker({
 
   return (
     <div ref={containerRef} className="relative">
-      <button
-        type="button"
-        onClick={togglePicker}
-        className={
-          size === "lg"
-            ? "flex w-full items-center gap-2.5 px-7 py-1 text-left text-lg text-slate sm:text-xl"
-            : "flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-slate"
-        }
-      >
-        <IconCalendar className={size === "lg" ? "w-5 h-5 shrink-0 text-slate/50" : "w-4 h-4 shrink-0 text-slate/50"} />
-        <span className={checkIn || checkOut || flexible ? "text-slate" : "text-slate/40"}>
-          {flexible
-            ? formatFlexibleLabel(t, lang, flexible)
-            : formatDateRangeLabel(t, lang, checkIn, checkOut)}
-        </span>
-      </button>
+      {size === "lg" ? (
+        // The main search bar's field: the same white, bordered box as the
+        // destination and guests fields beside it. It had no appearance
+        // reset, so the browser drew it as a grey bevelled system button.
+        <button
+          type="button"
+          onClick={togglePicker}
+          aria-expanded={open}
+          className={`${SEARCH_FIELD_CLASS} ${open ? SEARCH_FIELD_OPEN_CLASS : ""}`}
+        >
+          <IconCalendar className="h-5 w-5 shrink-0 text-gold-deep" />
+          <span className={`min-w-0 flex-1 truncate ${checkIn || checkOut || flexible ? "text-ink" : "text-slate/40"}`}>
+            {flexible
+              ? formatFlexibleLabel(t, lang, flexible)
+              : formatDateRangeLabel(t, lang, checkIn, checkOut)}
+          </span>
+          {!flexible && checkIn && checkOut && (nightsBetween(checkIn, checkOut) ?? 0) > 0 && (
+            <span className="shrink-0 rounded-full bg-gold/15 px-2.5 py-0.5 text-xs font-medium text-gold-deep">
+              {t("offer.nights", { count: nightsBetween(checkIn, checkOut) ?? 0 })}
+            </span>
+          )}
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={togglePicker}
+          className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-slate"
+        >
+          <IconCalendar className="w-4 h-4 shrink-0 text-slate/50" />
+          <span className={checkIn || checkOut || flexible ? "text-slate" : "text-slate/40"}>
+            {flexible
+              ? formatFlexibleLabel(t, lang, flexible)
+              : formatDateRangeLabel(t, lang, checkIn, checkOut)}
+          </span>
+        </button>
+      )}
 
       {open && (
         <div className="absolute left-0 top-full z-20 mt-2 w-fit rounded-2xl border border-ink/10 bg-white p-5 shadow-lg">
@@ -4816,7 +4959,6 @@ function HotelSearch() {
           <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch sm:gap-0">
             <div className="relative flex flex-1 flex-col gap-2.5 px-8 py-6 sm:py-8">
               <label className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate/50">
-                <IconPin className="h-3.5 w-3.5 text-gold-deep" />
                 {t("page.destinationLabel")}
                 <span className="ml-auto text-[10px] font-normal normal-case tracking-normal text-slate/40">
                   {t("page.multiHotelHint")}
@@ -4851,21 +4993,24 @@ function HotelSearch() {
               {pickedHotels.length >= MAX_PICKED_HOTELS ? (
                 <p className="text-sm text-slate/50">{t("page.maxHotelsReached")}</p>
               ) : (
-                <input
-                  type="text"
-                  value={destination}
-                  onChange={(e) => {
-                    setDestination(e.target.value);
-                    setDestinationDropdownOpen(true);
-                  }}
-                  onFocus={() => setDestinationDropdownOpen(true)}
-                  placeholder={
-                    pickedHotels.length > 0
-                      ? t("page.addAnotherHotel")
-                      : t("page.destinationPlaceholder")
-                  }
-                  className="w-full bg-transparent text-lg text-slate placeholder:text-slate/40 focus:outline-none sm:text-xl"
-                />
+                <div className="flex h-14 items-center gap-3 rounded-xl border border-ink/15 bg-white px-4 transition-colors hover:border-gold/60 focus-within:border-gold focus-within:ring-2 focus-within:ring-gold/20">
+                  <IconPin className="h-5 w-5 shrink-0 text-gold-deep" />
+                  <input
+                    type="text"
+                    value={destination}
+                    onChange={(e) => {
+                      setDestination(e.target.value);
+                      setDestinationDropdownOpen(true);
+                    }}
+                    onFocus={() => setDestinationDropdownOpen(true)}
+                    placeholder={
+                      pickedHotels.length > 0
+                        ? t("page.addAnotherHotel")
+                        : t("page.destinationPlaceholder")
+                    }
+                    className="w-full min-w-0 rounded-none border-0 bg-transparent p-0 text-base text-ink shadow-none placeholder:text-slate/40 focus:border-0 focus:shadow-none focus:outline-none"
+                  />
+                </div>
               )}
               {/* Live suggestions -- same dropdown/debounce pattern as
                   financeShared.tsx's AgentSearchSelect, adapted for an
@@ -4902,8 +5047,8 @@ function HotelSearch() {
 
             <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />
 
-            <div className="flex flex-col gap-2.5 pt-6 sm:w-72 sm:shrink-0 sm:py-8">
-              <label className="px-8 text-xs font-medium uppercase tracking-wide text-slate/50">{t("page.datesLabel")}</label>
+            <div className="flex flex-col gap-2.5 px-8 pt-2 sm:w-80 sm:shrink-0 sm:px-5 sm:py-8">
+              <label className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("page.datesLabel")}</label>
               <DateRangePicker
                 checkIn={checkIn}
                 checkOut={checkOut}
@@ -4931,38 +5076,24 @@ function HotelSearch() {
 
             <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />
 
-            <div className="flex flex-col gap-2.5 px-8 py-6 sm:w-64 sm:shrink-0 sm:py-8">
+            <div className="flex flex-col gap-2.5 px-8 pt-2 sm:w-80 sm:shrink-0 sm:px-5 sm:py-8">
               <label className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("page.guestsLabel")}</label>
-              <div className="flex flex-col gap-2">
-                <Counter label={t("page.adultsLabel")} value={adults} min={1} onChange={setAdults} />
-                <Counter label={t("page.childrenLabel")} value={childAges.length} min={0} onChange={handleChildCountChange} />
-                {childAges.length > 0 && (
-                  <div className="flex flex-col gap-1.5 border-t border-ink/10 pt-2">
-                    {childAges.map((age, i) => (
-                      <div key={i} className="flex items-center justify-between gap-2">
-                        <span className="text-xs text-slate/70">{t("page.childAgeLabel", { index: i + 1 })}</span>
-                        <input
-                          type="number"
-                          min={0}
-                          max={17}
-                          value={age}
-                          onChange={(e) => updateChildAge(i, Number(e.target.value))}
-                          className="w-14 rounded-md border border-ink/15 bg-white px-2 py-1 text-center text-sm text-ink focus:border-gold focus:outline-none"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <GuestsPicker
+                adults={adults}
+                childAges={childAges}
+                onAdultsChange={setAdults}
+                onChildCountChange={handleChildCountChange}
+                onChildAgeChange={updateChildAge}
+              />
             </div>
 
             <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />
 
-            <div className="flex items-center px-5 py-4 sm:py-3 sm:pl-3 sm:pr-3 sm:shrink-0">
+            <div className="flex items-end px-8 pb-6 pt-4 sm:shrink-0 sm:px-5 sm:py-8">
               <button
                 type="submit"
                 disabled={searching || scanning}
-                className="flex w-full items-center justify-center gap-2 rounded-full bg-ink px-8 py-3.5 text-base font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 sm:w-auto"
+                className="flex h-14 w-full items-center justify-center gap-2 rounded-full bg-ink px-8 text-base font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0 sm:w-auto"
               >
                 <IconSearch className="h-4 w-4" />
                 {scanning

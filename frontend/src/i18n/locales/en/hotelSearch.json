@@ -223,7 +223,14 @@
     "flexMonthPast": "No future check-in dates left in the selected month",
     "searchErrorPrefix": "Failed to load data:",
     "noHotelsFound": "No hotels found.",
-    "yearsShort": "y.o."
+    "yearsShort": "y.o.",
+    "adultsHint": "aged 12+",
+    "childrenHint": "up to 17",
+    "childAgeHint": "Age on the arrival date. Under 2 counts as an infant, 12 and over as an adult.",
+    "ageUnderOne": "under 1",
+    "ageOption_one": "{{count}} year",
+    "ageOption_other": "{{count}} years",
+    "guestsDone": "Done"
   },
   "offer": {
     "nights_one": "{{count}} night",
