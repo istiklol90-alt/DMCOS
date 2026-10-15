@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Decision 206: sleeping places ("how will 2 adults + 2 children actually
+// Decision 211: sleeping places ("how will 2 adults + 2 children actually
 // sleep in this room?").
 //
 // Hotel Engine stores them per occupancy option as a structured list --

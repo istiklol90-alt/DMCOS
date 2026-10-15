@@ -295,7 +295,7 @@ def list_room_occupancy_options(
 def list_room_occupancy_options_for_hotel(
     db: Session, hotel_id: int, active_only: bool = False
 ) -> list[RoomOccupancyOption]:
-    """Decision 206: every occupancy option of every room type of one hotel,
+    """Decision 211: every occupancy option of every room type of one hotel,
     in one query -- the search page needs them per hotel, never per row."""
     query = (
         db.query(RoomOccupancyOption)

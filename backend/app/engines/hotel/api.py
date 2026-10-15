@@ -269,7 +269,7 @@ def list_hotel_occupancy_options(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Decision 206: every room type's occupancy options (with sleeping
+    """Decision 211: every room type's occupancy options (with sleeping
     places) for one hotel in a single request -- what the search page and
     the booking card need, one call per hotel rather than per room."""
     return _run(lambda: service.list_room_occupancy_options_for_hotel(db, hotel_id, active_only=active_only))
@@ -285,7 +285,7 @@ def update_room_occupancy_option(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Decision 206: edit an occupancy option -- counts, active flag,
+    """Decision 211: edit an occupancy option -- counts, active flag,
     sleeping places, note. Admin only (the admin "Rooms & beds" screen)."""
     if (current_user.role or "").strip().lower() != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")

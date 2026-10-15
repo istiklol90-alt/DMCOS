@@ -445,7 +445,7 @@ class SpecialOfferCreate(BaseModel):
     market_id: Optional[int] = None
     combinable_with_other_offers: bool = False
     combinable_with_promotions: bool = False
-    # Decision 207
+    # Decision 212
     min_nights: Optional[int] = Field(None, ge=1)
     min_days_before_arrival: Optional[int] = Field(None, ge=0)
     room_type_ids: Optional[list[int]] = None
@@ -461,7 +461,7 @@ class SpecialOfferUpdate(BaseModel):
     combinable_with_other_offers: Optional[bool] = None
     combinable_with_promotions: Optional[bool] = None
     status: Optional[ChildStatus] = None
-    # Decision 207
+    # Decision 212
     min_nights: Optional[int] = Field(None, ge=1)
     min_days_before_arrival: Optional[int] = Field(None, ge=0)
     room_type_ids: Optional[list[int]] = None
@@ -508,7 +508,7 @@ class ApplicableOfferRoomDiscount(BaseModel):
 
 
 class ApplicableSpecialOfferResponse(BaseModel):
-    """Decision 207: an offer that applies to a stay -- what the search page
+    """Decision 212: an offer that applies to a stay -- what the search page
     shows on the room cards. room_type_ids None = every room type."""
     id: int
     offer_name: str

@@ -637,7 +637,7 @@ def update_promotion_status(db: Session, promotion_id: int, status: str) -> Prom
 
 
 def _offer_fields(fields: dict) -> dict:
-    """Decision 207: room_type_ids is stored as JSON text (NULL = all)."""
+    """Decision 212: room_type_ids is stored as JSON text (NULL = all)."""
     if "room_type_ids" in fields:
         ids = fields["room_type_ids"]
         fields["room_type_ids"] = json.dumps(ids) if ids else None
@@ -1626,7 +1626,7 @@ def _offer_conditions_met(
     nights: Optional[int],
     room_type_id: Optional[int] = None,
 ) -> bool:
-    """Decision 207: the offer's own conditions. A condition is checked only
+    """Decision 212: the offer's own conditions. A condition is checked only
     when the caller knows the fact it needs -- a caller that passes nothing
     gets the pre-207 behaviour."""
     if nights is not None and offer.min_nights is not None and nights < offer.min_nights:
@@ -2135,7 +2135,7 @@ def list_applicable_special_offers(
     db: Session, contract_id: int, check_in: date_type, check_out: date_type
 ) -> list[dict]:
     """
-    Decision 207: the special offers that apply to a stay -- bookable today,
+    Decision 212: the special offers that apply to a stay -- bookable today,
     not blacked out on check_in, their min_nights / min_days_before_arrival
     met -- with their room scope and any room discount active on check_in.
     What the search page shows on room cards, so an agent sees a gifts-only

@@ -2324,7 +2324,7 @@ export function ActionInfo({ text, tone = "neutral" }: { text: string; tone?: "n
   );
 }
 
-// Decision 206: what the booking card needs to say how a room's party sleeps.
+// Decision 211: what the booking card needs to say how a room's party sleeps.
 interface RoomBeddingInfo {
   bedType: string | null;
   options: OccupancyOption[];
@@ -2348,7 +2348,7 @@ function BookingHero({
   onClose,
   bedding,
 }: {
-  // Decision 206: how this room's party sleeps, already worded; null when
+  // Decision 211: how this room's party sleeps, already worded; null when
   // the hotel has not described it.
   bedding?: string | null;
   booking: Booking;
@@ -3713,7 +3713,7 @@ function BookingDetail({
   adminExtensions,
   roomBedding,
 }: {
-  // Decision 206: occupancy options (with sleeping places) and bed type per
+  // Decision 211: occupancy options (with sleeping places) and bed type per
   // room type, fetched once per hotel by the list.
   roomBedding?: Record<number, RoomBeddingInfo>;
   booking: Booking;
@@ -5517,7 +5517,7 @@ const BookingsList = ({
           uniqueHotelIds.map(async (hotelId) => {
             const [roomTypesData, optionsData] = await Promise.all([
               fetchJson<RoomType[]>(`/hotel-engine/hotels/${hotelId}/room-types`, token),
-              // Decision 206: sleeping places -- one request per hotel, and
+              // Decision 211: sleeping places -- one request per hotel, and
               // best-effort: without them the booking card just omits the line.
               fetchJson<OccupancyOption[]>(`/hotel-engine/hotels/${hotelId}/occupancy-options?active_only=true`, token).catch(
                 () => [] as OccupancyOption[],

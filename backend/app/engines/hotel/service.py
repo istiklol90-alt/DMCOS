@@ -351,7 +351,7 @@ def update_room_image(db: Session, image_id: int, **fields) -> RoomImage:
 
 
 def _beds_to_json(beds) -> str | None:
-    """Decision 206: the stored form of a beds list -- NULL when empty, so
+    """Decision 211: the stored form of a beds list -- NULL when empty, so
     "not entered" stays distinguishable."""
     if not beds:
         return None
@@ -373,7 +373,7 @@ def create_room_occupancy_option(
 def list_room_occupancy_options_for_hotel(
     db: Session, hotel_id: int, active_only: bool = False
 ) -> list[RoomOccupancyOption]:
-    """Decision 206: all occupancy options of one hotel (raises if the hotel does not exist)."""
+    """Decision 211: all occupancy options of one hotel (raises if the hotel does not exist)."""
     get_hotel(db, hotel_id)
     return repository.list_room_occupancy_options_for_hotel(db, hotel_id, active_only=active_only)
 
@@ -381,7 +381,7 @@ def list_room_occupancy_options_for_hotel(
 def update_room_occupancy_option_details(
     db: Session, option_id: int, data: RoomOccupancyOptionUpdate
 ) -> RoomOccupancyOption:
-    """Decision 206: partial update -- counts (re-validated against the
+    """Decision 211: partial update -- counts (re-validated against the
     room's max_occupancy), active flag, sleeping places and note."""
     fields = data.model_dump(exclude_unset=True)
     is_active = fields.pop("is_active", None)

@@ -8554,6 +8554,98 @@ Approved By: Daler (2026-10-13). Status: **Built, committed (ceb6bba).**
 
 ---
 
+# Decision 211 — BUILT
+
+Date: 2026-10-15
+
+Decision: **How a party actually sleeps is stored per occupancy option and shown to agents** ("Спальные места: 1 двуспальная кровать King + 1 раскладной диван (для 2 детей)"). Owner, with a screenshot: "2 adults + 2 children" does not tell an agent whether there is a bed for each — at Kandima it is a king bed and a sofa bed made up for two children.
+
+(Commits 21d4091 and fd904ec call this "Decision 206" — the number was already taken in this log; renumbered here and in the code.)
+
+## Model (Hotel Engine, LOCKED, additive)
+
+- `room_occupancy_options` gains `beds` (JSON list of `{type, count, for_children}`) and `bedding_note`, both nullable (raw ALTER TABLE after a backup; existing rows byte-identical). NULL means "not entered", never "no beds".
+- Bed types are a fixed list (`king, queen, double, single, sofa_bed, day_bed, rollaway, bunk_bed, crib`) rather than free text, so every screen can word them in Russian or English and the same data serves 3 hotels or 500.
+- `GET /hotel-engine/hotels/{id}/occupancy-options` (one request per hotel) and admin-only `PUT /hotel-engine/room-occupancy-options/{id}`.
+
+## Display (`frontend/src/pages/bedding.ts`, the single formatter + picker)
+
+- An exact party match first; otherwise the closest combination **with the same number of adults** (its extra places are the children's and can be dropped), then the smallest that fits. Options are ceilings (Decision 024), so "2A+2C" also describes 2 adults + 1 child.
+- Places marked for children are omitted when no children travel; when exactly one place serves all of them, the text says how many ("для 2 детей").
+- Falls back to the room's `bed_type`; says nothing when neither is entered.
+- Shown on the search room card, in the copied WhatsApp offer and in the booking card.
+- Admin: Contracts & prices → **Rooms & beds** (`AdminRooms.tsx`) — per hotel and room type: general bed type, sleeping places per combination with a live RU/EN preview, add a combination (warned that a combination is also a booking limit).
+
+## Data
+
+- Kandima, all nine one-bedroom rooms, 2A+2C: 1 king + 1 sofa bed for the children — **on the owner's word**.
+- Four Seasons Seychelles: from its contract's bedding grid (Decision 213).
+- Siyam World / St. Regis: a draft from their contracts was prepared but **not applied** (owner to check). St. Regis has no occupancy options at all; adding them changes what can be booked, so not done without a decision.
+
+## Known limits (owner's comment, 2026-10-15)
+
+At 300 hotels × ~10 room types × 2–3 combinations this is 6–9 k entries — not maintainable one by one. Contracts usually state bedding as one hotel-wide rule (Siyam: "every villa one king + fixed day bed + one rollaway"), rarely per room. Recommended later, not built: a hotel-level default rule with per-room exceptions, and bedding extraction in the AI contract import. Wording on the card can be shortened at any time without touching data.
+
+Verified on an isolated test copy: 13/13 (card, copied offer, booking card, admin save, agent 403, unknown bed type 422).
+
+Approved By: Daler (2026-10-15). Status: **Built, committed (21d4091, fd904ec).**
+
+---
+
+# Decision 212 — BUILT
+
+Date: 2026-10-15
+
+Decision: **A special offer can carry its own conditions and an agent-facing description, and the search page shows the offers that apply to a stay.** Needed for Four Seasons Seychelles' offers: "Get Away 20%" (stay 4+ nights, booked 90+ days ahead, not over the festive season) and "Honeymoon" (gifts only, no discount, villas only). No existing offer or promotion type could check those conditions; entering the 20% without them would have quoted it on short and late stays and sold below cost.
+
+(Commit fd904ec calls this "Decision 207" — renumbered.)
+
+- Contract Engine (LOCKED, additive): `special_offers` gains `min_nights`, `min_days_before_arrival`, `room_type_ids` (JSON, NULL = all), `booking_code`, `description` — all nullable; every pre-existing offer (Kandima KM26_03, Siyam SWJ26) behaves exactly as before.
+- `_bookable_special_offers` checks the conditions wherever an offer can change a price; the room / meal / family / transfer finders now receive the nights and room type from `get_room_price` / `get_transfer_price`. A caller that passes nothing gets the old behaviour.
+- `GET /contract-engine/contracts/{id}/special-offers/applicable?check_in&check_out` — offers bookable today, not blacked out on check-in, conditions met, with room scope and discounts. Read-only; prices are still computed by `get_room_price` alone.
+- Search: the room card shows each offer (name, code, description); a discount is labelled "уже в цене" only when that price's own `applied_special_offer_ids` contain it. The copied offer adds "Предложение: …" lines.
+- A room with no rates now reads "Цена по запросу — рассчитывается индивидуально по правилам отеля" (owner's wording; generic for every hotel).
+
+Known limits: there is no admin screen for special offers yet (they are entered through the API); a description is stored in one language (Russian for Four Seasons), so the English interface shows it in Russian; only one room discount is applied per price (`get_room_price`'s existing rule).
+
+Verified on an isolated test copy: 12/12 pricing checks (20% only at 4+ nights and 90+ days, never on meals or extra guests, not in the blackout, Kandima unchanged), 7/7 in the browser.
+
+Approved By: Daler (2026-10-15). Status: **Built, committed (fd904ec).**
+
+---
+
+# Decision 213 — DATA
+
+Date: 2026-10-15
+
+Decision: **Four Seasons Resort Seychelles is entered from its 2026-27 Static Package contract (contract1.pdf) and offers (offer1.pdf), with these rules confirmed by the owner:**
+
+1. **Taxes on top are included in every figure.** The contract quotes rates, meal and extra-bed charges "subject to 10% service charge + 15% government tax = 25.375%". The system has no percentage-on-top mechanism, so all figures are entered ×1.25375 — the amount actually paid to the hotel (€1 450 → €1 817.94).
+2. **The TESL levy (SCR 100 per person per night) is included** as the contract's mandatory tax, at **€6.40** (≈0.064 EUR/SCR, October 2026) — an estimate; the hotel converts at its own rate.
+3. **"On request" rooms are listed without rates** and read "Цена по запросу…" (Presidential, Royal Suite, 7- and 8-bedroom residences).
+4. **Hotel only for now** — the contract's package-only clause is acknowledged; our other hotels are sold the same way.
+
+Entered: hotel (Mahé, Baie Lazare, 5★, reservations e-mail), 14 room types with occupancy combinations and sleeping places from the bedding grid, EUR contract 1 Nov 2026 – 31 Oct 2027, 12 season periods (Festive, Peak, High, Shoulder), 120 BB rates, 376 supplements (HB adult €150 / child €75, third adult €175, child 5–11 €149, all ×1.25375; no HB over the festive season), cancellation tiers (festive 50% from 120 days / 100% from 90; otherwise 50% from 60 / 100% from 30), minimum stays (2 nights; 5 for festive arrivals), release 21 days. Offers: Honeymoon (gifts, min 4 nights, four villa types, blackout 23 Dec–17 Jan and 10 Mar–11 Apr) and Get Away 20% (min 4 nights, booked 90+ days ahead, room rate only, festive blackout).
+
+Checked: 8 cases by hand to the cent; the owner compared a 10-night March stay (Garden View Villa King, 2 adults) with a competitor's cost — BB €19 558 / HB €23 319.70 against ours €19 558.48 / €23 319.68.
+
+Known gaps for this contract, not fixed: half board over the festive season would be priced as BB (do not sell HB 23 Dec–10 Jan); the mandatory Christmas/New Year dinners are not charged automatically; children 2–4 are priced as children 5–11 (see Decision 214); minimum stay and the 21-day release are recorded but not enforced.
+
+Backups before each step: `DMC_OS_backups\dmc_2026-10-15_before_four_seasons.db`, `..._before_offer_conditions.db`. Status: **In the working database; contract Active.**
+
+---
+
+# Decision 214 — OPEN (no decision yet)
+
+Date: 2026-10-15
+
+Two pricing questions raised while entering Four Seasons. **The owner's position: no decision until a concrete case shows which behaviour is right** ("пока не будет конкретного факта, не могу сказать, какой правильный"). Recorded so they are not lost; nothing is built.
+
+1. **Stays that cross a season boundary.** `get_room_price` prices the whole stay at the season of the check-in night (known since Decision 073). A competitor's quote for 19–29 March appeared to switch price on 22 March, which suggested per-night pricing; the owner then confirmed the competitor's cost for those dates equals ours (Peak covers the whole stay under this contract). Per-night pricing would change the LOCKED Contract Engine and would matter for every hotel whose stay crosses a boundary.
+2. **Child ages from the contract.** Search buckets ages with fixed limits (infant < 2, child 2–11, adult 12+), whatever the contract says. St. Regis (infant 0–3, child 4–11, teen 12–15, adult 16+) and Four Seasons (free 0–4, child 5–11) do not fit; St. Regis' 207 teen prices are never used. A plan (price by each child's age against the contract's categories; season-specific limits later) was presented, not approved.
+
+---
+
 # Decision Template
 
 Decision Number:

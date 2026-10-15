@@ -508,7 +508,7 @@ def list_applicable_special_offers(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Decision 207: offers that apply to a stay (see the service function)."""
+    """Decision 212: offers that apply to a stay (see the service function)."""
     return _run(lambda: service.list_applicable_special_offers(db, contract_id, check_in, check_out))
 
 

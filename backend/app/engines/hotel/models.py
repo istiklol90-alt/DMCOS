@@ -112,7 +112,7 @@ class RoomOccupancyOption(Base):
     children = Column(Integer, nullable=False, default=0)
     infants = Column(Integer, nullable=False, default=0)
     is_active = Column(Boolean, default=True)
-    # Decision 206 (bedding): how this party actually sleeps, so an agent can
+    # Decision 211 (bedding): how this party actually sleeps, so an agent can
     # see "1 king bed + sofa bed for 2 children" instead of guessing from
     # "2 adults + 2 children". `beds` is a JSON list of {type, count,
     # for_children} (schemas.BedItem) -- structured rather than free text so

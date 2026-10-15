@@ -225,7 +225,7 @@ class RoomImageResponse(BaseModel):
 # RoomType row, not just this payload) — not enforced here.
 
 
-# Decision 206: one kind of sleeping place. A fixed list, so every screen
+# Decision 211: one kind of sleeping place. A fixed list, so every screen
 # can name it in its own language; anything unusual goes in bedding_note.
 BedType = Literal["king", "queen", "double", "single", "sofa_bed", "day_bed", "rollaway", "bunk_bed", "crib"]
 
@@ -249,7 +249,7 @@ class RoomOccupancyOptionCreate(BaseModel):
 
 
 class RoomOccupancyOptionUpdate(BaseModel):
-    """Decision 206: every field optional -- only what is sent changes.
+    """Decision 211: every field optional -- only what is sent changes.
     `beds: []` clears the list; omitting it leaves it as it was."""
     adults: Optional[int] = Field(None, ge=1)
     children: Optional[int] = Field(None, ge=0)

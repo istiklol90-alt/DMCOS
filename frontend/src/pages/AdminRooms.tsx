@@ -8,7 +8,7 @@ import { fetchJson } from "./financeShared";
 import { BED_TYPES, bedLabel, formatBedding, type BedItem, type BedType, type OccupancyOption } from "./bedding";
 
 // ---------------------------------------------------------------------------
-// Decision 206: "Rooms & beds" -- where the sleeping places agents see are
+// Decision 211: "Rooms & beds" -- where the sleeping places agents see are
 // entered. Per hotel, per room type: a general bed type (free text, shown
 // when no combination is described) and, for every occupancy combination
 // ("2 adults + 2 children"), the actual sleeping places as a list plus a

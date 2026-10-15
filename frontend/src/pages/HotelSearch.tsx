@@ -283,11 +283,11 @@ type CartRoom = {
   transferDeclined: boolean;
   currency: string | null;
   grandTotal: number | null;
-  // Decision 206: sleeping places, kept structured so the copied offer is
+  // Decision 211: sleeping places, kept structured so the copied offer is
   // worded in whatever language is active when it is copied.
   bedding?: Bedding | null;
   bedType?: string | null;
-  // Decision 207: offers to mention in the copied text.
+  // Decision 212: offers to mention in the copied text.
   offers?: RoomOffer[];
   // Copy-offer text (the manager or agent pastes it into WhatsApp): the
   // parts of grandTotal, and the hotel line. Display-only, never sent to the
@@ -413,7 +413,7 @@ type ContractMealPlan = {
 };
 
 type RoomPrice = {
-  // Decision 207: which special offers this price already includes.
+  // Decision 212: which special offers this price already includes.
   applied_special_offer_ids?: number[];
   contract_id: number;
   room_type_id: number;
@@ -459,7 +459,7 @@ type MealPlanOption = {
   priceError?: string;
 };
 
-// Decision 207: a special offer as the search page shows it on a room card.
+// Decision 212: a special offer as the search page shows it on a room card.
 type ApplicableOffer = {
   id: number;
   offer_name: string;
@@ -502,9 +502,9 @@ function offersForRoom(offers: ApplicableOffer[], roomTypeId: number): RoomOffer
 type RoomTypeResult = RoomType & {
   options: MealPlanOption[];
   priceError?: string;
-  // Decision 207: special offers for this stay that concern this room.
+  // Decision 212: special offers for this stay that concern this room.
   offers?: RoomOffer[];
-  // Decision 206: how this search's party sleeps in this room, from the
+  // Decision 211: how this search's party sleeps in this room, from the
   // hotel's occupancy options. null when the hotel has not described it.
   bedding?: Bedding | null;
 };
@@ -2158,11 +2158,11 @@ function RoomTypeCard({
           <p className="mt-0.5 text-xs font-medium text-gold-deep">
             {formatSearchOccupancy(t, { adults, children: childrenCount, infants }, childAges)}
           </p>
-          {/* Decision 206: how this party will actually sleep -- "2 adults +
+          {/* Decision 211: how this party will actually sleep -- "2 adults +
               2 children" alone does not say whether there is a bed for each.
               Falls back to the room's own bed type; says nothing when the
               hotel has described neither. */}
-          {/* Decision 207: special offers for this stay -- gifts-only ones
+          {/* Decision 212: special offers for this stay -- gifts-only ones
               always, a discount only when the price really includes it. */}
           {(rt.offers ?? [])
             .filter(
@@ -4812,7 +4812,7 @@ function HotelSearch() {
           } catch {
             roomTypes = [];
           }
-          // Decision 206: one request per hotel for every room's occupancy
+          // Decision 211: one request per hotel for every room's occupancy
           // options (sleeping places). Best-effort: without them the card
           // simply says nothing about beds.
           let occupancyOptions: OccupancyOption[] = [];
@@ -4904,7 +4904,7 @@ function HotelSearch() {
             }
           }
 
-          // Decision 207: special offers for this stay -- one request per hotel.
+          // Decision 212: special offers for this stay -- one request per hotel.
           let applicableOffers: ApplicableOffer[] = [];
           if (contractId) {
             try {
