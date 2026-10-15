@@ -1,4 +1,5 @@
-from pydantic import BaseModel, Field
+import json
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Literal
 from datetime import datetime, date
 
@@ -444,6 +445,12 @@ class SpecialOfferCreate(BaseModel):
     market_id: Optional[int] = None
     combinable_with_other_offers: bool = False
     combinable_with_promotions: bool = False
+    # Decision 207
+    min_nights: Optional[int] = Field(None, ge=1)
+    min_days_before_arrival: Optional[int] = Field(None, ge=0)
+    room_type_ids: Optional[list[int]] = None
+    booking_code: Optional[str] = Field(None, max_length=50)
+    description: Optional[str] = None
 
 
 class SpecialOfferUpdate(BaseModel):
@@ -454,6 +461,20 @@ class SpecialOfferUpdate(BaseModel):
     combinable_with_other_offers: Optional[bool] = None
     combinable_with_promotions: Optional[bool] = None
     status: Optional[ChildStatus] = None
+    # Decision 207
+    min_nights: Optional[int] = Field(None, ge=1)
+    min_days_before_arrival: Optional[int] = Field(None, ge=0)
+    room_type_ids: Optional[list[int]] = None
+    booking_code: Optional[str] = Field(None, max_length=50)
+    description: Optional[str] = None
+
+
+def _ids_from_json(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
 
 
 class SpecialOfferResponse(BaseModel):
@@ -466,9 +487,37 @@ class SpecialOfferResponse(BaseModel):
     combinable_with_other_offers: bool
     combinable_with_promotions: bool
     status: str
+    min_nights: Optional[int] = None
+    min_days_before_arrival: Optional[int] = None
+    room_type_ids: Optional[list[int]] = None
+    booking_code: Optional[str] = None
+    description: Optional[str] = None
+
+    @field_validator("room_type_ids", mode="before")
+    @classmethod
+    def _room_type_ids(cls, value):
+        return _ids_from_json(value)
 
     class Config:
         from_attributes = True
+
+
+class ApplicableOfferRoomDiscount(BaseModel):
+    room_type_id: Optional[int] = None
+    discount_percent: float
+
+
+class ApplicableSpecialOfferResponse(BaseModel):
+    """Decision 207: an offer that applies to a stay -- what the search page
+    shows on the room cards. room_type_ids None = every room type."""
+    id: int
+    offer_name: str
+    booking_code: Optional[str] = None
+    description: Optional[str] = None
+    min_nights: Optional[int] = None
+    min_days_before_arrival: Optional[int] = None
+    room_type_ids: Optional[list[int]] = None
+    room_discounts: list[ApplicableOfferRoomDiscount] = []
 
 
 class SpecialOfferRoomDiscountCreate(BaseModel):

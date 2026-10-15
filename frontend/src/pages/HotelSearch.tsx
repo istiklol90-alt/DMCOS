@@ -89,6 +89,16 @@ function IconPlaneDeparture({ className = "w-3.5 h-3.5" }: { className?: string 
   );
 }
 
+function IconGift({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <rect x="3" y="8" width="18" height="4" rx="1" />
+      <path d="M12 8v13M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7" />
+      <path d="M7.5 8a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8s1-5 4.5-5a2.5 2.5 0 0 1 0 5" />
+    </svg>
+  );
+}
+
 function IconBed({ className = "w-4 h-4" }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -277,6 +287,8 @@ type CartRoom = {
   // worded in whatever language is active when it is copied.
   bedding?: Bedding | null;
   bedType?: string | null;
+  // Decision 207: offers to mention in the copied text.
+  offers?: RoomOffer[];
   // Copy-offer text (the manager or agent pastes it into WhatsApp): the
   // parts of grandTotal, and the hotel line. Display-only, never sent to the
   // backend; optional so a room added before this existed still renders.
@@ -325,6 +337,11 @@ function offerRoomLines(t: TFunction, lang: string, room: CartRoom): string[] {
   const sleeping = formatBedding(room.bedding, lang, room.children) ?? room.bedType ?? null;
   if (sleeping) lines.push(`${t("offer.bedding")}: ${sleeping}`);
   lines.push(`${t("offer.meal")}: ${room.mealPlanLabel}`);
+  for (const o of room.offers ?? []) {
+    const head = `${o.name}${o.code ? ` (${o.code})` : ""}`;
+    const tail = o.discountPercent !== null ? ` — −${o.discountPercent}%, ${t("offer.offerInPrice")}` : o.description ? ` — ${o.description}` : "";
+    lines.push(`${t("offer.offerLine")}: ${head}${tail}`);
+  }
   if (room.roomTotal != null) lines.push(`${t("offer.accommodation")}: ${offerMoney(room.roomTotal, room.currency, lang)}`);
   if (room.transferType && room.transferTotal != null) {
     const price = room.transferTotal === 0 ? t("offer.transferFree") : offerMoney(room.transferTotal, room.currency, lang);
@@ -396,6 +413,8 @@ type ContractMealPlan = {
 };
 
 type RoomPrice = {
+  // Decision 207: which special offers this price already includes.
+  applied_special_offer_ids?: number[];
   contract_id: number;
   room_type_id: number;
   rate_id: number;
@@ -440,9 +459,51 @@ type MealPlanOption = {
   priceError?: string;
 };
 
+// Decision 207: a special offer as the search page shows it on a room card.
+type ApplicableOffer = {
+  id: number;
+  offer_name: string;
+  booking_code: string | null;
+  description: string | null;
+  room_type_ids: number[] | null;
+  room_discounts: { room_type_id: number | null; discount_percent: number }[];
+};
+
+type RoomOffer = {
+  id: number;
+  name: string;
+  code: string | null;
+  description: string | null;
+  // The discount on this room; null for a gifts-only offer.
+  discountPercent: number | null;
+};
+
+// Offers that concern one room type. A discount offer is kept only when one
+// of its discounts covers this room; whether the price already includes it
+// is decided on the card from the price's own applied_special_offer_ids.
+function offersForRoom(offers: ApplicableOffer[], roomTypeId: number): RoomOffer[] {
+  return offers
+    .filter((o) => o.room_type_ids === null || o.room_type_ids.includes(roomTypeId))
+    .map((o) => {
+      const hits = o.room_discounts.filter((d) => d.room_type_id === null || d.room_type_id === roomTypeId);
+      return {
+        id: o.id,
+        name: o.offer_name,
+        code: o.booking_code,
+        description: o.description,
+        discountPercent: hits.length > 0 ? Math.max(...hits.map((d) => d.discount_percent)) : null,
+        hasDiscountRows: o.room_discounts.length > 0,
+      };
+    })
+    .filter((o) => !(o.hasDiscountRows && o.discountPercent === null))
+    .map(({ hasDiscountRows: _unused, ...o }) => o);
+}
+
 type RoomTypeResult = RoomType & {
   options: MealPlanOption[];
   priceError?: string;
+  // Decision 207: special offers for this stay that concern this room.
+  offers?: RoomOffer[];
   // Decision 206: how this search's party sleeps in this room, from the
   // hotel's occupancy options. null when the hotel has not described it.
   bedding?: Bedding | null;
@@ -2055,6 +2116,9 @@ function RoomTypeCard({
       hotelLocation,
       bedding: rt.bedding ?? null,
       bedType: rt.bed_type,
+      offers: (rt.offers ?? []).filter(
+        (o) => o.discountPercent === null || (selectedMeal.price?.applied_special_offer_ids ?? []).includes(o.id),
+      ),
       nights: selectedMeal.price.nights,
       roomTotal: selectedMeal.agentPrice?.agent_room_total ?? null,
       transferTotal: selectedTransferTotal,
@@ -2098,6 +2162,33 @@ function RoomTypeCard({
               2 children" alone does not say whether there is a bed for each.
               Falls back to the room's own bed type; says nothing when the
               hotel has described neither. */}
+          {/* Decision 207: special offers for this stay -- gifts-only ones
+              always, a discount only when the price really includes it. */}
+          {(rt.offers ?? [])
+            .filter(
+              (o) =>
+                o.discountPercent === null ||
+                rt.options.some((opt) => (opt.price?.applied_special_offer_ids ?? []).includes(o.id)),
+            )
+            .map((o) => (
+              <div key={o.id} className="mt-1.5 max-w-xl rounded-lg border border-gold/30 bg-gold/10 px-2.5 py-1.5 text-xs text-ink">
+                <p className="flex flex-wrap items-center gap-x-1.5">
+                  <IconGift className="h-3.5 w-3.5 shrink-0 text-gold-deep" />
+                  <span className="font-semibold">{o.name}</span>
+                  {o.code && (
+                    <span className="text-slate/60">
+                      · {t("roomTypeCard.offerCode")} {o.code}
+                    </span>
+                  )}
+                  {o.discountPercent !== null && (
+                    <span className="rounded-full bg-success/15 px-1.5 py-0.5 text-[11px] font-semibold text-success">
+                      −{o.discountPercent}% · {t("roomTypeCard.offerInPrice")}
+                    </span>
+                  )}
+                </p>
+                {o.description && <p className="mt-0.5 leading-snug text-slate/70">{o.description}</p>}
+              </div>
+            ))}
           {(formatBedding(rt.bedding, lang, childrenCount) ?? rt.bed_type) && (
             <p className="mt-1.5 inline-flex items-start gap-1.5 rounded-lg bg-sand/60 px-2.5 py-1.5 text-xs text-ink">
               <IconBed className="mt-px h-4 w-4 shrink-0 text-gold-deep" />
@@ -4813,6 +4904,19 @@ function HotelSearch() {
             }
           }
 
+          // Decision 207: special offers for this stay -- one request per hotel.
+          let applicableOffers: ApplicableOffer[] = [];
+          if (contractId) {
+            try {
+              applicableOffers = await fetchJson<ApplicableOffer[]>(
+                `/contract-engine/contracts/${contractId}/special-offers/applicable?check_in=${checkIn}&check_out=${checkOut}`,
+                token
+              );
+            } catch {
+              applicableOffers = [];
+            }
+          }
+
           let mandatoryTax: MandatoryTax | undefined;
           if (contractId) {
             try {
@@ -4896,7 +5000,7 @@ function HotelSearch() {
                   })
                 );
 
-                return { ...rt, options, bedding: beddingFor(rt.id) };
+                return { ...rt, options, bedding: beddingFor(rt.id), offers: offersForRoom(applicableOffers, rt.id) };
               } catch (err) {
                 return {
                   ...rt,

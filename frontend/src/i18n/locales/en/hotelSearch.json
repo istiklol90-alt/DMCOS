@@ -107,7 +107,9 @@
     "copyOffer": "Copy offer",
     "copied": "Copied ✓",
     "copyFailed": "Could not copy — select the text manually",
-    "bedding": "Sleeping"
+    "bedding": "Sleeping",
+    "offerInPrice": "included in the price",
+    "offerCode": "code"
   },
   "hotelCard": {
     "noActiveContract": "No active contract",
@@ -198,7 +200,7 @@
     "checkoutAfterCheckin": "Check-out date must be after check-in date.",
     "hotelsLoadFailed": "Failed to load the hotel list.",
     "noActiveContract": "No active contract",
-    "noMealPlansAvailable": "No rates available for this room",
+    "noMealPlansAvailable": "Price on request — quoted individually per hotel rules",
     "priceUnavailable": "Price unavailable",
     "ratesLoadFailed": "Failed to load rates",
     "heroTag": "SEARCH & BOOKING",
@@ -246,6 +248,8 @@
     "roomTitle": "Room {{n}}",
     "roomTotal": "Total for room {{n}}",
     "grandTotal": "Total for all rooms",
-    "bedding": "Sleeping"
+    "bedding": "Sleeping",
+    "offerLine": "Offer",
+    "offerInPrice": "included in the price"
   }
 }

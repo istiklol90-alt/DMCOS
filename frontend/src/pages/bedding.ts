@@ -135,11 +135,15 @@ export function pickBedding(
   if (!options) return null;
   const described = options.filter((o) => o.is_active && (o.beds.length > 0 || (o.bedding_note ?? "").trim() !== ""));
   const exact = described.find((o) => o.adults === adults && o.children === children);
+  // Prefer a combination with the same number of adults: its extra places
+  // are the children's, which can be left out below. A combination with
+  // more adults would describe a bed for a guest who is not coming (2 adults
+  // shown "king + day bed" because the room also takes 3 adults).
   const pick =
     exact ??
     described
       .filter((o) => o.adults >= adults && o.children >= children)
-      .sort((a, b) => a.adults - adults + (a.children - children) - (b.adults - adults + (b.children - children)))[0];
+      .sort((a, b) => a.adults - adults - (b.adults - adults) || a.children - children - (b.children - children))[0];
   if (!pick) return null;
   // A party with no children borrowing a larger combination (2 adults on a
   // "2A+2C" room) does not get the places that combination makes up for

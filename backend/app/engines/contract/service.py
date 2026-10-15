@@ -21,6 +21,7 @@ once Booking Engine's TASK-002 identified that inventory decrement/
 increment (02_Logic_Rules.md #51) had no way to happen otherwise.
 """
 
+import json
 from datetime import date as date_type, timedelta
 from typing import Optional
 
@@ -635,11 +636,22 @@ def update_promotion_status(db: Session, promotion_id: int, status: str) -> Prom
 # ---------------------------------------------------------------------------
 
 
+def _offer_fields(fields: dict) -> dict:
+    """Decision 207: room_type_ids is stored as JSON text (NULL = all)."""
+    if "room_type_ids" in fields:
+        ids = fields["room_type_ids"]
+        fields["room_type_ids"] = json.dumps(ids) if ids else None
+    for key in ("booking_code", "description"):
+        if key in fields and fields[key] is not None:
+            fields[key] = fields[key].strip() or None
+    return fields
+
+
 def create_special_offer(db: Session, data: SpecialOfferCreate) -> SpecialOffer:
     """Create a new special offer package on a contract. Raises ValueError if the contract doesn't exist or booking_start/booking_end are inverted."""
     _require_contract(db, data.contract_id)
     validate_date_range(data.booking_start, data.booking_end)
-    return repository.create_special_offer(db, **data.model_dump())
+    return repository.create_special_offer(db, **_offer_fields(data.model_dump()))
 
 
 def get_special_offer(db: Session, offer_id: int) -> SpecialOffer:
@@ -663,6 +675,7 @@ def update_special_offer(db: Session, offer_id: int, data: SpecialOfferUpdate) -
         )
     if "status" in update_data:
         validate_child_status(update_data["status"])
+    update_data = _offer_fields(update_data)
     if update_data:
         offer = repository.update_special_offer(db, offer, **update_data)
     return offer
@@ -1603,7 +1616,38 @@ def _calc_supplement_total(
     return 0.0
 
 
-def _bookable_special_offers(db: Session, contract_id: int) -> list[SpecialOffer]:
+def _offer_room_type_ids(offer: SpecialOffer) -> Optional[list[int]]:
+    return json.loads(offer.room_type_ids) if offer.room_type_ids else None
+
+
+def _offer_conditions_met(
+    offer: SpecialOffer,
+    check_in: Optional[date_type],
+    nights: Optional[int],
+    room_type_id: Optional[int] = None,
+) -> bool:
+    """Decision 207: the offer's own conditions. A condition is checked only
+    when the caller knows the fact it needs -- a caller that passes nothing
+    gets the pre-207 behaviour."""
+    if nights is not None and offer.min_nights is not None and nights < offer.min_nights:
+        return False
+    if check_in is not None and offer.min_days_before_arrival is not None:
+        if (check_in - date_type.today()).days < offer.min_days_before_arrival:
+            return False
+    if room_type_id is not None:
+        ids = _offer_room_type_ids(offer)
+        if ids is not None and room_type_id not in ids:
+            return False
+    return True
+
+
+def _bookable_special_offers(
+    db: Session,
+    contract_id: int,
+    check_in: Optional[date_type] = None,
+    nights: Optional[int] = None,
+    room_type_id: Optional[int] = None,
+) -> list[SpecialOffer]:
     """
     Return every Active SpecialOffer on this contract whose booking_start/
     booking_end window covers today — the same "book by" semantic Promotion
@@ -1618,6 +1662,7 @@ def _bookable_special_offers(db: Session, contract_id: int) -> list[SpecialOffer
         if o.status == "Active"
         and (o.booking_start is None or o.booking_start <= today)
         and (o.booking_end is None or today <= o.booking_end)
+        and _offer_conditions_met(o, check_in, nights, room_type_id)
     ]
 
 
@@ -1639,7 +1684,7 @@ def _is_blacked_out(db: Session, contract_id: int, special_offer_id: int, check_
 
 
 def _find_active_special_offer_room_discount(
-    db: Session, contract_id: int, room_type_id: int, check_in: date_type
+    db: Session, contract_id: int, room_type_id: int, check_in: date_type, nights: Optional[int] = None
 ) -> Optional[SpecialOfferRoomDiscount]:
     """
     Decision 026, mechanism 1: the highest-priority Active room discount row
@@ -1656,7 +1701,7 @@ def _find_active_special_offer_room_discount(
     period.
     """
     candidates = []
-    for offer in _bookable_special_offers(db, contract_id):
+    for offer in _bookable_special_offers(db, contract_id, check_in, nights, room_type_id):
         if _is_blacked_out(db, contract_id, offer.id, check_in):
             continue
         for row in repository.list_special_offer_room_discounts(db, offer.id, room_type_id=room_type_id):
@@ -1668,7 +1713,8 @@ def _find_active_special_offer_room_discount(
 
 
 def _find_active_special_offer_meal_plan_discount(
-    db: Session, contract_id: int, meal_plan_id: int, check_in: date_type
+    db: Session, contract_id: int, meal_plan_id: int, check_in: date_type, nights: Optional[int] = None,
+    room_type_id: Optional[int] = None,
 ) -> Optional[SpecialOfferMealPlanDiscount]:
     """
     Decision 026, mechanism 2: the first Active meal plan discount row
@@ -1677,7 +1723,7 @@ def _find_active_special_offer_meal_plan_discount(
     upgrade uniformly). A period with no matching row means "No" discount
     that period — not an error, just nothing to apply.
     """
-    for offer in _bookable_special_offers(db, contract_id):
+    for offer in _bookable_special_offers(db, contract_id, check_in, nights, room_type_id):
         for row in repository.list_special_offer_meal_plan_discounts(db, offer.id):
             if (
                 row.status == "Active"
@@ -1689,7 +1735,8 @@ def _find_active_special_offer_meal_plan_discount(
 
 
 def _find_active_special_offer_family_rule(
-    db: Session, contract_id: int, check_in: date_type, adults: int
+    db: Session, contract_id: int, check_in: date_type, adults: int, nights: Optional[int] = None,
+    room_type_id: Optional[int] = None,
 ) -> Optional[SpecialOfferFamilyRule]:
     """
     Decision 026, mechanism 3: among Active family rules covering check_in
@@ -1699,7 +1746,7 @@ def _find_active_special_offer_family_rule(
     the right bookings rather than the first one found winning arbitrarily.
     """
     candidates = []
-    for offer in _bookable_special_offers(db, contract_id):
+    for offer in _bookable_special_offers(db, contract_id, check_in, nights, room_type_id):
         for row in repository.list_special_offer_family_rules(db, offer.id):
             if row.status == "Active" and row.start_date <= check_in <= row.end_date and adults >= row.min_adults:
                 candidates.append(row)
@@ -1757,7 +1804,7 @@ def _find_active_special_offer_transfer_discount(
     _is_blacked_out), same as the room-discount finder.
     """
     candidates = []
-    for offer in _bookable_special_offers(db, contract_id):
+    for offer in _bookable_special_offers(db, contract_id, arrival_date, nights):
         if _is_blacked_out(db, contract_id, offer.id, arrival_date):
             continue
         for row in repository.list_special_offer_transfer_discounts(db, offer.id):
@@ -1897,7 +1944,7 @@ def get_room_price(
     # applied_special_offer_ids below; contract_family_rule deliberately
     # never does, since it isn't a special offer at all.
     chargeable_children = children
-    family_rule = _find_active_special_offer_family_rule(db, contract_id, check_in, adults)
+    family_rule = _find_active_special_offer_family_rule(db, contract_id, check_in, adults, nights, room_type_id)
     contract_family_rule = _find_active_contract_family_rule(db, contract_id, check_in, adults)
     waived_from_offer = family_rule.max_free_children_accommodation if family_rule is not None else 0
     waived_from_contract = (
@@ -1974,7 +2021,7 @@ def get_room_price(
     # Decision 026, mechanism 1: room discount — reduces base_total, and
     # extra_person_total too if applies_to_extra_person is set. Never
     # touches age_category_total.
-    room_discount = _find_active_special_offer_room_discount(db, contract_id, room_type_id, check_in)
+    room_discount = _find_active_special_offer_room_discount(db, contract_id, room_type_id, check_in, nights)
     if room_discount is not None:
         factor = 1 - (room_discount.discount_percent / 100)
         base_total *= factor
@@ -1990,7 +2037,7 @@ def get_room_price(
     if needs_meal_plan_supplement:
         meal_discount = _find_active_special_offer_meal_plan_discount(
             db, contract_id, target_meal_plan_id, check_in
-        )
+        , nights, room_type_id)
         if meal_discount is not None:
             meal_plan_supplement_total *= 1 - (meal_discount.discount_percent / 100)
 
@@ -2082,3 +2129,40 @@ def get_room_price(
         "applied_special_offer_ids": applied_special_offer_ids,
         "final_total": final_total,
     }
+
+
+def list_applicable_special_offers(
+    db: Session, contract_id: int, check_in: date_type, check_out: date_type
+) -> list[dict]:
+    """
+    Decision 207: the special offers that apply to a stay -- bookable today,
+    not blacked out on check_in, their min_nights / min_days_before_arrival
+    met -- with their room scope and any room discount active on check_in.
+    What the search page shows on room cards, so an agent sees a gifts-only
+    offer (a honeymoon package) as well as a discount, and the code to quote.
+    Read-only; prices are still computed by get_room_price alone.
+    """
+    _require_contract(db, contract_id)
+    nights = (check_out - check_in).days
+    if nights <= 0:
+        raise ValueError("check_out must be after check_in")
+    result = []
+    for offer in _bookable_special_offers(db, contract_id, check_in, nights):
+        if _is_blacked_out(db, contract_id, offer.id, check_in):
+            continue
+        discounts = [
+            {"room_type_id": row.room_type_id, "discount_percent": row.discount_percent}
+            for row in repository.list_special_offer_room_discounts(db, offer.id)
+            if row.status == "Active" and row.start_date <= check_in <= row.end_date
+        ]
+        result.append({
+            "id": offer.id,
+            "offer_name": offer.offer_name,
+            "booking_code": offer.booking_code,
+            "description": offer.description,
+            "min_nights": offer.min_nights,
+            "min_days_before_arrival": offer.min_days_before_arrival,
+            "room_type_ids": _offer_room_type_ids(offer),
+            "room_discounts": discounts,
+        })
+    return result

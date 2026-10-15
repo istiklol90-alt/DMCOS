@@ -298,6 +298,22 @@ class SpecialOffer(Base):
     combinable_with_other_offers = Column(Boolean, default=False)
     combinable_with_promotions = Column(Boolean, default=False)
     status = Column(String(20), default="Active")
+    # Decision 207: conditions and what an agent is told. All nullable --
+    # NULL means "no such condition", so every offer that predates them
+    # behaves exactly as before.
+    #   min_nights               -- stay at least this many nights
+    #   min_days_before_arrival  -- booked at least this many days ahead
+    #   room_type_ids            -- JSON list; NULL = every room type
+    #   booking_code             -- the hotel's code to quote (e.g. SEY20D)
+    #   description              -- inclusions/terms shown to agents
+    # The first three are checked wherever the offer can change a price
+    # (_bookable_special_offers); an offer with no discount rows at all
+    # (gifts only, e.g. a honeymoon offer) is shown to agents, never priced.
+    min_nights = Column(Integer, nullable=True)
+    min_days_before_arrival = Column(Integer, nullable=True)
+    room_type_ids = Column(Text, nullable=True)
+    booking_code = Column(String(50), nullable=True)
+    description = Column(Text, nullable=True)
 
 
 class SpecialOfferRoomDiscount(Base):

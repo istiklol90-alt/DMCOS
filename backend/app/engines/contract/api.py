@@ -38,6 +38,7 @@ from app.engines.contract.schemas import (
     SpecialOfferCreate,
     SpecialOfferUpdate,
     SpecialOfferResponse,
+    ApplicableSpecialOfferResponse,
     SpecialOfferRoomDiscountCreate,
     SpecialOfferRoomDiscountResponse,
     SpecialOfferMealPlanDiscountCreate,
@@ -494,6 +495,21 @@ def list_special_offers(
     contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.list_special_offers(db, contract_id))
+
+
+@router.get(
+    "/contracts/{contract_id}/special-offers/applicable",
+    response_model=list[ApplicableSpecialOfferResponse],
+)
+def list_applicable_special_offers(
+    contract_id: int,
+    check_in: date_type,
+    check_out: date_type,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Decision 207: offers that apply to a stay (see the service function)."""
+    return _run(lambda: service.list_applicable_special_offers(db, contract_id, check_in, check_out))
 
 
 @router.get("/special-offers/{offer_id}", response_model=SpecialOfferResponse)
