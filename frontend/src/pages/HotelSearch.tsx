@@ -8,6 +8,7 @@ import { handleSessionExpired } from "../session";
 import AgentTopNav from "../components/layout/AgentTopNav";
 import Modal from "../components/ui/Modal";
 import { IconPin, IconSearch } from "../components/ui/icons";
+import { formatBedding, pickBedding, type Bedding, type OccupancyOption } from "./bedding";
 
 function localeOf(lang: string): string {
   return lang === "en" ? "en-US" : "ru-RU";
@@ -84,6 +85,17 @@ function IconPlaneDeparture({ className = "w-3.5 h-3.5" }: { className?: string 
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" className={className}>
       <path d="M2 21h20" />
       <path d="M3.2 15.5l2.3 1.4 3.7-1.5.9 5.1 2 .5.9-6.4 6.9-2.8a1.7 1.7 0 0 0-1-3.2l-3 1.2-5.6-4.3-2 .8 3.4 5.4-4.3 1.7-2.6-1.6-1.6.6z" />
+    </svg>
+  );
+}
+
+function IconBed({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M2 18v-7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v7" />
+      <path d="M2 14h20" />
+      <path d="M6 9V7a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v2" />
+      <path d="M2 18v2M22 18v2" />
     </svg>
   );
 }
@@ -261,6 +273,10 @@ type CartRoom = {
   transferDeclined: boolean;
   currency: string | null;
   grandTotal: number | null;
+  // Decision 206: sleeping places, kept structured so the copied offer is
+  // worded in whatever language is active when it is copied.
+  bedding?: Bedding | null;
+  bedType?: string | null;
   // Copy-offer text (the manager or agent pastes it into WhatsApp): the
   // parts of grandTotal, and the hotel line. Display-only, never sent to the
   // backend; optional so a room added before this existed still renders.
@@ -305,8 +321,10 @@ function offerRoomLines(t: TFunction, lang: string, room: CartRoom): string[] {
     dates,
     formatSearchOccupancy(t, { adults: room.adults, children: room.children, infants: room.infants }, room.childAges),
     `${t("offer.roomType")}: ${room.roomTypeName}`,
-    `${t("offer.meal")}: ${room.mealPlanLabel}`,
   ];
+  const sleeping = formatBedding(room.bedding, lang, room.children) ?? room.bedType ?? null;
+  if (sleeping) lines.push(`${t("offer.bedding")}: ${sleeping}`);
+  lines.push(`${t("offer.meal")}: ${room.mealPlanLabel}`);
   if (room.roomTotal != null) lines.push(`${t("offer.accommodation")}: ${offerMoney(room.roomTotal, room.currency, lang)}`);
   if (room.transferType && room.transferTotal != null) {
     const price = room.transferTotal === 0 ? t("offer.transferFree") : offerMoney(room.transferTotal, room.currency, lang);
@@ -425,6 +443,9 @@ type MealPlanOption = {
 type RoomTypeResult = RoomType & {
   options: MealPlanOption[];
   priceError?: string;
+  // Decision 206: how this search's party sleeps in this room, from the
+  // hotel's occupancy options. null when the hotel has not described it.
+  bedding?: Bedding | null;
 };
 
 type HotelResult = Hotel & {
@@ -769,7 +790,6 @@ function GuestsPicker({
                   </select>
                 </label>
               ))}
-              <p className="pt-1 text-[11px] leading-relaxed text-slate/55">{t("page.childAgeHint")}</p>
             </div>
           )}
           <button
@@ -2033,6 +2053,8 @@ function RoomTypeCard({
       grandTotal,
       hotelStars,
       hotelLocation,
+      bedding: rt.bedding ?? null,
+      bedType: rt.bed_type,
       nights: selectedMeal.price.nights,
       roomTotal: selectedMeal.agentPrice?.agent_room_total ?? null,
       transferTotal: selectedTransferTotal,
@@ -2069,12 +2091,22 @@ function RoomTypeCard({
         <div className="min-w-0 flex-1">
           <h4 className="font-display text-base font-semibold text-ink">{rt.room_name}</h4>
           <p className="mt-0.5 text-xs text-slate/50">{t("roomTypeCard.maxGuests", { count: rt.max_occupancy })}</p>
-          {rt.bed_type && (
-            <p className="mt-0.5 text-xs text-slate/50">{rt.bed_type}</p>
-          )}
           <p className="mt-0.5 text-xs font-medium text-gold-deep">
             {formatSearchOccupancy(t, { adults, children: childrenCount, infants }, childAges)}
           </p>
+          {/* Decision 206: how this party will actually sleep -- "2 adults +
+              2 children" alone does not say whether there is a bed for each.
+              Falls back to the room's own bed type; says nothing when the
+              hotel has described neither. */}
+          {(formatBedding(rt.bedding, lang, childrenCount) ?? rt.bed_type) && (
+            <p className="mt-1.5 inline-flex items-start gap-1.5 rounded-lg bg-sand/60 px-2.5 py-1.5 text-xs text-ink">
+              <IconBed className="mt-px h-4 w-4 shrink-0 text-gold-deep" />
+              <span>
+                <span className="font-semibold">{t("roomTypeCard.bedding")}:</span>{" "}
+                {formatBedding(rt.bedding, lang, childrenCount) ?? rt.bed_type}
+              </span>
+            </p>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-3">
@@ -4689,6 +4721,24 @@ function HotelSearch() {
           } catch {
             roomTypes = [];
           }
+          // Decision 206: one request per hotel for every room's occupancy
+          // options (sleeping places). Best-effort: without them the card
+          // simply says nothing about beds.
+          let occupancyOptions: OccupancyOption[] = [];
+          try {
+            occupancyOptions = await fetchJson<OccupancyOption[]>(
+              `/hotel-engine/hotels/${hotel.id}/occupancy-options?active_only=true`,
+              token
+            );
+          } catch {
+            occupancyOptions = [];
+          }
+          const beddingFor = (roomTypeId: number) =>
+            pickBedding(
+              occupancyOptions.filter((o) => o.room_type_id === roomTypeId),
+              occupancy.adults,
+              occupancy.children,
+            );
 
           let contractId: number | undefined;
           let transferRequired = false;
@@ -4787,7 +4837,7 @@ function HotelSearch() {
           const roomTypeResults = await Promise.all(
             roomTypes.map(async (rt): Promise<RoomTypeResult> => {
               if (!contractId) {
-                return { ...rt, options: [], priceError: t("page.noActiveContract") };
+                return { ...rt, options: [], priceError: t("page.noActiveContract"), bedding: beddingFor(rt.id) };
               }
               try {
                 const mealPlans = await fetchJson<ContractMealPlan[]>(
@@ -4795,7 +4845,7 @@ function HotelSearch() {
                   token
                 );
                 if (mealPlans.length === 0) {
-                  return { ...rt, options: [], priceError: t("page.noMealPlansAvailable") };
+                  return { ...rt, options: [], priceError: t("page.noMealPlansAvailable"), bedding: beddingFor(rt.id) };
                 }
 
                 const options = await Promise.all(
@@ -4846,10 +4896,11 @@ function HotelSearch() {
                   })
                 );
 
-                return { ...rt, options };
+                return { ...rt, options, bedding: beddingFor(rt.id) };
               } catch (err) {
                 return {
                   ...rt,
+                  bedding: beddingFor(rt.id),
                   options: [],
                   priceError: err instanceof Error ? err.message : t("page.ratesLoadFailed"),
                 };

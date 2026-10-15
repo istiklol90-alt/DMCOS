@@ -234,7 +234,8 @@
     "guests": "Гостей",
     "bookedOn": "забронировано {{date}}",
     "roomType": "Тип номера",
-    "roomOfCount": "Номер №{{number}} из {{count}}"
+    "roomOfCount": "Номер №{{number}} из {{count}}",
+    "bedding": "Спальные места"
   },
   "timeline": {
     "created": "Заявка создана",

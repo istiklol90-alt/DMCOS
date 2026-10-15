@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+import json
+
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Literal
 from datetime import datetime, date
 
@@ -223,12 +225,38 @@ class RoomImageResponse(BaseModel):
 # RoomType row, not just this payload) — not enforced here.
 
 
+# Decision 206: one kind of sleeping place. A fixed list, so every screen
+# can name it in its own language; anything unusual goes in bedding_note.
+BedType = Literal["king", "queen", "double", "single", "sofa_bed", "day_bed", "rollaway", "bunk_bed", "crib"]
+
+
+class BedItem(BaseModel):
+    type: BedType
+    count: int = Field(1, ge=1, le=20)
+    # True when this place is meant for children (e.g. the sofa bed made up
+    # for two kids) -- said on screen as "for children".
+    for_children: bool = False
+
+
 class RoomOccupancyOptionCreate(BaseModel):
     room_type_id: int
     adults: int = Field(..., ge=1)
     children: int = Field(0, ge=0)
     infants: int = Field(0, ge=0)
     is_active: bool = True
+    beds: list[BedItem] = []
+    bedding_note: Optional[str] = None
+
+
+class RoomOccupancyOptionUpdate(BaseModel):
+    """Decision 206: every field optional -- only what is sent changes.
+    `beds: []` clears the list; omitting it leaves it as it was."""
+    adults: Optional[int] = Field(None, ge=1)
+    children: Optional[int] = Field(None, ge=0)
+    infants: Optional[int] = Field(None, ge=0)
+    is_active: Optional[bool] = None
+    beds: Optional[list[BedItem]] = None
+    bedding_note: Optional[str] = None
 
 
 class RoomOccupancyOptionResponse(BaseModel):
@@ -238,6 +266,18 @@ class RoomOccupancyOptionResponse(BaseModel):
     children: int
     infants: int
     is_active: bool
+    beds: list[BedItem] = []
+    bedding_note: Optional[str] = None
+
+    @field_validator("beds", mode="before")
+    @classmethod
+    def _beds_from_json(cls, value):
+        # Stored as JSON text (NULL = not entered).
+        if value is None or value == "":
+            return []
+        if isinstance(value, str):
+            return json.loads(value)
+        return value
 
     class Config:
         from_attributes = True

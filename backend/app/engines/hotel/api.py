@@ -27,6 +27,7 @@ from app.engines.hotel.schemas import (
     RoomImageCreate,
     RoomImageResponse,
     RoomOccupancyOptionCreate,
+    RoomOccupancyOptionUpdate,
     RoomOccupancyOptionResponse,
     RoomAvailabilityCreate,
     RoomAvailabilityUpdate,
@@ -256,6 +257,39 @@ def create_room_occupancy_option(
     current_user=Depends(get_current_user),
 ):
     return _run(lambda: service.create_room_occupancy_option(db, data))
+
+
+@router.get(
+    "/hotels/{hotel_id}/occupancy-options",
+    response_model=list[RoomOccupancyOptionResponse],
+)
+def list_hotel_occupancy_options(
+    hotel_id: int,
+    active_only: bool = False,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Decision 206: every room type's occupancy options (with sleeping
+    places) for one hotel in a single request -- what the search page and
+    the booking card need, one call per hotel rather than per room."""
+    return _run(lambda: service.list_room_occupancy_options_for_hotel(db, hotel_id, active_only=active_only))
+
+
+@router.put(
+    "/room-occupancy-options/{option_id}",
+    response_model=RoomOccupancyOptionResponse,
+)
+def update_room_occupancy_option(
+    option_id: int,
+    data: RoomOccupancyOptionUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Decision 206: edit an occupancy option -- counts, active flag,
+    sleeping places, note. Admin only (the admin "Rooms & beds" screen)."""
+    if (current_user.role or "").strip().lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return _run(lambda: service.update_room_occupancy_option_details(db, option_id, data))
 
 
 @router.get(

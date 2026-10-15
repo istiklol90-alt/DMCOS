@@ -8,6 +8,7 @@ import { DEFAULT_VIEW, readAdminLocation, writeAdminLocation, type AdminSection 
 import TransferListScreen, { type TransferListView } from "./BookingsSubViews";
 import Contracts from "./Contracts";
 import ContractsAI from "./ContractsAI";
+import AdminRooms from "./AdminRooms";
 import PriceCalculator from "./PriceCalculator";
 import Counteragents from "./Counteragents";
 import Invoices from "./Invoices";
@@ -334,6 +335,8 @@ const AdminPanelContent = () => {
         {activeTab === "contracts" && <Contracts />}
 
         {activeTab === "contracts-ai" && <ContractsAI />}
+
+        {activeTab === "rooms" && <AdminRooms />}
 
         {activeTab === "price-calculator" && <PriceCalculator />}
 

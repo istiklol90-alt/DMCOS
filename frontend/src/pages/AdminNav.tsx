@@ -42,6 +42,8 @@ export const NAV_STRUCTURE: NavItem[] = [
     children: [
       { key: "contracts", label: "Contracts" },
       { key: "contracts-ai", label: "Import from PDF" },
+      // Decision 206: sleeping places per room and party.
+      { key: "rooms", label: "Rooms & beds" },
       { key: "price-calculator", label: "Price calculator" },
       { key: "markup", label: "Our markup" },
     ],

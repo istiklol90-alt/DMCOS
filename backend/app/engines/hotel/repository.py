@@ -292,6 +292,21 @@ def list_room_occupancy_options(
     return query.order_by(RoomOccupancyOption.id).all()
 
 
+def list_room_occupancy_options_for_hotel(
+    db: Session, hotel_id: int, active_only: bool = False
+) -> list[RoomOccupancyOption]:
+    """Decision 206: every occupancy option of every room type of one hotel,
+    in one query -- the search page needs them per hotel, never per row."""
+    query = (
+        db.query(RoomOccupancyOption)
+        .join(RoomType, RoomType.id == RoomOccupancyOption.room_type_id)
+        .filter(RoomType.hotel_id == hotel_id)
+    )
+    if active_only:
+        query = query.filter(RoomOccupancyOption.is_active.is_(True))
+    return query.order_by(RoomOccupancyOption.room_type_id, RoomOccupancyOption.id).all()
+
+
 def update_room_occupancy_option(
     db: Session, option: RoomOccupancyOption, **fields
 ) -> RoomOccupancyOption:

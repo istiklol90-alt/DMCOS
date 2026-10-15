@@ -30,6 +30,7 @@ export type AdminSection =
   | "reservations"
   | "contracts"
   | "contracts-ai"
+  | "rooms"
   | "price-calculator"
   | "markup"
   | "invoices"
@@ -49,6 +50,7 @@ const SECTION_URL_NAME: Record<AdminSection, string> = {
   reservations: "bookings",
   contracts: "contracts",
   "contracts-ai": "import",
+  rooms: "rooms",
   "price-calculator": "price-calculator",
   markup: "markup",
   invoices: "invoices",

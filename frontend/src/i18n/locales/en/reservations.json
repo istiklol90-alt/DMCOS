@@ -242,7 +242,8 @@
     "guests": "Guests",
     "bookedOn": "booked {{date}}",
     "roomType": "Room type",
-    "roomOfCount": "Room #{{number}} of {{count}}"
+    "roomOfCount": "Room #{{number}} of {{count}}",
+    "bedding": "Sleeping"
   },
   "timeline": {
     "created": "Booking created",

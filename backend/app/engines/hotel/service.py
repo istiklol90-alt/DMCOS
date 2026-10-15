@@ -14,6 +14,7 @@ update_hotel/update_room_type functions below are what perform that
 split: they pull `status` out of an incoming update payload, validate it
 separately, and route the two parts to their respective repository calls.
 """
+import json
 
 from datetime import date as date_type
 from typing import Optional
@@ -41,6 +42,7 @@ from app.engines.hotel.schemas import (
     RoomTypeUpdate,
     RoomImageCreate,
     RoomOccupancyOptionCreate,
+    RoomOccupancyOptionUpdate,
     RoomAvailabilityCreate,
 )
 from app.engines.hotel.validators import (
@@ -348,13 +350,51 @@ def update_room_image(db: Session, image_id: int, **fields) -> RoomImage:
 # ---------------------------------------------------------------------------
 
 
+def _beds_to_json(beds) -> str | None:
+    """Decision 206: the stored form of a beds list -- NULL when empty, so
+    "not entered" stays distinguishable."""
+    if not beds:
+        return None
+    return json.dumps([b.model_dump() if hasattr(b, "model_dump") else b for b in beds])
+
+
 def create_room_occupancy_option(
     db: Session, data: RoomOccupancyOptionCreate
 ) -> RoomOccupancyOption:
     """Add a valid guest combination (adults/children/infants) to a room type. Raises ValueError if the room type doesn't exist or the combination exceeds its max_occupancy."""
     room_type = _require_room_type(db, data.room_type_id)
     validate_occupancy_within_capacity(room_type, data.adults, data.children)
-    return repository.create_room_occupancy_option(db, **data.model_dump())
+    fields = data.model_dump()
+    fields["beds"] = _beds_to_json(data.beds)
+    fields["bedding_note"] = (data.bedding_note or "").strip() or None
+    return repository.create_room_occupancy_option(db, **fields)
+
+
+def list_room_occupancy_options_for_hotel(
+    db: Session, hotel_id: int, active_only: bool = False
+) -> list[RoomOccupancyOption]:
+    """Decision 206: all occupancy options of one hotel (raises if the hotel does not exist)."""
+    get_hotel(db, hotel_id)
+    return repository.list_room_occupancy_options_for_hotel(db, hotel_id, active_only=active_only)
+
+
+def update_room_occupancy_option_details(
+    db: Session, option_id: int, data: RoomOccupancyOptionUpdate
+) -> RoomOccupancyOption:
+    """Decision 206: partial update -- counts (re-validated against the
+    room's max_occupancy), active flag, sleeping places and note."""
+    fields = data.model_dump(exclude_unset=True)
+    is_active = fields.pop("is_active", None)
+    if "beds" in fields:
+        fields["beds"] = _beds_to_json(data.beds)
+    if "bedding_note" in fields:
+        fields["bedding_note"] = (data.bedding_note or "").strip() or None
+    option = get_room_occupancy_option(db, option_id)
+    if fields:
+        option = update_room_occupancy_option(db, option_id, **fields)
+    if is_active is not None:
+        option = set_room_occupancy_option_active(db, option_id, is_active)
+    return option
 
 
 def get_room_occupancy_option(db: Session, option_id: int) -> RoomOccupancyOption:

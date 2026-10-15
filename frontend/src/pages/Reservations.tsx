@@ -9,6 +9,7 @@ import Input from "../components/ui/Input";
 import Card from "../components/ui/Card";
 import Modal from "../components/ui/Modal";
 import { SkeletonRow } from "../components/ui/Skeleton";
+import { formatBedding, pickBedding, type OccupancyOption } from "./bedding";
 import {
   TableShell,
   TableHeadRow,
@@ -2323,6 +2324,12 @@ export function ActionInfo({ text, tone = "neutral" }: { text: string; tone?: "n
   );
 }
 
+// Decision 206: what the booking card needs to say how a room's party sleeps.
+interface RoomBeddingInfo {
+  bedType: string | null;
+  options: OccupancyOption[];
+}
+
 function BookingHero({
   booking,
   effectiveBooking,
@@ -2339,7 +2346,11 @@ function BookingHero({
   image,
   statusExtra,
   onClose,
+  bedding,
 }: {
+  // Decision 206: how this room's party sleeps, already worded; null when
+  // the hotel has not described it.
+  bedding?: string | null;
   booking: Booking;
   effectiveBooking: Booking;
   hotelName: string;
@@ -2457,6 +2468,12 @@ function BookingHero({
               value={formatDate(booking.created_at)}
             />
           </div>
+
+          {bedding && (
+            <p className="mt-3 text-sm text-slate/80">
+              <span className="font-medium text-ink">{t("hero.bedding")}:</span> {bedding}
+            </p>
+          )}
 
           {specialRequests && (
             <div className="mt-3 rounded-lg border border-gold/30 bg-gold/5 px-3 py-2">
@@ -3694,7 +3711,11 @@ function BookingDetail({
   claimerNames,
   companyNames,
   adminExtensions,
+  roomBedding,
 }: {
+  // Decision 206: occupancy options (with sleeping places) and bed type per
+  // room type, fetched once per hotel by the list.
+  roomBedding?: Record<number, RoomBeddingInfo>;
   booking: Booking;
   hotelName: string;
   roomTypeName: string;
@@ -3713,7 +3734,7 @@ function BookingDetail({
   companyNames: Record<number, string>;
   adminExtensions?: AdminBookingExtensions;
 }) {
-  const { t } = useTranslation("reservations");
+  const { t, i18n } = useTranslation("reservations");
   const [guests, setGuests] = useState<Guest[] | null>(null);
   const [guestsError, setGuestsError] = useState<string | null>(null);
 
@@ -4298,6 +4319,18 @@ function BookingDetail({
           handlerName={booking.claimed_by !== null ? claimerNames[booking.claimed_by] : undefined}
           roomTypeSummary={roomTypeSummary}
           transferName={displayTransferName}
+          bedding={(() => {
+            const info = roomBedding?.[effectiveBooking.room_type_id];
+            return (
+              formatBedding(
+                pickBedding(info?.options, effectiveBooking.adults, effectiveBooking.children),
+                i18n.language,
+                effectiveBooking.children,
+              ) ??
+              info?.bedType ??
+              null
+            );
+          })()}
           specialRequests={displayRoom?.special_requests || booking.special_requests}
           profile={hotelProfile}
           image={hotelImage}
@@ -5210,6 +5243,7 @@ const BookingsList = ({
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [hotels, setHotels] = useState<Record<number, string>>({});
   const [roomTypes, setRoomTypes] = useState<Record<number, string>>({});
+  const [roomBedding, setRoomBedding] = useState<Record<number, RoomBeddingInfo>>({});
   const [mealPlans, setMealPlans] = useState<Record<number, MealPlanInfo>>({});
   const [agentNames, setAgentNames] = useState<Record<number, string>>({});
   const [companyNames, setCompanyNames] = useState<Record<number, string>>({});
@@ -5478,16 +5512,28 @@ const BookingsList = ({
 
         const uniqueHotelIds = Array.from(new Set(bookingsData.map((b) => b.hotel_id)));
         const roomTypeMap: Record<number, string> = {};
+        const beddingMap: Record<number, RoomBeddingInfo> = {};
         await Promise.all(
           uniqueHotelIds.map(async (hotelId) => {
-            const roomTypesData = await fetchJson<RoomType[]>(
-              `/hotel-engine/hotels/${hotelId}/room-types`,
-              token
-            );
-            roomTypesData.forEach((rt) => (roomTypeMap[rt.id] = rt.room_name));
+            const [roomTypesData, optionsData] = await Promise.all([
+              fetchJson<RoomType[]>(`/hotel-engine/hotels/${hotelId}/room-types`, token),
+              // Decision 206: sleeping places -- one request per hotel, and
+              // best-effort: without them the booking card just omits the line.
+              fetchJson<OccupancyOption[]>(`/hotel-engine/hotels/${hotelId}/occupancy-options?active_only=true`, token).catch(
+                () => [] as OccupancyOption[],
+              ),
+            ]);
+            roomTypesData.forEach((rt) => {
+              roomTypeMap[rt.id] = rt.room_name;
+              beddingMap[rt.id] = {
+                bedType: (rt as RoomType & { bed_type?: string | null }).bed_type ?? null,
+                options: optionsData.filter((o) => o.room_type_id === rt.id),
+              };
+            });
           })
         );
         setRoomTypes(roomTypeMap);
+        setRoomBedding(beddingMap);
 
         const uniqueContractIds = Array.from(new Set(bookingsData.map((b) => b.contract_id)));
         const mealPlanMap: Record<number, MealPlanInfo> = {};
@@ -6210,6 +6256,7 @@ const BookingsList = ({
           roomTypeName={roomTypes[selectedBooking.room_type_id] ?? `#${selectedBooking.room_type_id}`}
           hotels={hotels}
           roomTypes={roomTypes}
+          roomBedding={roomBedding}
           mealPlans={mealPlans}
           mealPlanInfo={mealPlans[selectedBooking.meal_plan_id]}
           onClose={() => setSelectedBooking(null)}

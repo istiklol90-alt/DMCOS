@@ -106,7 +106,8 @@
     "addedToTrip": "Added ✓",
     "copyOffer": "Copy offer",
     "copied": "Copied ✓",
-    "copyFailed": "Could not copy — select the text manually"
+    "copyFailed": "Could not copy — select the text manually",
+    "bedding": "Sleeping"
   },
   "hotelCard": {
     "noActiveContract": "No active contract",
@@ -226,7 +227,6 @@
     "yearsShort": "y.o.",
     "adultsHint": "aged 12+",
     "childrenHint": "up to 17",
-    "childAgeHint": "Age on the arrival date. Under 2 counts as an infant, 12 and over as an adult.",
     "ageUnderOne": "under 1",
     "ageOption_one": "{{count}} year",
     "ageOption_other": "{{count}} years",
@@ -245,6 +245,7 @@
     "total": "Total",
     "roomTitle": "Room {{n}}",
     "roomTotal": "Total for room {{n}}",
-    "grandTotal": "Total for all rooms"
+    "grandTotal": "Total for all rooms",
+    "bedding": "Sleeping"
   }
 }
