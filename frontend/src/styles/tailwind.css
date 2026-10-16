@@ -326,3 +326,15 @@
   from { width: 0%; }
   to { width: 100%; }
 }
+
+/* Public home page: the "scroll down" cue under the hero gently bobs. */
+@keyframes scroll-cue {
+  0%, 100% { transform: translateY(0); opacity: 0.8; }
+  50% { transform: translateY(6px); opacity: 1; }
+}
+
+/* Public home page welcome-offer popup. */
+@keyframes bonus-pop {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}

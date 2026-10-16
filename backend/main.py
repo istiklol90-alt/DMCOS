@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import router
+from api.agent_account import router as agent_account_router
 # TASK-003: authentication engine fully migrated; backend/auth/ retired.
 from app.engines.authentication.api import router as auth_router
 # TASK-002: Hotel Engine domain model, schemas, repository, service, and API.
@@ -36,6 +37,8 @@ app.add_middleware(
 
 # Main API
 app.include_router(router)
+# Decision 215: the signed-in agent's own account and client markup.
+app.include_router(agent_account_router)
 
 # Authentication API
 app.include_router(auth_router)

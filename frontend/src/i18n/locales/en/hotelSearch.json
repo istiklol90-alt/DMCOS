@@ -253,7 +253,9 @@
     "heroTagDestination": "Destination",
     "heroTagSponsored": "Sponsored",
     "heroPrev": "Previous slide",
-    "heroNext": "Next slide"
+    "heroNext": "Next slide",
+    "priceModeClient": "For client",
+    "priceModeNet": "My net"
   },
   "offer": {
     "nights_one": "{{count}} night",

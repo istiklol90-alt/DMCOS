@@ -261,7 +261,9 @@
     "heroTagDestination": "Направление",
     "heroTagSponsored": "Реклама",
     "heroPrev": "Предыдущий слайд",
-    "heroNext": "Следующий слайд"
+    "heroNext": "Следующий слайд",
+    "priceModeClient": "Для клиента",
+    "priceModeNet": "Моё нетто"
   },
   "offer": {
     "nights_one": "{{count}} ночь",

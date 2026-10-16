@@ -2,6 +2,7 @@ from database.db import engine
 from models.base import Base
 from models.user import User
 from models.agent import AgentRegistration
+from models.agent_markup import AgentMarkup  # noqa: F401 (Decision 215)
 from app.engines.hotel.models import (
     HotelCategory,
     Hotel,

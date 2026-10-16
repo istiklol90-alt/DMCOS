@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import App from "./App";
 import Home from "./pages/Home";
+import DestinationPage from "./pages/DestinationPage";
 import Register from "./pages/Register";
 import Login from "./pages/Login";
 import ChangePassword from "./pages/ChangePassword";
@@ -29,6 +30,7 @@ const router = createBrowserRouter([
     element: <App />,
     children: [
       { index: true, element: <Home /> },
+      { path: "destinations/:slug", element: <DestinationPage /> },
       { path: "register", element: <Register /> },
       { path: "login", element: <Login /> },
       {

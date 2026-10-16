@@ -8,6 +8,8 @@ import { handleSessionExpired } from "../session";
 import AgentTopNav from "../components/layout/AgentTopNav";
 import Modal from "../components/ui/Modal";
 import { IconPin, IconSearch } from "../components/ui/icons";
+import HeroSlider from "../components/ui/HeroSlider";
+import { ClientPricingProvider, hasAnyMarkup, useClientPricing } from "./clientPricing";
 import { describeSleeping, pickBedding, type Bedding, type OccupancyOption } from "./bedding";
 
 function localeOf(lang: string): string {
@@ -353,6 +355,18 @@ function offerRoomLines(t: TFunction, lang: string, room: CartRoom): string[] {
   }
   if (room.taxTotal) lines.push(`${room.taxLabel ?? t("offer.taxDefault")}: ${offerMoney(room.taxTotal, room.currency, lang)}`);
   return lines;
+}
+
+// Decision 215: a trip room as the client sees it -- every figure with the
+// agent's own markup for that destination. Each part is rounded on its own
+// and the total is their sum, so the copied lines always add up.
+function clientRoom(room: CartRoom, shown: (amount: number, country: string | null | undefined) => number): CartRoom {
+  const s = (v: number | null | undefined) => (v == null ? v : shown(v, room.country));
+  const roomTotal = s(room.roomTotal);
+  const transferTotal = s(room.transferTotal);
+  const taxTotal = s(room.taxTotal);
+  const parts = roomTotal != null ? roomTotal + (transferTotal ?? 0) + (taxTotal ?? 0) : null;
+  return { ...room, roomTotal, transferTotal, taxTotal, grandTotal: parts ?? s(room.grandTotal) ?? null };
 }
 
 // One room: its lines and a bold total. Several rooms: each numbered, each
@@ -1988,6 +2002,10 @@ function RoomTypeCard({
 }) {
   const { t, i18n: i18nInstance } = useTranslation("hotelSearch");
   const lang = i18nInstance.language;
+  // Decision 215: every figure on this card goes through cp() -- the agent's
+  // net, or the client price with the agent's own markup.
+  const { shown } = useClientPricing();
+  const cp = (amount: number) => shown(amount, hotelCountry);
   const [selectedMealCode, setSelectedMealCode] = useState<string | null>(null);
   const [selectedTransferType, setSelectedTransferType] = useState<string | null>(null);
 
@@ -2146,7 +2164,7 @@ function RoomTypeCard({
   async function handleCopyOffer() {
     const room = buildSelectedRoom();
     if (!room) return;
-    if (await copyText(buildOfferText(t, lang, [room]))) {
+    if (await copyText(buildOfferText(t, lang, [clientRoom(room, shown)]))) {
       setCopiedAt(Date.now());
       setTimeout(() => setCopiedAt(null), 2000);
     } else {
@@ -2213,7 +2231,7 @@ function RoomTypeCard({
               <span className="text-xs text-slate/50">{t("roomTypeCard.from")}</span>{" "}
               <span className="font-mono text-base font-semibold text-ink">
                 {cheapest.price.currency}{" "}
-                {cheapestPerNight.toLocaleString(localeOf(lang), { maximumFractionDigits: 0 })}
+                {cp(cheapestPerNight).toLocaleString(localeOf(lang), { maximumFractionDigits: 0 })}
               </span>{" "}
               <span className="text-xs text-slate/50">{t("roomTypeCard.perNight")}</span>
             </p>
@@ -2255,12 +2273,12 @@ function RoomTypeCard({
                         <div className="text-right">
                           <p className="font-mono text-sm font-semibold text-ink">
                             {opt.price.currency}{" "}
-                            {perNight!.toLocaleString(localeOf(lang), { maximumFractionDigits: 0 })}
+                            {cp(perNight!).toLocaleString(localeOf(lang), { maximumFractionDigits: 0 })}
                             <span className="ml-1 text-xs font-normal text-slate/50">{t("roomTypeCard.perNight")}</span>
                           </p>
                           <p className="text-[11px] text-slate/50">
                             {t("roomTypeCard.totalForNights", { count: opt.price.nights })} {opt.price.currency}{" "}
-                            {opt.agentPrice.agent_room_total.toLocaleString(localeOf(lang))}
+                            {cp(opt.agentPrice.agent_room_total).toLocaleString(localeOf(lang))}
                           </p>
                         </div>
                       ) : (
@@ -2316,7 +2334,7 @@ function RoomTypeCard({
                                   </span>
                                   <span className="font-mono font-medium text-ink">
                                     {opt.price!.currency}{" "}
-                                    {n.final_price.toLocaleString(localeOf(lang), { maximumFractionDigits: 2 })}
+                                    {cp(n.final_price).toLocaleString(localeOf(lang), { maximumFractionDigits: 2 })}
                                   </span>
                                 </div>
                               ))}
@@ -2429,7 +2447,7 @@ function RoomTypeCard({
                             </span>
                           ) : (
                             <span className="font-mono text-xs font-semibold text-ink">
-                              {transferCurrency} {opt.price.total.toLocaleString(localeOf(lang))}
+                              {transferCurrency} {cp(opt.price.total).toLocaleString(localeOf(lang))}
                             </span>
                           )
                         ) : (
@@ -2447,23 +2465,23 @@ function RoomTypeCard({
                         {isPerVehicle(opt) ? (
                           t("roomTypeCard.perVehicleLine", {
                             currency: transferCurrency,
-                            amount: (opt.price ? opt.price.total : (opt.option.price_per_vehicle ?? 0)).toLocaleString(
+                            amount: cp(opt.price ? opt.price.total : (opt.option.price_per_vehicle ?? 0)).toLocaleString(
                               localeOf(lang)
                             ),
                           })
                         ) : (
                           <>
-                            {renderTransferBucketLine(t, lang, adults, "roomTypeCard.adultsLabel", adultTotal, transferCurrency)}
+                            {renderTransferBucketLine(t, lang, adults, "roomTypeCard.adultsLabel", cp(adultTotal), transferCurrency)}
                             {childrenCount > 0 && (
                               <>
                                 <br />
-                                {renderTransferBucketLine(t, lang, childrenCount, "roomTypeCard.childrenLabel", childTotal, transferCurrency)}
+                                {renderTransferBucketLine(t, lang, childrenCount, "roomTypeCard.childrenLabel", cp(childTotal), transferCurrency)}
                               </>
                             )}
                             {infants > 0 && opt.option.price_infant != null && (
                               <>
                                 <br />
-                                {renderTransferBucketLine(t, lang, infants, "roomTypeCard.infantsLabel", infantTotal, transferCurrency)}
+                                {renderTransferBucketLine(t, lang, infants, "roomTypeCard.infantsLabel", cp(infantTotal), transferCurrency)}
                               </>
                             )}
                           </>
@@ -2503,12 +2521,14 @@ function RoomTypeCard({
                   {mandatoryTax.label ?? t("roomTypeCard.mandatoryTaxDefaultLabel")}
                 </span>
                 <span className="font-mono text-xs font-semibold text-ink">
-                  {mandatoryTax.currency} {mandatoryTax.total.toLocaleString(localeOf(lang))}
+                  {mandatoryTax.currency} {cp(mandatoryTax.total).toLocaleString(localeOf(lang))}
                 </span>
               </div>
               <p className="pl-0 text-[11px] leading-relaxed text-slate/50">
                 {t("roomTypeCard.chargeableGuestsLabel", { count: mandatoryTax.chargeable_guests })} × {mandatoryTax.currency}{" "}
-                {mandatoryTax.rate_per_person_per_night.toLocaleString(localeOf(lang))}
+                {(cp(mandatoryTax.total) / Math.max(1, mandatoryTax.chargeable_guests * mandatoryTax.nights)).toLocaleString(localeOf(lang), {
+                  maximumFractionDigits: 2,
+                })}
                 {t("roomTypeCard.perNight")}{" "}
                 {t("roomTypeCard.nightsMultiplier", { count: mandatoryTax.nights })}
               </p>
@@ -2536,7 +2556,12 @@ function RoomTypeCard({
                   })}
                 </span>
                 <span className="font-mono text-base font-semibold text-ink">
-                  {selectedMeal!.price!.currency} {grandTotal.toLocaleString(localeOf(lang))}
+                  {selectedMeal!.price!.currency}{" "}
+                  {(
+                    cp(selectedMeal!.agentPrice!.agent_room_total) +
+                    (selectedTransferTotal != null ? cp(selectedTransferTotal) : 0) +
+                    (mandatoryTax ? cp(mandatoryTax.total) : 0)
+                  ).toLocaleString(localeOf(lang))}
                 </span>
               </div>
 
@@ -2595,6 +2620,7 @@ function HotelListRow({
 }) {
   const { t } = useTranslation("hotelSearch");
   const perNight = cheapestPerNightForHotel(hotel);
+  const { shown } = useClientPricing();
   const location = [hotel.island, hotel.city, hotel.country].filter(Boolean).join(", ");
   return (
     <button
@@ -2621,7 +2647,7 @@ function HotelListRow({
             <span className="mt-0.5 block text-xs text-slate/60">
               {t("roomTypeCard.from")}{" "}
               <span className="font-mono text-sm font-semibold text-ink">
-                {perNight.currency} {perNight.amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                {perNight.currency} {shown(perNight.amount, hotel.country).toLocaleString(undefined, { maximumFractionDigits: 0 })}
               </span>{" "}
               {t("roomTypeCard.perNight")}
             </span>
@@ -2629,169 +2655,6 @@ function HotelListRow({
         )}
       </span>
     </button>
-  );
-}
-
-// Search page hero: a slow cross-fading slideshow behind the title -- the
-// place for destination photos now and paid hotel promotions later. Slides
-// are plain data: adding or swapping one (a hotel's own photo + caption) is
-// an entry in HERO_SLIDES, never a layout change. The photos are free
-// Unsplash images of the destinations we sell (Unsplash License); they are
-// captioned by destination only, never as a specific hotel. A dark overlay
-// keeps the title readable on any photo.
-// Each slide is a promotion card: a destination today, a paying hotel later.
-// `sponsored` marks a paid placement (labelled "Реклама" -- advertising must
-// say so); `href` adds a call-to-action button when it has somewhere to go.
-type HeroSlide = {
-  src: string;
-  key: string; // page.heroSlides.<key>.title / .text (/ .cta with href)
-  credit: string;
-  sponsored?: boolean;
-  href?: string;
-};
-const HERO_SLIDES: HeroSlide[] = [
-  { src: "/hero/maldives.jpg", key: "maldives", credit: "Unsplash" },
-  { src: "/hero/seychelles.jpg", key: "seychelles", credit: "Iain Stettler / Unsplash" },
-  { src: "/hero/mauritius.jpg", key: "mauritius", credit: "Stephan van de Schootbrugge / Unsplash" },
-];
-const HERO_INTERVAL_MS = 7000;
-
-function HeroSlider({ children }: { children: React.ReactNode }) {
-  const { t } = useTranslation("hotelSearch");
-  const [index, setIndex] = useState(0);
-  const [paused, setPaused] = useState(false);
-  const [reducedMotion] = useState(
-    () => typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches,
-  );
-  const count = HERO_SLIDES.length;
-  const go = (i: number) => setIndex(((i % count) + count) % count);
-  // One timer per slide (restarted on every change), so a manual pick gets
-  // its full display time and the progress bar below stays in step.
-  useEffect(() => {
-    if (paused || reducedMotion || count < 2) return;
-    const id = window.setTimeout(() => setIndex((i) => (i + 1) % count), HERO_INTERVAL_MS);
-    return () => window.clearTimeout(id);
-  }, [index, paused, reducedMotion, count]);
-  const slide = HERO_SLIDES[index];
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const arrow =
-    "flex h-8 w-8 appearance-none items-center justify-center rounded-full border border-white/25 bg-white/10 p-0 text-lg leading-none text-white transition-colors hover:bg-white/25";
-
-  return (
-    <div
-      className="relative overflow-hidden bg-ink px-4 pb-24 pt-16 text-center sm:px-8 sm:pb-32 sm:pt-20 lg:pb-36 lg:pt-24"
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
-    >
-      {HERO_SLIDES.map((s, i) => (
-        <img
-          key={s.src}
-          src={s.src}
-          alt=""
-          aria-hidden="true"
-          loading={i === 0 ? "eager" : "lazy"}
-          className={`absolute inset-0 h-full w-full object-cover transition-[opacity,transform] duration-[1600ms] ease-out ${
-            i === index ? "scale-100 opacity-100" : "scale-105 opacity-0"
-          }`}
-        />
-      ))}
-      {/* Readability: navy wash, darker behind the title and along the
-          bottom where the promotion card and the search bar sit. */}
-      <div className="absolute inset-0 bg-ink/45" />
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(27,35,64,0.6)_0%,rgba(27,35,64,0)_60%)]" />
-      <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-ink/70 to-transparent" />
-
-      <div className="relative">{children}</div>
-
-      {/* Promotion card: glass panel, large serif title, text, optional
-          call to action and the slide controls. xl+ only -- below that there
-          is no room beside the page title; the dots underneath remain. */}
-      <div className="absolute right-10 top-10 z-10 hidden w-[18rem] text-left xl:block 2xl:w-[24rem]">
-        <div className="rounded-2xl border border-white/15 bg-ink/45 p-5 shadow-2xl shadow-black/30 backdrop-blur-md">
-          <div className="flex items-center justify-between">
-            <span className="rounded-full border border-gold/50 bg-gold/15 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-gold">
-              {slide.sponsored ? t("page.heroTagSponsored") : t("page.heroTagDestination")}
-            </span>
-            <span className="font-mono text-xs text-white/60">
-              <span className="text-white">{pad(index + 1)}</span> / {pad(count)}
-            </span>
-          </div>
-          <h2 className="mt-3 font-display text-2xl font-semibold leading-tight text-white 2xl:text-3xl">
-            {t(`page.heroSlides.${slide.key}.title`)}
-          </h2>
-          <p className="mt-1.5 text-sm leading-relaxed text-white/80">{t(`page.heroSlides.${slide.key}.text`)}</p>
-          {slide.href && (
-            <a
-              href={slide.href}
-              className="mt-4 inline-flex items-center rounded-full bg-gold px-4 py-2 text-sm font-medium text-white no-underline transition-colors hover:bg-gold-deep"
-            >
-              {t(`page.heroSlides.${slide.key}.cta`)}
-            </a>
-          )}
-          <div className="mt-4 flex items-center gap-3">
-            <div className="flex flex-1 gap-1.5">
-              {HERO_SLIDES.map((s, i) => (
-                <button
-                  key={s.src}
-                  type="button"
-                  onClick={() => go(i)}
-                  aria-label={`${t("page.heroSlideLabel")} ${i + 1}`}
-                  aria-current={i === index}
-                  className="relative h-1 flex-1 appearance-none overflow-hidden rounded-full border-0 bg-white/25 p-0"
-                >
-                  <span
-                    key={i === index ? `on-${index}` : `off-${i}`}
-                    className="absolute inset-y-0 left-0 rounded-full bg-gold"
-                    style={
-                      i < index || (i === index && reducedMotion)
-                        ? { width: "100%" }
-                        : i === index
-                          ? {
-                              width: "0%",
-                              animation: `hero-progress ${HERO_INTERVAL_MS}ms linear forwards`,
-                              animationPlayState: paused ? "paused" : "running",
-                            }
-                          : { width: "0%" }
-                    }
-                  />
-                </button>
-              ))}
-            </div>
-            <div className="flex gap-1">
-              <button type="button" onClick={() => go(index - 1)} aria-label={t("page.heroPrev")} className={arrow}>
-                ‹
-              </button>
-              <button type="button" onClick={() => go(index + 1)} aria-label={t("page.heroNext")} className={arrow}>
-                ›
-              </button>
-            </div>
-          </div>
-        </div>
-        <p className="mt-1.5 text-right text-[10px] text-white/40">
-          {t("page.heroPhoto")}: {slide.credit}
-        </p>
-      </div>
-
-      {/* Narrow screens: caption and dots only. */}
-      <div className="absolute bottom-16 left-0 right-0 flex items-center justify-center gap-3 xl:hidden">
-        <span className="rounded-full bg-black/30 px-3 py-1 text-xs font-medium text-white/90 backdrop-blur-sm">
-          {t(`page.heroSlides.${slide.key}.title`)}
-        </span>
-        <div className="flex gap-1.5">
-          {HERO_SLIDES.map((s, i) => (
-            <button
-              key={s.src}
-              type="button"
-              onClick={() => go(i)}
-              aria-label={`${t("page.heroSlideLabel")} ${i + 1}`}
-              className={`h-1.5 appearance-none rounded-full border-0 p-0 transition-all ${
-                i === index ? "w-6 bg-gold" : "w-1.5 bg-white/60"
-              }`}
-            />
-          ))}
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -2836,6 +2699,7 @@ function HotelCard({
   const [expandedRoomTypes, setExpandedRoomTypes] = useState<Set<number>>(new Set());
   const location = [hotel.island, hotel.city, hotel.country].filter(Boolean).join(", ");
   const perNight = cheapestPerNightForHotel(hotel);
+  const { shown } = useClientPricing();
   // Distinct meal-plan codes across every room type -- already-fetched
   // data (rt.options), never a new fetch. Order-preserving dedupe (not a
   // Set spread) so the badge row always lists a room type's first-seen
@@ -2906,7 +2770,7 @@ function HotelCard({
                   </p>
                   <p className="font-mono text-2xl font-semibold text-ink">
                     {perNight.currency}{" "}
-                    {perNight.amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                    {shown(perNight.amount, hotel.country).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                   </p>
                   <p className="text-[11px] text-slate/40">{t("roomTypeCard.perNight")}</p>
                 </div>
@@ -3017,12 +2881,13 @@ function CartPanel({
   const [open, setOpen] = useState(false);
   const pinned = variant === "pinned";
   const showList = pinned || open;
+  const { shown } = useClientPricing();
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
 
   // Every room in the trip as one message: numbered rooms, each with its own
   // total, then the grand total.
   async function handleCopyAll() {
-    const ok = await copyText(buildOfferText(t, i18nInstance.language, cart));
+    const ok = await copyText(buildOfferText(t, i18nInstance.language, cart.map((r) => clientRoom(r, shown))));
     setCopyState(ok ? "copied" : "failed");
     setTimeout(() => setCopyState("idle"), 2000);
   }
@@ -3096,7 +2961,7 @@ function CartPanel({
                   <p className="text-xs text-slate/50">{formatCartOccupancy(t, room)}</p>
                   {room.grandTotal != null && (
                     <p className="mt-0.5 font-mono text-xs font-semibold text-ink">
-                      {room.currency} {room.grandTotal.toLocaleString()}
+                      {room.currency} {clientRoom(room, shown).grandTotal?.toLocaleString()}
                     </p>
                   )}
                 </div>
@@ -4660,7 +4525,45 @@ export interface InitialSearch {
   adults?: number;
 }
 
+// Decision 215: the agent's client-markup context wraps the whole page.
 function HotelSearch() {
+  return (
+    <ClientPricingProvider>
+      <HotelSearchPage />
+    </ClientPricingProvider>
+  );
+}
+
+// Net / client switch above the results -- shown only once the agent has set
+// a markup in their account. Worded neutrally ("for client") so the screen
+// can be turned towards a client without announcing a margin.
+function PriceModeSwitch() {
+  const { t } = useTranslation("hotelSearch");
+  const { markups, mode, setMode } = useClientPricing();
+  if (!hasAnyMarkup(markups)) return null;
+  const btn = (m: "client" | "net", label: string) => (
+    <button
+      type="button"
+      onClick={() => setMode(m)}
+      aria-pressed={mode === m}
+      className={`appearance-none rounded-full border-0 px-3 py-1 text-xs font-medium transition-colors ${
+        mode === m ? "bg-ink text-white" : "bg-transparent text-slate/60 hover:text-ink"
+      }`}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="mb-3 flex justify-end">
+      <div className="flex items-center gap-1 rounded-full border border-ink/10 bg-white p-0.5 shadow-sm">
+        {btn("client", t("page.priceModeClient"))}
+        {btn("net", t("page.priceModeNet"))}
+      </div>
+    </div>
+  );
+}
+
+function HotelSearchPage() {
   const { t } = useTranslation("hotelSearch");
   const location = useLocation();
   // Routing fix (2026-07-29): the destination hint AgentDashboard_v2.tsx's
@@ -4733,6 +4636,7 @@ function HotelSearch() {
   // handleSearch falls back to fetching it fresh itself, so a slow/failed
   // background load never breaks a real search.
   const [catalogHotels, setCatalogHotels] = useState<Hotel[]>([]);
+  const { shown: shownPrice } = useClientPricing();
   const [catalogLoaded, setCatalogLoaded] = useState(false);
 
   useEffect(() => {
@@ -4868,6 +4772,11 @@ function HotelSearch() {
   const [scanCfg, setScanCfg] = useState<FlexibleDatesConfig | null>(null);
   const [scanCandidates, setScanCandidates] = useState<string[]>([]);
   const [scanRows, setScanRows] = useState<DateScanRow[]>([]);
+  // Decision 215: the price calendar shows the same figures as the cards.
+  const countryByHotel = new Map(catalogHotels.map((h) => [h.id, h.country]));
+  const scanRowsShown = scanRows.map((r) =>
+    r.min_total == null ? r : { ...r, min_total: shownPrice(r.min_total, countryByHotel.get(r.hotel_id)) },
+  );
   const [scanning, setScanning] = useState(false);
   const [scannedCount, setScannedCount] = useState(0);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -5322,7 +5231,7 @@ function HotelSearch() {
           ref={setSearchBarEl}
           onSubmit={handleSearch}
           style={{ top: barTop }}
-          className={`-mt-10 rounded-2xl border shadow-xl transition-colors duration-200 sm:sticky sm:z-30 sm:-mt-12 sm:rounded-[2.5rem] ${
+          className={`relative z-30 -mt-10 rounded-2xl border shadow-xl transition-colors duration-200 sm:sticky sm:-mt-12 sm:rounded-[2.5rem] ${
             barStuck ? "border-gold/40 bg-[#fbf6ee]" : "border-ink/10 bg-white"
           }`}
         >
@@ -5508,7 +5417,7 @@ function HotelSearch() {
           <FlexibleResultsPanel
             cfg={scanCfg}
             candidates={scanCandidates}
-            rows={scanRows}
+            rows={scanRowsShown}
             scanning={scanning}
             scannedCount={scannedCount}
             error={scanError}
@@ -5581,6 +5490,7 @@ function HotelSearch() {
           )}
 
           <div className={showHotelList ? "space-y-5 lg:space-y-0" : "space-y-5"}>
+            {results.length > 0 && <PriceModeSwitch />}
             {resultsStale && results.length > 0 && (
               <div
                 role="status"

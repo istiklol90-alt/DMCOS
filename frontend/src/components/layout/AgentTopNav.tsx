@@ -230,6 +230,16 @@ export default function AgentTopNav({ user, active }: AgentTopNavProps) {
                   <div className="my-1 h-px bg-ink/10" />
                   <button
                     type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      navigate("/agent-dashboard?view=account");
+                    }}
+                    className="block w-full appearance-none border-0 bg-transparent px-3.5 py-2 text-left text-sm text-ink transition-colors hover:bg-sand/60"
+                  >
+                    {t("nav.account")}
+                  </button>
+                  <button
+                    type="button"
                     onClick={handleLogout}
                     className="block w-full appearance-none border-0 bg-transparent px-3.5 py-2 text-left text-sm text-slate/70 transition-colors hover:bg-sand/60 hover:text-ink"
                   >

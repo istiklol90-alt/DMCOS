@@ -1,1 +1,163 @@
-{}
+{
+  "site": {
+    "nav": {
+      "about": "About us",
+      "services": "What we do",
+      "destinations": "Destinations",
+      "howItWorks": "How to start",
+      "menu": "Menu",
+      "why": "Why us",
+      "close": "Close",
+      "company": "Company",
+      "agencies": "For agencies",
+      "allDestinations": "All destinations"
+    },
+    "auth": {
+      "register": "Register",
+      "agentLogin": "Agent login",
+      "admin": "Admin"
+    },
+    "hero": {
+      "tag": "B2B platform for travel agencies",
+      "subtitle": "Hotels, contracts, bookings, prices and AI automation in one platform",
+      "point1": "Direct contracts with hotels",
+      "point2": "Prices with seasons and special offers applied",
+      "point3": "Booking, invoices and vouchers in one place",
+      "scroll": "Scroll down — about us, destinations and how to start"
+    },
+    "about": {
+      "tag": "Who we are",
+      "title": "A destination management company for travel agencies",
+      "p1": "We work with hotels directly under contract and give agencies access to those rates. An agent finds a hotel, sees the final price with the season, special offers and transfer, and sends a request — no back-and-forth, no manual recalculation.",
+      "p2": "Every request is handled by our manager: confirmed with the hotel, invoiced, and a voucher issued for the guests."
+    },
+    "services": {
+      "tag": "What we do",
+      "title": "Everything an agency needs in one account",
+      "hotels": {
+        "title": "Hotels",
+        "text": "Contracts, prices, availability and special offers"
+      },
+      "bookings": {
+        "title": "Bookings",
+        "text": "Fast creation, confirmation and management"
+      },
+      "prices": {
+        "title": "Prices",
+        "text": "Current prices and partner discounts"
+      },
+      "ai": {
+        "title": "AI Assistant",
+        "text": "Smart recommendations and automation"
+      }
+    },
+    "destinations": {
+      "tag": "Our destinations",
+      "title": "Islands of the Indian Ocean",
+      "maldives": {
+        "title": "Maldives",
+        "text": "Villas over the lagoon and atolls with crystal-clear water."
+      },
+      "seychelles": {
+        "title": "Seychelles",
+        "text": "Granite boulders, empty beaches and unique nature."
+      },
+      "mauritius": {
+        "title": "Mauritius",
+        "text": "Lagoons under the mountains, reefs and long beaches."
+      }
+    },
+    "how": {
+      "tag": "How to start",
+      "title": "Four steps to your first booking",
+      "s1": {
+        "title": "Register",
+        "text": "Fill in the request to connect your agency."
+      },
+      "s2": {
+        "title": "Review",
+        "text": "We review the agency and send you access to the account."
+      },
+      "s3": {
+        "title": "Search and request",
+        "text": "Pick a hotel and room — the price is already calculated from the contract."
+      },
+      "s4": {
+        "title": "Documents",
+        "text": "Hotel confirmation, invoice and voucher — in the booking card."
+      },
+      "cta": "Connect your agency"
+    },
+    "footer": {
+      "about": "B2B platform of a destination management company for travel agencies.",
+      "sections": "Sections",
+      "account": "Account",
+      "rights": "All rights reserved."
+    },
+    "bonus": {
+      "badgeNew": "New agencies",
+      "badgeFirst": "First booking",
+      "title": "100 USD bonus on your first booking",
+      "text": "Register your agency and get a 100 USD bonus with your first booking request.",
+      "cta": "Register",
+      "later": "Later",
+      "close": "Close"
+    },
+    "why": {
+      "tag": "Why us",
+      "title": "What an agency gets by working with us",
+      "contract": {
+        "title": "Prices straight from the contract",
+        "text": "Season, special offers, mandatory fees and transfer already included."
+      },
+      "copy": {
+        "title": "A client offer in one click",
+        "text": "Ready text with the room, dates and price — straight to WhatsApp."
+      },
+      "manager": {
+        "title": "A manager on every request",
+        "text": "Confirms the booking with the hotel and keeps you informed."
+      },
+      "docs": {
+        "title": "Documents in your account",
+        "text": "Invoice and guest voucher — in the booking card."
+      },
+      "rooms": {
+        "title": "Several rooms in one request",
+        "text": "Families and groups — one booking, one invoice."
+      },
+      "changes": {
+        "title": "Changes after booking",
+        "text": "Dates, guests, flights and transfer are changed in your account."
+      }
+    },
+    "dest": {
+      "more": "Discover more",
+      "back": "All destinations",
+      "facts": "At a glance",
+      "forAgents": "For agents",
+      "agents1": "Prices from our hotel contracts — with seasons, special offers and transfer.",
+      "agents2": "Our manager confirms the request; invoice and voucher are in your account.",
+      "ctaTitle": "Want to sell this destination?",
+      "ctaText": "Connect your agency — access to prices opens after review.",
+      "maldives": {
+        "lead": "The Maldives — about 1,200 islands in 26 atolls of the Indian Ocean. Resorts each take an island of their own: water and beach villas, lagoons, reefs.",
+        "f1": "Transfer from Malé airport by seaplane, speedboat or domestic flight, depending on the atoll.",
+        "f2": "Dry season and calmest weather — roughly November to April.",
+        "f3": "Popular: water villas, snorkelling and diving, all-inclusive programmes."
+      },
+      "seychelles": {
+        "lead": "The Seychelles — an archipelago of 115 islands. The main ones are Mahé, Praslin and La Digue: granite boulders, beaches and tropical nature.",
+        "f1": "The international airport is on Mahé; ferries and domestic flights connect the islands.",
+        "f2": "A year-round destination; the trade winds change around May and October.",
+        "f3": "Popular: the beaches of La Digue and Praslin, nature parks, pool villas."
+      },
+      "mauritius": {
+        "lead": "Mauritius — a volcanic island ringed by a coral reef. Lagoons, mountains and long beaches; the Le Morne peninsula in the south-west.",
+        "f1": "The international airport is in the south-east; resorts are reached by road.",
+        "f2": "Southern-hemisphere summer is November to April; winter (May–October) is mild and drier.",
+        "f3": "Popular: lagoons and reefs, golf, kitesurfing at Le Morne."
+      }
+    }
+  }
+}

@@ -11,7 +11,8 @@
     "finance": "Finance",
     "messages": "Messages",
     "notifications": "Notifications",
-    "signOut": "Sign out"
+    "signOut": "Sign out",
+    "account": "My account"
   },
   "mobileNav": {
     "openMenu": "Open menu",
@@ -58,5 +59,31 @@
   "bookingsPage": {
     "title": "My bookings",
     "back": "Home"
+  },
+  "account": {
+    "title": "My account",
+    "back": "Home",
+    "detailsTitle": "Agent details",
+    "detailsHint": "To change these details, contact us.",
+    "name": "Name",
+    "email": "E-mail",
+    "company": "Company",
+    "contact": "Contact person",
+    "phone": "Phone",
+    "location": "City, country",
+    "currency": "Currency",
+    "memberSince": "With us since",
+    "loadFailed": "Could not load the details.",
+    "markupTitle": "My markup for clients",
+    "markupHint": "Set your own percentage — search will show prices with your markup, so the screen can be shown to a client. Bookings and invoices stay at your net price.",
+    "defaultLabel": "All destinations",
+    "defaultHint": "When a destination has no percentage of its own",
+    "countryHint": "An empty field follows the “all destinations” percentage.",
+    "save": "Save",
+    "saving": "Saving…",
+    "saved": "Saved",
+    "saveFailed": "Could not save",
+    "invalidPercent": "enter a number from 0 to 100",
+    "markupNote": "Only you can see and change your markup. We do not receive or count it: requests, invoices and settlements use your net price."
   }
 }

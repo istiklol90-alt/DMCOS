@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import BookingsList, { StatusBadge } from "./Reservations";
 import AgentTopNav from "../components/layout/AgentTopNav";
+import AgentAccount from "./AgentAccount";
+import HeroSlider from "../components/ui/HeroSlider";
 import type { SessionUser } from "../components/layout/AgentTopNav";
 import { API_URL } from "../config";
 import { handleSessionExpired } from "../session";
@@ -11,9 +13,10 @@ import { IconCalendar, IconChevronRight, IconClock, IconPin, IconSearch, IconChe
 // ---------------------------------------------------------------------------
 // Agent home + "My bookings" (owner, 2026-10-14).
 //
-// Two screens on the one /agent-dashboard route, told apart by ?view=:
+// Three screens on the one /agent-dashboard route, told apart by ?view=:
 //   /agent-dashboard                 home
 //   /agent-dashboard?view=bookings   the agent's full bookings list
+//   /agent-dashboard?view=account    the agent's own account: details + client markup (Decision 215)
 // A query parameter rather than a new route, so router.tsx (shared with the
 // admin panel) does not change.
 //
@@ -102,7 +105,8 @@ function AgentDashboard_v2() {
   const { t, i18n } = useTranslation("agentDashboard");
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const view = searchParams.get("view") === "bookings" ? "bookings" : "home";
+  const rawView = searchParams.get("view");
+  const view = rawView === "bookings" ? "bookings" : rawView === "account" ? "account" : "home";
   const [user, setUser] = useState<SessionUser | null>(null);
 
   // Routing fix (2026-07-29): the token/role guard is RequireAuth's job,
@@ -147,6 +151,18 @@ function AgentDashboard_v2() {
           </div>
           {/* Scoped to this agent only. */}
           <BookingsList scope={{ type: "agent", agentId: user.id }} permissions={BOOKINGS_PERMISSIONS} />
+        </main>
+      ) : view === "account" ? (
+        <main className="mx-auto max-w-[96rem] px-4 pb-12 pt-8 sm:px-8">
+          <button
+            type="button"
+            onClick={() => navigate("/agent-dashboard")}
+            className="appearance-none border-0 bg-transparent p-0 text-xs font-medium text-gold-deep hover:text-ink"
+          >
+            ← {t("account.back")}
+          </button>
+          <h1 className="mb-5 mt-1 font-display text-2xl font-semibold text-ink sm:text-3xl">{t("account.title")}</h1>
+          <AgentAccount />
         </main>
       ) : (
         <Home user={user} lang={i18n.language} onOpenBookings={openBookings} />
@@ -213,15 +229,14 @@ function Home({ user, lang, onOpenBookings }: { user: SessionUser; lang: string;
 
   return (
     <>
-      {/* Hero -- same ink/gold gradient as the search page's hero. The two
-          actions live here now; the white box that held one lonely button
-          is gone. */}
-      <div className="bg-gradient-to-br from-ink via-ink to-gold/30 px-4 pb-24 pt-14 text-center sm:px-8 sm:pt-16">
+      {/* Hero -- the same photo slider and promotion card as the search
+          page (HeroSlider). The two actions live here. */}
+      <HeroSlider padding="pb-28 pt-14 sm:pt-16" cardFrom="2xl">
         <p className="text-xs font-semibold uppercase tracking-widest text-gold">{t("hero.title")}</p>
-        <h1 className="mt-2 font-display text-3xl font-semibold text-white sm:text-5xl">
+        <h1 className="mt-2 font-display text-3xl font-semibold text-white drop-shadow sm:text-5xl">
           {t("hero.greeting", { name: getFirstName(user.name) })}
         </h1>
-        <p className="mx-auto mt-3 max-w-xl text-sm text-white/70 sm:text-base">{t("hero.subtitle")}</p>
+        <p className="mx-auto mt-3 max-w-xl text-sm text-white/85 drop-shadow sm:text-base">{t("hero.subtitle")}</p>
         <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
           <button
             type="button"
@@ -239,9 +254,9 @@ function Home({ user, lang, onOpenBookings }: { user: SessionUser; lang: string;
             {t("hero.bookingsButton")}
           </button>
         </div>
-      </div>
+      </HeroSlider>
 
-      <main className="mx-auto -mt-14 max-w-[96rem] px-4 pb-14 sm:px-8">
+      <main className="relative z-10 mx-auto -mt-14 max-w-[96rem] px-4 pb-14 sm:px-8">
         {/* Real figures, each a way into the bookings list. */}
         {!summaryFailed && (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
