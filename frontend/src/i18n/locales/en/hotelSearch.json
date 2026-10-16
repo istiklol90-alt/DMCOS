@@ -232,7 +232,8 @@
     "ageUnderOne": "under 1",
     "ageOption_one": "{{count}} year",
     "ageOption_other": "{{count}} years",
-    "guestsDone": "Done"
+    "guestsDone": "Done",
+    "resultsStale": "Search details have changed — the prices below are for the previous guests and dates. Press \"Search hotels\" to update."
   },
   "offer": {
     "nights_one": "{{count}} night",

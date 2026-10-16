@@ -212,7 +212,7 @@ function RoomTypeCard({
           </p>
         )}
         {options.map((o) => (
-          <OptionEditor key={o.id} option={o} onSaved={onOptionSaved} />
+          <OptionEditor key={o.id} option={o} onSaved={onOptionSaved} bedroomCount={roomType.bedroom_count} />
         ))}
       </div>
 
@@ -252,7 +252,15 @@ function RoomTypeCard({
   );
 }
 
-function OptionEditor({ option, onSaved }: { option: OccupancyOption; onSaved: (o: OccupancyOption) => void }) {
+function OptionEditor({
+  option,
+  onSaved,
+  bedroomCount,
+}: {
+  option: OccupancyOption;
+  onSaved: (o: OccupancyOption) => void;
+  bedroomCount: number | null;
+}) {
   const { toast } = useFeedback();
   const [beds, setBeds] = useState<BedItem[]>(option.beds);
   const [note, setNote] = useState(option.bedding_note ?? "");
@@ -352,9 +360,9 @@ function OptionEditor({ option, onSaved }: { option: OccupancyOption; onSaved: (
 
       <div className="mt-2 rounded-lg bg-sand/50 px-3 py-2 text-xs text-slate/70">
         <span className="font-medium text-ink">Agents see:</span>{" "}
-        {formatBedding(preview, "ru", option.children) ?? <span className="text-slate/40">nothing yet</span>}
-        {formatBedding(preview, "en", option.children) && (
-          <span className="block text-slate/50">EN: {formatBedding(preview, "en", option.children)}</span>
+        {formatBedding(preview, "ru", option.children, bedroomCount) ?? <span className="text-slate/40">nothing yet</span>}
+        {formatBedding(preview, "en", option.children, bedroomCount) && (
+          <span className="block text-slate/50">EN: {formatBedding(preview, "en", option.children, bedroomCount)}</span>
         )}
       </div>
     </div>

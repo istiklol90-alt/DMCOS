@@ -240,7 +240,8 @@
     "ageOption_few": "{{count}} года",
     "ageOption_many": "{{count}} лет",
     "ageOption_other": "{{count}} лет",
-    "guestsDone": "Готово"
+    "guestsDone": "Готово",
+    "resultsStale": "Параметры поиска изменены — цены ниже посчитаны для прежнего состава и дат. Нажмите «Найти отели», чтобы обновить."
   },
   "offer": {
     "nights_one": "{{count}} ночь",

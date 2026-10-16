@@ -105,7 +105,7 @@ Complete Charter Management
 
 Modules:
 
-* Contract Reader
+* Contract Reader — plan: `docs/plans/ai-contract-import.md` (upload a PDF, the AI enters the contract, a person answers its questions and activates)
 * AI Pricing
 * AI Reports
 * AI Support

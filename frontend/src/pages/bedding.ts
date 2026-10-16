@@ -110,17 +110,65 @@ export function bedLabel(type: BedType, count: number, lang: string): string {
 // note after a dash. null when there is nothing to say. `children` is the
 // party's child count: when exactly one place is marked for children, the
 // text says how many children it is for; otherwise just "for children".
-export function formatBedding(bedding: Bedding | null | undefined, lang: string, children?: number): string | null {
-  if (!bedding) return null;
+//
+// `bedroomCount` (the room type's own): a room with several bedrooms says
+// so first, otherwise "3 king beds" reads as three beds in one room --
+// "3 спальни, в каждой — двуспальная кровать King; + 1 диван-кушетка". When
+// nothing else is known it still says "3 спальни".
+export function formatBedding(
+  bedding: Bedding | null | undefined,
+  lang: string,
+  children?: number,
+  bedroomCount?: number | null,
+): string | null {
   const l = langOf(lang);
+  const rooms = bedroomCount && bedroomCount > 1 ? bedroomsLabel(bedroomCount, l) : null;
+  if (!bedding) return rooms;
   const childPlaces = bedding.beds.filter((b) => b.for_children).length;
   const childLabel = childPlaces === 1 && children && children > 0 ? forChildrenCount(children, l) : FOR_CHILDREN[l];
-  const parts = bedding.beds.map(
-    (b) => `${b.count} ${bedLabel(b.type, b.count, l)}${b.for_children ? ` (${childLabel})` : ""}`,
-  );
+  const item = (b: BedItem) => `${b.count} ${bedLabel(b.type, b.count, l)}${b.for_children ? ` (${childLabel})` : ""}`;
   const note = bedding.note?.trim();
-  if (parts.length === 0) return note || null;
-  return note ? `${parts.join(" + ")} — ${note}` : parts.join(" + ");
+  const withNote = (text: string | null) => (text && note ? `${text} — ${note}` : text || note || null);
+
+  if (!rooms) return withNote(bedding.beds.length ? bedding.beds.map(item).join(" + ") : null);
+
+  // One main bed per bedroom, all of one kind: "в каждой — ...".
+  const main = bedding.beds.filter((b) => MAIN_BEDS.has(b.type) && !b.for_children);
+  const extras = bedding.beds.filter((b) => !main.includes(b));
+  if (main.length === 1 && main[0].count === bedroomCount) {
+    const each = `${rooms}, ${EACH[l]} ${bedLabel(main[0].type, 1, l)}`;
+    return withNote(extras.length ? `${each}; + ${extras.map(item).join(" + ")}` : each);
+  }
+  if (bedding.beds.length === 0) return withNote(rooms);
+  if (main.length === 0) return withNote(`${rooms} + ${bedding.beds.map(item).join(" + ")}`);
+  return withNote(`${rooms}: ${bedding.beds.map(item).join(" + ")}`);
+}
+
+// What every screen shows: the described sleeping places when the hotel has
+// entered them, otherwise the room's own free-text bed type -- both led by the
+// number of bedrooms when there is more than one. null when nothing is known.
+export function describeSleeping(
+  bedding: Bedding | null | undefined,
+  bedType: string | null | undefined,
+  lang: string,
+  children?: number,
+  bedroomCount?: number | null,
+): string | null {
+  if (bedding) return formatBedding(bedding, lang, children, bedroomCount);
+  const rooms = formatBedding(null, lang, children, bedroomCount);
+  const free = bedType?.trim();
+  if (free) return rooms ? `${rooms}: ${free}` : free;
+  return rooms;
+}
+
+// Beds a bedroom is built around (as opposed to extras set up in a room).
+const MAIN_BEDS = new Set<BedType>(["king", "queen", "double", "single"]);
+const EACH: Record<Lang, string> = { ru: "в каждой —", en: "each with a" };
+
+function bedroomsLabel(n: number, l: Lang): string {
+  if (l === "en") return `${n} bedrooms`;
+  const rule = ruPlural.select(n);
+  return `${n} ${rule === "one" ? "спальня" : rule === "few" ? "спальни" : "спален"}`;
 }
 
 // The occupancy option that describes this party: an exact match first,

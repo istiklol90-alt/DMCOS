@@ -8,7 +8,7 @@ import { handleSessionExpired } from "../session";
 import AgentTopNav from "../components/layout/AgentTopNav";
 import Modal from "../components/ui/Modal";
 import { IconPin, IconSearch } from "../components/ui/icons";
-import { formatBedding, pickBedding, type Bedding, type OccupancyOption } from "./bedding";
+import { describeSleeping, pickBedding, type Bedding, type OccupancyOption } from "./bedding";
 
 function localeOf(lang: string): string {
   return lang === "en" ? "en-US" : "ru-RU";
@@ -156,6 +156,7 @@ type RoomType = {
   bed_type: string | null;
   max_occupancy: number;
   status: string;
+  bedroom_count?: number | null;
 };
 
 type Contract = {
@@ -287,6 +288,7 @@ type CartRoom = {
   // worded in whatever language is active when it is copied.
   bedding?: Bedding | null;
   bedType?: string | null;
+  bedroomCount?: number | null;
   // Decision 212: offers to mention in the copied text.
   offers?: RoomOffer[];
   // Copy-offer text (the manager or agent pastes it into WhatsApp): the
@@ -334,7 +336,7 @@ function offerRoomLines(t: TFunction, lang: string, room: CartRoom): string[] {
     formatSearchOccupancy(t, { adults: room.adults, children: room.children, infants: room.infants }, room.childAges),
     `${t("offer.roomType")}: ${room.roomTypeName}`,
   ];
-  const sleeping = formatBedding(room.bedding, lang, room.children) ?? room.bedType ?? null;
+  const sleeping = describeSleeping(room.bedding, room.bedType, lang, room.children, room.bedroomCount);
   if (sleeping) lines.push(`${t("offer.bedding")}: ${sleeping}`);
   lines.push(`${t("offer.meal")}: ${room.mealPlanLabel}`);
   for (const o of room.offers ?? []) {
@@ -1954,7 +1956,9 @@ function RoomTypeCard({
   hotelStars,
   hotelLocation,
   onAddToTrip,
+  stale = false,
 }: {
+  stale?: boolean;
   rt: RoomTypeResult;
   expanded: boolean;
   onToggle: () => void;
@@ -2116,6 +2120,7 @@ function RoomTypeCard({
       hotelLocation,
       bedding: rt.bedding ?? null,
       bedType: rt.bed_type,
+      bedroomCount: rt.bedroom_count ?? null,
       offers: (rt.offers ?? []).filter(
         (o) => o.discountPercent === null || (selectedMeal.price?.applied_special_offer_ids ?? []).includes(o.id),
       ),
@@ -2189,12 +2194,12 @@ function RoomTypeCard({
                 {o.description && <p className="mt-0.5 leading-snug text-slate/70">{o.description}</p>}
               </div>
             ))}
-          {(formatBedding(rt.bedding, lang, childrenCount) ?? rt.bed_type) && (
+          {describeSleeping(rt.bedding, rt.bed_type, lang, childrenCount, rt.bedroom_count) && (
             <p className="mt-1.5 inline-flex items-start gap-1.5 rounded-lg bg-sand/60 px-2.5 py-1.5 text-xs text-ink">
               <IconBed className="mt-px h-4 w-4 shrink-0 text-gold-deep" />
               <span>
                 <span className="font-semibold">{t("roomTypeCard.bedding")}:</span>{" "}
-                {formatBedding(rt.bedding, lang, childrenCount) ?? rt.bed_type}
+                {describeSleeping(rt.bedding, rt.bed_type, lang, childrenCount, rt.bedroom_count)}
               </span>
             </p>
           )}
@@ -2544,7 +2549,8 @@ function RoomTypeCard({
                 <button
                   type="button"
                   onClick={handleAddToTrip}
-                  className="w-full rounded-xl bg-ink px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 sm:flex-1"
+                  disabled={stale}
+                  className="w-full rounded-xl bg-ink px-5 py-2.5 text-sm font-medium text-white shadow-sm shadow-ink/30 transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 sm:flex-1"
                 >
                   {addedToTripAt ? t("roomTypeCard.addedToTrip") : t("roomTypeCard.addToTrip")}
                 </button>
@@ -2553,7 +2559,8 @@ function RoomTypeCard({
                 <button
                   type="button"
                   onClick={handleCopyOffer}
-                  className="w-full rounded-xl border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-sand sm:w-auto"
+                  disabled={stale}
+                  className="w-full rounded-xl border border-ink/15 bg-white px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-sand disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto"
                 >
                   {copiedAt ? t("roomTypeCard.copied") : t("roomTypeCard.copyOffer")}
                 </button>
@@ -2637,7 +2644,11 @@ function HotelCard({
   checkOut,
   onAddToTrip,
   inColumnLayout = false,
+  stale = false,
 }: {
+  // True when the form changed after this search: booking and copying are
+  // blocked until the agent searches again.
+  stale?: boolean;
   hotel: HotelResult;
   gradient: string;
   adults: number;
@@ -2700,7 +2711,7 @@ function HotelCard({
             genuinely identical instead of depending on which card edge
             each one happens to touch. */}
         <div
-          className={`relative m-6 mb-0 h-40 shrink-0 overflow-hidden rounded-2xl bg-gradient-to-br sm:mr-0 sm:h-48 sm:w-64 ${
+          className={`relative m-6 mb-0 h-40 shrink-0 overflow-hidden rounded-2xl bg-gradient-to-br sm:mr-0 sm:h-32 sm:w-48 ${
             inColumnLayout ? "lg:hidden" : ""
           } ${gradient}`}
         >
@@ -2711,7 +2722,7 @@ function HotelCard({
           )}
         </div>
 
-        <div className="min-w-0 flex-1 p-6">
+        <div className="min-w-0 flex-1 p-6 pb-0">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <h3 className="truncate font-display text-xl font-semibold text-ink">{hotel.hotel_name}</h3>
@@ -2760,39 +2771,42 @@ function HotelCard({
             </div>
           )}
 
-          {hotel.roomTypes.length === 0 ? (
-            <p className="mt-4 text-sm text-slate/50">{t("hotelCard.noRoomTypes")}</p>
-          ) : (
-            <div className="mt-4 space-y-3">
-              {sortRoomTypesByPrice(hotel.roomTypes).map((rt) => (
-                <RoomTypeCard
-                  key={rt.id}
-                  rt={rt}
-                  expanded={expandedRoomTypes.has(rt.id)}
-                  onToggle={() => toggleRoomType(rt.id)}
-                  transferOptions={hotel.transferOptions}
-                  transfersTooSmall={hotel.transfersTooSmall}
-                  transferRequired={hotel.transferRequired}
-                  transferCurrency={hotel.transferCurrency}
-                  mandatoryTax={hotel.mandatoryTax}
-                  adults={adults}
-                  childrenCount={childrenCount}
-                  infants={infants}
-                  childAges={childAges}
-                  agentId={agentId}
-                  checkIn={checkIn}
-                  checkOut={checkOut}
-                  hotelId={hotel.id}
-                  hotelName={hotel.hotel_name}
-                  hotelCountry={hotel.country}
-                  hotelStars={hotel.star_rating}
-                  hotelLocation={location}
-                  onAddToTrip={onAddToTrip}
-                />
-              ))}
-            </div>
-          )}
         </div>
+      </div>
+      <div className="px-6 pb-6 pt-5">
+        {hotel.roomTypes.length === 0 ? (
+          <p className="text-sm text-slate/50">{t("hotelCard.noRoomTypes")}</p>
+        ) : (
+          <div className="space-y-3">
+            {sortRoomTypesByPrice(hotel.roomTypes).map((rt) => (
+              <RoomTypeCard
+                key={rt.id}
+                rt={rt}
+                expanded={expandedRoomTypes.has(rt.id)}
+                onToggle={() => toggleRoomType(rt.id)}
+                transferOptions={hotel.transferOptions}
+                transfersTooSmall={hotel.transfersTooSmall}
+                transferRequired={hotel.transferRequired}
+                transferCurrency={hotel.transferCurrency}
+                mandatoryTax={hotel.mandatoryTax}
+                adults={adults}
+                childrenCount={childrenCount}
+                infants={infants}
+                childAges={childAges}
+                agentId={agentId}
+                checkIn={checkIn}
+                checkOut={checkOut}
+                hotelId={hotel.id}
+                hotelName={hotel.hotel_name}
+                hotelCountry={hotel.country}
+                hotelStars={hotel.star_rating}
+                hotelLocation={location}
+                onAddToTrip={onAddToTrip}
+                stale={stale}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -4630,6 +4644,53 @@ function HotelSearch() {
   const [formError, setFormError] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [results, setResults] = useState<HotelResult[]>([]);
+  // The search bar stays under the top navigation while scrolling (sm+),
+  // tinted while it floats; things that stick below it use `belowBar`.
+  const [searchBarEl, setSearchBarEl] = useState<HTMLFormElement | null>(null);
+  const [barTop, setBarTop] = useState(0);
+  const [barStuck, setBarStuck] = useState(false);
+  const [belowBar, setBelowBar] = useState(16);
+  useEffect(() => {
+    if (!searchBarEl) return;
+    const measure = () => {
+      const nav = document.querySelector("header");
+      const navH = nav ? nav.getBoundingClientRect().height : 0;
+      const sticky = getComputedStyle(searchBarEl).position === "sticky";
+      setBarTop(navH);
+      setBarStuck(sticky && searchBarEl.getBoundingClientRect().top <= navH + 1);
+      setBelowBar(sticky ? navH + searchBarEl.offsetHeight + 12 : 16);
+    };
+    measure();
+    window.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure);
+    const ro = new ResizeObserver(measure);
+    ro.observe(searchBarEl);
+    return () => {
+      window.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+      ro.disconnect();
+    };
+  }, [searchBarEl]);
+  // The guests and dates the results on screen were priced for. Cards, the
+  // trip cart and the copied offer read the party from HERE, never from the
+  // live form -- editing the form after a search must not relabel prices
+  // computed for another party (reported: searched 2+1, added children
+  // without searching, the cards read "2 adults, 7 children" beside the
+  // 2+1 prices).
+  const [searched, setSearched] = useState<{
+    checkIn: string;
+    checkOut: string;
+    baseAdults: number;
+    childAges: number[];
+  } | null>(null);
+  const resultsParty = searched ? deriveOccupancy(searched.baseAdults, searched.childAges) : occupancy;
+  const resultsChildAges = searched ? searched.childAges.filter((a) => a >= 2 && a < 12) : childBucketAges;
+  const resultsStale =
+    searched !== null &&
+    (searched.checkIn !== checkIn ||
+      searched.checkOut !== checkOut ||
+      searched.baseAdults !== adults ||
+      searched.childAges.join(",") !== childAges.join(","));
   // Block A: which hotel the centre column is showing. Only the left column
   // writes it; below lg (where there is no left column) it is simply unused,
   // and the original stacked list of every hotel renders instead.
@@ -4794,6 +4855,7 @@ function HotelSearch() {
     setSearching(true);
     setSearchError(null);
     setResults([]);
+    setSearched({ checkIn, checkOut, baseAdults: adults, childAges: [...childAges] });
 
     try {
       const allHotels = catalogLoaded
@@ -5094,8 +5156,12 @@ function HotelSearch() {
             hotel list, the room detail and the cart all start on the same
             line beneath it. */}
         <form
+          ref={setSearchBarEl}
           onSubmit={handleSearch}
-          className="-mt-10 rounded-2xl border border-ink/10 bg-white shadow-xl sm:-mt-12 sm:rounded-[2.5rem]"
+          style={{ top: barTop }}
+          className={`-mt-10 rounded-2xl border shadow-xl transition-colors duration-200 sm:sticky sm:z-30 sm:-mt-12 sm:rounded-[2.5rem] ${
+            barStuck ? "border-gold/40 bg-[#fbf6ee]" : "border-ink/10 bg-white"
+          }`}
         >
           {/* Decision (fix): sm:rounded-full previously computed a
               border-radius of min(width, height)/2 -- fine for the fields
@@ -5112,7 +5178,7 @@ function HotelSearch() {
               spacing as the primary separator -- the outer panel's own
               border/shadow (on the form element itself) is untouched. */}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch sm:gap-0">
-            <div className="relative flex flex-1 flex-col gap-2.5 px-8 py-6 sm:py-8">
+            <div className="relative flex min-w-0 flex-1 flex-col gap-2.5 px-8 py-6 sm:py-8">
               <label className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate/50">
                 {t("page.destinationLabel")}
                 <span className="ml-auto text-[10px] font-normal normal-case tracking-normal text-slate/40">
@@ -5120,53 +5186,54 @@ function HotelSearch() {
                 </span>
               </label>
 
-              {/* Picked hotels. Present only once something is picked, so the
-                  common single-hotel search looks exactly as it always has --
-                  type, choose, search -- and the multi-hotel capability costs
-                  nothing until it is actually used. */}
-              {pickedHotels.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {pickedHotels.map((h) => (
-                    <span
-                      key={h.id}
-                      className="inline-flex items-center gap-1.5 rounded-full bg-gold/15 py-1 pl-3 pr-1.5 text-sm font-medium text-ink"
-                    >
-                      {h.hotel_name}
-                      <button
-                        type="button"
-                        onClick={() => removePickedHotel(h.id)}
-                        aria-label={t("page.removeHotel")}
-                        className="flex h-5 w-5 appearance-none items-center justify-center rounded-full border-0 bg-transparent text-ink/50 transition-colors hover:bg-ink/10 hover:text-ink"
+              {/* Picked hotels sit INSIDE the field as compact chips, so the
+                  destination field keeps the same single-row height as Dates
+                  and Guests and the whole bar stays level (owner: the chip
+                  row above the input pushed it out of line). Several hotels
+                  scroll sideways inside the field instead of growing it. */}
+              <div className="flex h-14 items-center gap-2 rounded-xl border border-ink/15 bg-white px-4 transition-colors hover:border-gold/60 focus-within:border-gold focus-within:ring-2 focus-within:ring-gold/20">
+                <IconPin className="h-5 w-5 shrink-0 text-gold-deep" />
+                {pickedHotels.length > 0 && (
+                  <div className="flex min-w-0 shrink items-center gap-1.5 overflow-x-auto">
+                    {pickedHotels.map((h) => (
+                      <span
+                        key={h.id}
+                        className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-gold/15 py-0.5 pl-2.5 pr-1 text-sm font-medium text-ink"
                       >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              {pickedHotels.length >= MAX_PICKED_HOTELS ? (
-                <p className="text-sm text-slate/50">{t("page.maxHotelsReached")}</p>
-              ) : (
-                <div className="flex h-14 items-center gap-3 rounded-xl border border-ink/15 bg-white px-4 transition-colors hover:border-gold/60 focus-within:border-gold focus-within:ring-2 focus-within:ring-gold/20">
-                  <IconPin className="h-5 w-5 shrink-0 text-gold-deep" />
-                  <input
-                    type="text"
-                    value={destination}
-                    onChange={(e) => {
-                      setDestination(e.target.value);
-                      setDestinationDropdownOpen(true);
-                    }}
-                    onFocus={() => setDestinationDropdownOpen(true)}
-                    placeholder={
-                      pickedHotels.length > 0
+                        {h.hotel_name}
+                        <button
+                          type="button"
+                          onClick={() => removePickedHotel(h.id)}
+                          aria-label={t("page.removeHotel")}
+                          className="flex h-5 w-5 appearance-none items-center justify-center rounded-full border-0 bg-transparent text-ink/50 transition-colors hover:bg-ink/10 hover:text-ink"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <input
+                  type="text"
+                  value={destination}
+                  disabled={pickedHotels.length >= MAX_PICKED_HOTELS}
+                  onChange={(e) => {
+                    setDestination(e.target.value);
+                    setDestinationDropdownOpen(true);
+                  }}
+                  onFocus={() => setDestinationDropdownOpen(true)}
+                  placeholder={
+                    pickedHotels.length >= MAX_PICKED_HOTELS
+                      ? t("page.maxHotelsReached")
+                      : pickedHotels.length > 0
                         ? t("page.addAnotherHotel")
                         : t("page.destinationPlaceholder")
-                    }
-                    className="w-full min-w-0 rounded-none border-0 bg-transparent p-0 text-base text-ink shadow-none placeholder:text-slate/40 focus:border-0 focus:shadow-none focus:outline-none"
-                  />
-                </div>
-              )}
+                  }
+                  className={`min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-base text-ink shadow-none placeholder:text-slate/40 focus:border-0 focus:shadow-none focus:outline-none disabled:cursor-not-allowed ${
+                    pickedHotels.length > 0 ? "min-w-[7rem] placeholder:text-sm" : "w-full"
+                  }`}
+                />
+              </div>
               {/* Live suggestions -- same dropdown/debounce pattern as
                   financeShared.tsx's AgentSearchSelect, adapted for an
                   already-loaded in-memory catalog instead of a per-
@@ -5202,7 +5269,7 @@ function HotelSearch() {
 
             <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />
 
-            <div className="flex flex-col gap-2.5 px-8 pt-2 sm:w-80 sm:shrink-0 sm:px-5 sm:py-8">
+            <div className="flex flex-col gap-2.5 px-8 pt-2 sm:w-64 sm:shrink-0 sm:px-5 sm:py-8 xl:w-80">
               <label className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("page.datesLabel")}</label>
               <DateRangePicker
                 checkIn={checkIn}
@@ -5231,7 +5298,7 @@ function HotelSearch() {
 
             <div className="hidden w-px self-stretch bg-ink/10 sm:my-5 sm:block" />
 
-            <div className="flex flex-col gap-2.5 px-8 pt-2 sm:w-80 sm:shrink-0 sm:px-5 sm:py-8">
+            <div className="flex flex-col gap-2.5 px-8 pt-2 sm:w-64 sm:shrink-0 sm:px-5 sm:py-8 xl:w-80">
               <label className="text-xs font-medium uppercase tracking-wide text-slate/50">{t("page.guestsLabel")}</label>
               <GuestsPicker
                 adults={adults}
@@ -5330,7 +5397,7 @@ function HotelSearch() {
           }
         >
           {showHotelList && (
-            <aside className="hidden lg:block lg:sticky lg:top-4">
+            <aside className="hidden lg:block lg:sticky" style={{ top: belowBar }}>
               <div className="rounded-2xl border border-ink/10 bg-white p-2 shadow-card">
                 <p className="px-2 py-2 text-[11px] font-medium uppercase tracking-wide text-slate/50">
                   {t("hotelList.found", { count: results.length })}
@@ -5351,6 +5418,16 @@ function HotelSearch() {
           )}
 
           <div className={showHotelList ? "space-y-5 lg:space-y-0" : "space-y-5"}>
+            {resultsStale && results.length > 0 && (
+              <div
+                role="status"
+                style={{ top: belowBar }}
+                className="sticky z-10 flex min-h-[40px] items-center gap-2 rounded-lg border border-warning/40 bg-[#fdf6ec] px-4 py-1.5 text-sm font-medium leading-snug text-warning shadow-sm lg:mb-4"
+              >
+                <IconAlert className="h-4 w-4 shrink-0" />
+                <span>{t("page.resultsStale")}</span>
+              </div>
+            )}
             {results.map((hotel, i) => (
               <div
                 key={hotel.id}
@@ -5359,15 +5436,16 @@ function HotelSearch() {
                 <HotelCard
                   hotel={hotel}
                   gradient={CARD_GRADIENTS[i % CARD_GRADIENTS.length]}
-                  adults={occupancy.adults}
-                  childrenCount={occupancy.children}
-                  infants={occupancy.infants}
-                  childAges={childBucketAges}
+                  adults={resultsParty.adults}
+                  childrenCount={resultsParty.children}
+                  infants={resultsParty.infants}
+                  childAges={resultsChildAges}
                   agentId={user.id}
-                  checkIn={checkIn}
-                  checkOut={checkOut}
+                  checkIn={searched?.checkIn ?? checkIn}
+                  checkOut={searched?.checkOut ?? checkOut}
                   onAddToTrip={addToCart}
                   inColumnLayout={showHotelList}
+                  stale={resultsStale}
                 />
               </div>
             ))}
@@ -5377,7 +5455,7 @@ function HotelSearch() {
               visible and sticky, not a bubble that only appears once
               something is in it. Now simply the third column. */}
           {showColumns && (
-            <div className="hidden lg:sticky lg:top-4 lg:block">
+            <div className="hidden lg:sticky lg:block" style={{ top: belowBar }}>
               <CartPanel
                 cart={cart}
                 onRemove={removeFromCart}

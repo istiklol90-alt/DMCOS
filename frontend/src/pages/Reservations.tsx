@@ -9,7 +9,7 @@ import Input from "../components/ui/Input";
 import Card from "../components/ui/Card";
 import Modal from "../components/ui/Modal";
 import { SkeletonRow } from "../components/ui/Skeleton";
-import { formatBedding, pickBedding, type OccupancyOption } from "./bedding";
+import { describeSleeping, pickBedding, type OccupancyOption } from "./bedding";
 import {
   TableShell,
   TableHeadRow,
@@ -2327,6 +2327,7 @@ export function ActionInfo({ text, tone = "neutral" }: { text: string; tone?: "n
 // Decision 211: what the booking card needs to say how a room's party sleeps.
 interface RoomBeddingInfo {
   bedType: string | null;
+  bedroomCount: number | null;
   options: OccupancyOption[];
 }
 
@@ -4321,14 +4322,12 @@ function BookingDetail({
           transferName={displayTransferName}
           bedding={(() => {
             const info = roomBedding?.[effectiveBooking.room_type_id];
-            return (
-              formatBedding(
-                pickBedding(info?.options, effectiveBooking.adults, effectiveBooking.children),
-                i18n.language,
-                effectiveBooking.children,
-              ) ??
-              info?.bedType ??
-              null
+            return describeSleeping(
+              pickBedding(info?.options, effectiveBooking.adults, effectiveBooking.children),
+              info?.bedType,
+              i18n.language,
+              effectiveBooking.children,
+              info?.bedroomCount,
             );
           })()}
           specialRequests={displayRoom?.special_requests || booking.special_requests}
@@ -5527,6 +5526,7 @@ const BookingsList = ({
               roomTypeMap[rt.id] = rt.room_name;
               beddingMap[rt.id] = {
                 bedType: (rt as RoomType & { bed_type?: string | null }).bed_type ?? null,
+                bedroomCount: (rt as RoomType & { bedroom_count?: number | null }).bedroom_count ?? null,
                 options: optionsData.filter((o) => o.room_type_id === rt.id),
               };
             });
