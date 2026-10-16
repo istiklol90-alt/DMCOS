@@ -149,7 +149,7 @@
     "missingGuestNames": "Enter first and last name for every guest in this room.",
     "missingChildDateOfBirth": "Enter each child's date of birth.",
     "fixChildAge": "Fix the child's date of birth to match the age this room was searched for.",
-    "destinationMismatch": "All rooms in one application must be in the same destination — already have {{existing}}, tried to add {{attempted}}.",
+    "destinationMismatch": "All rooms in one application must be in the same destination.",
     "submitFailed": "Failed to create the application",
     "confirmNoFlightDetails": "No flight details entered. Submit the application anyway?",
     "submitting": "Submitting...",
@@ -233,7 +233,27 @@
     "ageOption_one": "{{count}} year",
     "ageOption_other": "{{count}} years",
     "guestsDone": "Done",
-    "resultsStale": "Search details have changed — the prices below are for the previous guests and dates. Press \"Search hotels\" to update."
+    "resultsStale": "Search details have changed — the prices below are for the previous guests and dates. Press \"Search hotels\" to update.",
+    "heroSlides": {
+      "maldives": {
+        "title": "Maldives",
+        "text": "Villas over the lagoon, white sand and the clearest atolls of the Indian Ocean."
+      },
+      "seychelles": {
+        "title": "Seychelles",
+        "text": "Granite boulders, empty beaches and nature found nowhere else."
+      },
+      "mauritius": {
+        "title": "Mauritius",
+        "text": "Le Morne: a lagoon under the mountain, the reef on the horizon, beaches all day."
+      }
+    },
+    "heroSlideLabel": "Slide",
+    "heroPhoto": "Photo",
+    "heroTagDestination": "Destination",
+    "heroTagSponsored": "Sponsored",
+    "heroPrev": "Previous slide",
+    "heroNext": "Next slide"
   },
   "offer": {
     "nights_one": "{{count}} night",

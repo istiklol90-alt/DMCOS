@@ -319,3 +319,10 @@
                                             formalized here rather than
                                             changed
    --------------------------------------------------------------------- */
+
+/* Search page hero slider (HotelSearch.tsx HeroSlider): the active slide's
+   progress segment fills over the slide's display time; paused on hover. */
+@keyframes hero-progress {
+  from { width: 0%; }
+  to { width: 100%; }
+}
