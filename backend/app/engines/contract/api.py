@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.engines.authentication.config import SECRET_KEY
 from app.engines.authentication.constants import ALGORITHM
-from app.engines.authentication.repository import get_user_by_email
+from app.engines.authentication.repository import get_active_user_by_email
 
 from app.engines.contract import service
 from app.engines.contract.repository import get_db
@@ -86,10 +86,19 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    user = get_user_by_email(db, email)
+    user = get_active_user_by_email(db, email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token")
     return user
+
+
+def _admin_only(current_user=Depends(get_current_user)):
+    """Security (2026-10-16): staff-only endpoint. Before this, any signed-in
+    user -- including a travel agent -- could call it (an agent could change
+    contract rates, take allotment, switch the AI provider)."""
+    if (current_user.role or "").strip().lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
 
 
 def _run(operation):
@@ -111,14 +120,14 @@ def _run(operation):
 # ---------------------------------------------------------------------------
 
 
-@router.post("/contracts", response_model=ContractResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/contracts", dependencies=[Depends(_admin_only)], response_model=ContractResponse, status_code=status.HTTP_201_CREATED)
 def create_contract(
     data: ContractCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.create_contract(db, data))
 
 
-@router.get("/contracts", response_model=list[ContractResponse])
+@router.get("/contracts", dependencies=[Depends(_admin_only)], response_model=list[ContractResponse])
 def list_contracts(
     skip: int = 0,
     limit: int = 100,
@@ -128,14 +137,14 @@ def list_contracts(
     return _run(lambda: service.list_contracts(db, skip=skip, limit=limit))
 
 
-@router.get("/contracts/{contract_id}", response_model=ContractResponse)
+@router.get("/contracts/{contract_id}", dependencies=[Depends(_admin_only)], response_model=ContractResponse)
 def get_contract(
     contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.get_contract(db, contract_id))
 
 
-@router.put("/contracts/{contract_id}", response_model=ContractResponse)
+@router.put("/contracts/{contract_id}", dependencies=[Depends(_admin_only)], response_model=ContractResponse)
 def update_contract(
     contract_id: int,
     data: ContractUpdate,
@@ -145,7 +154,7 @@ def update_contract(
     return _run(lambda: service.update_contract(db, contract_id, data))
 
 
-@router.get("/hotels/{hotel_id}/contracts", response_model=list[ContractResponse])
+@router.get("/hotels/{hotel_id}/contracts", dependencies=[Depends(_admin_only)], response_model=list[ContractResponse])
 def list_contracts_by_hotel(
     hotel_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
@@ -169,7 +178,7 @@ def get_active_contract(
 
 
 @router.post(
-    "/contract-markets", response_model=ContractMarketResponse, status_code=status.HTTP_201_CREATED
+    "/contract-markets", dependencies=[Depends(_admin_only)], response_model=ContractMarketResponse, status_code=status.HTTP_201_CREATED
 )
 def create_contract_market(
     data: ContractMarketCreate,
@@ -179,7 +188,7 @@ def create_contract_market(
     return _run(lambda: service.create_contract_market(db, data))
 
 
-@router.get("/contracts/{contract_id}/markets", response_model=list[ContractMarketResponse])
+@router.get("/contracts/{contract_id}/markets", dependencies=[Depends(_admin_only)], response_model=list[ContractMarketResponse])
 def list_contract_markets(
     contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
@@ -192,7 +201,7 @@ def list_contract_markets(
 
 
 @router.post(
-    "/contract-seasons", response_model=ContractSeasonResponse, status_code=status.HTTP_201_CREATED
+    "/contract-seasons", dependencies=[Depends(_admin_only)], response_model=ContractSeasonResponse, status_code=status.HTTP_201_CREATED
 )
 def create_contract_season(
     data: ContractSeasonCreate,
@@ -202,21 +211,21 @@ def create_contract_season(
     return _run(lambda: service.create_contract_season(db, data))
 
 
-@router.get("/contracts/{contract_id}/seasons", response_model=list[ContractSeasonResponse])
+@router.get("/contracts/{contract_id}/seasons", dependencies=[Depends(_admin_only)], response_model=list[ContractSeasonResponse])
 def list_contract_seasons(
     contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.list_contract_seasons(db, contract_id))
 
 
-@router.get("/contract-seasons/{season_id}", response_model=ContractSeasonResponse)
+@router.get("/contract-seasons/{season_id}", dependencies=[Depends(_admin_only)], response_model=ContractSeasonResponse)
 def get_contract_season(
     season_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.get_contract_season(db, season_id))
 
 
-@router.put("/contract-seasons/{season_id}", response_model=ContractSeasonResponse)
+@router.put("/contract-seasons/{season_id}", dependencies=[Depends(_admin_only)], response_model=ContractSeasonResponse)
 def update_contract_season(
     season_id: int,
     data: ContractSeasonUpdate,
@@ -232,7 +241,7 @@ def update_contract_season(
 
 
 @router.post(
-    "/contract-age-categories",
+    "/contract-age-categories", dependencies=[Depends(_admin_only)],
     response_model=ContractAgeCategoryResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -245,7 +254,7 @@ def create_contract_age_category(
 
 
 @router.get(
-    "/contracts/{contract_id}/age-categories", response_model=list[ContractAgeCategoryResponse]
+    "/contracts/{contract_id}/age-categories", dependencies=[Depends(_admin_only)], response_model=list[ContractAgeCategoryResponse]
 )
 def list_contract_age_categories(
     contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
@@ -259,7 +268,7 @@ def list_contract_age_categories(
 
 
 @router.post(
-    "/contract-meal-plans",
+    "/contract-meal-plans", dependencies=[Depends(_admin_only)],
     response_model=ContractMealPlanResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -284,7 +293,7 @@ def list_contract_meal_plans(
 
 
 @router.post(
-    "/contract-transfer-options",
+    "/contract-transfer-options", dependencies=[Depends(_admin_only)],
     response_model=ContractTransferOptionResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -297,7 +306,7 @@ def create_contract_transfer_option(
 
 
 @router.put(
-    "/contract-transfer-options/{option_id}", response_model=ContractTransferOptionResponse
+    "/contract-transfer-options/{option_id}", dependencies=[Depends(_admin_only)], response_model=ContractTransferOptionResponse
 )
 def update_contract_transfer_option(
     option_id: int,
@@ -309,7 +318,7 @@ def update_contract_transfer_option(
     return _run(lambda: service.update_contract_transfer_option(db, option_id, data))
 
 
-@router.delete("/contract-transfer-options/{option_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/contract-transfer-options/{option_id}", dependencies=[Depends(_admin_only)], status_code=status.HTTP_204_NO_CONTENT)
 def delete_contract_transfer_option(
     option_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
@@ -380,14 +389,14 @@ def get_mandatory_tax(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/rates", response_model=RateResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/rates", dependencies=[Depends(_admin_only)], response_model=RateResponse, status_code=status.HTTP_201_CREATED)
 def create_rate(
     data: RateCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.create_rate(db, data))
 
 
-@router.get("/contracts/{contract_id}/rates", response_model=list[RateResponse])
+@router.get("/contracts/{contract_id}/rates", dependencies=[Depends(_admin_only)], response_model=list[RateResponse])
 def list_rates(
     contract_id: int,
     room_type_id: int | None = None,
@@ -401,12 +410,12 @@ def list_rates(
     )
 
 
-@router.get("/rates/{rate_id}", response_model=RateResponse)
+@router.get("/rates/{rate_id}", dependencies=[Depends(_admin_only)], response_model=RateResponse)
 def get_rate(rate_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     return _run(lambda: service.get_rate(db, rate_id))
 
 
-@router.put("/rates/{rate_id}", response_model=RateResponse)
+@router.put("/rates/{rate_id}", dependencies=[Depends(_admin_only)], response_model=RateResponse)
 def update_rate(
     rate_id: int,
     data: RateUpdate,
@@ -422,7 +431,7 @@ def update_rate(
 
 
 @router.post(
-    "/rate-supplements", response_model=RateSupplementResponse, status_code=status.HTTP_201_CREATED
+    "/rate-supplements", dependencies=[Depends(_admin_only)], response_model=RateSupplementResponse, status_code=status.HTTP_201_CREATED
 )
 def create_rate_supplement(
     data: RateSupplementCreate,
@@ -432,7 +441,7 @@ def create_rate_supplement(
     return _run(lambda: service.create_rate_supplement(db, data))
 
 
-@router.get("/rates/{rate_id}/supplements", response_model=list[RateSupplementResponse])
+@router.get("/rates/{rate_id}/supplements", dependencies=[Depends(_admin_only)], response_model=list[RateSupplementResponse])
 def list_rate_supplements(
     rate_id: int,
     adjustment_type: str | None = None,
@@ -447,28 +456,28 @@ def list_rate_supplements(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/promotions", response_model=PromotionResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/promotions", dependencies=[Depends(_admin_only)], response_model=PromotionResponse, status_code=status.HTTP_201_CREATED)
 def create_promotion(
     data: PromotionCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.create_promotion(db, data))
 
 
-@router.get("/contracts/{contract_id}/promotions", response_model=list[PromotionResponse])
+@router.get("/contracts/{contract_id}/promotions", dependencies=[Depends(_admin_only)], response_model=list[PromotionResponse])
 def list_promotions(
     contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.list_promotions(db, contract_id))
 
 
-@router.get("/promotions/{promotion_id}", response_model=PromotionResponse)
+@router.get("/promotions/{promotion_id}", dependencies=[Depends(_admin_only)], response_model=PromotionResponse)
 def get_promotion(
     promotion_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.get_promotion(db, promotion_id))
 
 
-@router.put("/promotions/{promotion_id}", response_model=PromotionResponse)
+@router.put("/promotions/{promotion_id}", dependencies=[Depends(_admin_only)], response_model=PromotionResponse)
 def update_promotion(
     promotion_id: int,
     data: PromotionUpdate,
@@ -483,14 +492,14 @@ def update_promotion(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/special-offers", response_model=SpecialOfferResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/special-offers", dependencies=[Depends(_admin_only)], response_model=SpecialOfferResponse, status_code=status.HTTP_201_CREATED)
 def create_special_offer(
     data: SpecialOfferCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.create_special_offer(db, data))
 
 
-@router.get("/contracts/{contract_id}/special-offers", response_model=list[SpecialOfferResponse])
+@router.get("/contracts/{contract_id}/special-offers", dependencies=[Depends(_admin_only)], response_model=list[SpecialOfferResponse])
 def list_special_offers(
     contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
@@ -512,14 +521,14 @@ def list_applicable_special_offers(
     return _run(lambda: service.list_applicable_special_offers(db, contract_id, check_in, check_out))
 
 
-@router.get("/special-offers/{offer_id}", response_model=SpecialOfferResponse)
+@router.get("/special-offers/{offer_id}", dependencies=[Depends(_admin_only)], response_model=SpecialOfferResponse)
 def get_special_offer(
     offer_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.get_special_offer(db, offer_id))
 
 
-@router.put("/special-offers/{offer_id}", response_model=SpecialOfferResponse)
+@router.put("/special-offers/{offer_id}", dependencies=[Depends(_admin_only)], response_model=SpecialOfferResponse)
 def update_special_offer(
     offer_id: int,
     data: SpecialOfferUpdate,
@@ -530,7 +539,7 @@ def update_special_offer(
 
 
 @router.post(
-    "/special-offer-room-discounts",
+    "/special-offer-room-discounts", dependencies=[Depends(_admin_only)],
     response_model=SpecialOfferRoomDiscountResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -543,7 +552,7 @@ def create_special_offer_room_discount(
 
 
 @router.get(
-    "/special-offers/{offer_id}/room-discounts",
+    "/special-offers/{offer_id}/room-discounts", dependencies=[Depends(_admin_only)],
     response_model=list[SpecialOfferRoomDiscountResponse],
 )
 def list_special_offer_room_discounts(
@@ -556,7 +565,7 @@ def list_special_offer_room_discounts(
 
 
 @router.post(
-    "/special-offer-meal-plan-discounts",
+    "/special-offer-meal-plan-discounts", dependencies=[Depends(_admin_only)],
     response_model=SpecialOfferMealPlanDiscountResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -569,7 +578,7 @@ def create_special_offer_meal_plan_discount(
 
 
 @router.get(
-    "/special-offers/{offer_id}/meal-plan-discounts",
+    "/special-offers/{offer_id}/meal-plan-discounts", dependencies=[Depends(_admin_only)],
     response_model=list[SpecialOfferMealPlanDiscountResponse],
 )
 def list_special_offer_meal_plan_discounts(
@@ -579,7 +588,7 @@ def list_special_offer_meal_plan_discounts(
 
 
 @router.post(
-    "/special-offer-family-rules",
+    "/special-offer-family-rules", dependencies=[Depends(_admin_only)],
     response_model=SpecialOfferFamilyRuleResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -592,7 +601,7 @@ def create_special_offer_family_rule(
 
 
 @router.get(
-    "/special-offers/{offer_id}/family-rules", response_model=list[SpecialOfferFamilyRuleResponse]
+    "/special-offers/{offer_id}/family-rules", dependencies=[Depends(_admin_only)], response_model=list[SpecialOfferFamilyRuleResponse]
 )
 def list_special_offer_family_rules(
     offer_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
@@ -601,7 +610,7 @@ def list_special_offer_family_rules(
 
 
 @router.post(
-    "/contract-family-rules",
+    "/contract-family-rules", dependencies=[Depends(_admin_only)],
     response_model=ContractFamilyRuleResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -614,7 +623,7 @@ def create_contract_family_rule(
 
 
 @router.get(
-    "/contracts/{contract_id}/family-rules", response_model=list[ContractFamilyRuleResponse]
+    "/contracts/{contract_id}/family-rules", dependencies=[Depends(_admin_only)], response_model=list[ContractFamilyRuleResponse]
 )
 def list_contract_family_rules(
     contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
@@ -623,7 +632,7 @@ def list_contract_family_rules(
 
 
 @router.post(
-    "/special-offer-transfer-discounts",
+    "/special-offer-transfer-discounts", dependencies=[Depends(_admin_only)],
     response_model=SpecialOfferTransferDiscountResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -636,7 +645,7 @@ def create_special_offer_transfer_discount(
 
 
 @router.get(
-    "/special-offers/{offer_id}/transfer-discounts",
+    "/special-offers/{offer_id}/transfer-discounts", dependencies=[Depends(_admin_only)],
     response_model=list[SpecialOfferTransferDiscountResponse],
 )
 def list_special_offer_transfer_discounts(
@@ -651,7 +660,7 @@ def list_special_offer_transfer_discounts(
 
 
 @router.post(
-    "/blackout-dates", response_model=BlackoutDateResponse, status_code=status.HTTP_201_CREATED
+    "/blackout-dates", dependencies=[Depends(_admin_only)], response_model=BlackoutDateResponse, status_code=status.HTTP_201_CREATED
 )
 def create_blackout_date(
     data: BlackoutDateCreate,
@@ -661,7 +670,7 @@ def create_blackout_date(
     return _run(lambda: service.create_blackout_date(db, data))
 
 
-@router.get("/contracts/{contract_id}/blackout-dates", response_model=list[BlackoutDateResponse])
+@router.get("/contracts/{contract_id}/blackout-dates", dependencies=[Depends(_admin_only)], response_model=list[BlackoutDateResponse])
 def list_blackout_dates(
     contract_id: int,
     promotion_id: int | None = None,
@@ -677,14 +686,14 @@ def list_blackout_dates(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/allotments", response_model=AllotmentResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/allotments", dependencies=[Depends(_admin_only)], response_model=AllotmentResponse, status_code=status.HTTP_201_CREATED)
 def create_allotment(
     data: AllotmentCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.create_allotment(db, data))
 
 
-@router.put("/allotments/{allotment_id}", response_model=AllotmentResponse)
+@router.put("/allotments/{allotment_id}", dependencies=[Depends(_admin_only)], response_model=AllotmentResponse)
 def update_allotment(
     allotment_id: int,
     data: AllotmentUpdate,
@@ -695,7 +704,7 @@ def update_allotment(
 
 
 @router.get(
-    "/contracts/{contract_id}/room-types/{room_type_id}/allotments",
+    "/contracts/{contract_id}/room-types/{room_type_id}/allotments", dependencies=[Depends(_admin_only)],
     response_model=list[AllotmentResponse],
 )
 def list_allotments(
@@ -711,7 +720,7 @@ def list_allotments(
     )
 
 
-@router.get("/contracts/{contract_id}/room-types/{room_type_id}/check-allotment")
+@router.get("/contracts/{contract_id}/room-types/{room_type_id}/check-allotment", dependencies=[Depends(_admin_only)])
 def check_allotment(
     contract_id: int,
     room_type_id: int,
@@ -727,7 +736,7 @@ def check_allotment(
     return {"available": available}
 
 
-@router.post("/contracts/{contract_id}/room-types/{room_type_id}/reserve-allotment")
+@router.post("/contracts/{contract_id}/room-types/{room_type_id}/reserve-allotment", dependencies=[Depends(_admin_only)])
 def reserve_allotment(
     contract_id: int,
     room_type_id: int,
@@ -741,7 +750,7 @@ def reserve_allotment(
     return {"reserved": True}
 
 
-@router.post("/contracts/{contract_id}/room-types/{room_type_id}/release-allotment")
+@router.post("/contracts/{contract_id}/room-types/{room_type_id}/release-allotment", dependencies=[Depends(_admin_only)])
 def release_allotment(
     contract_id: int,
     room_type_id: int,
@@ -760,14 +769,14 @@ def release_allotment(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/stop-sales", response_model=StopSaleResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/stop-sales", dependencies=[Depends(_admin_only)], response_model=StopSaleResponse, status_code=status.HTTP_201_CREATED)
 def create_stop_sale(
     data: StopSaleCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.create_stop_sale(db, data))
 
 
-@router.get("/contracts/{contract_id}/stop-sales", response_model=list[StopSaleResponse])
+@router.get("/contracts/{contract_id}/stop-sales", dependencies=[Depends(_admin_only)], response_model=list[StopSaleResponse])
 def list_stop_sales(
     contract_id: int,
     room_type_id: int | None = None,
@@ -777,7 +786,7 @@ def list_stop_sales(
     return _run(lambda: service.list_stop_sales(db, contract_id, room_type_id))
 
 
-@router.put("/stop-sales/{stop_sale_id}", response_model=StopSaleResponse)
+@router.put("/stop-sales/{stop_sale_id}", dependencies=[Depends(_admin_only)], response_model=StopSaleResponse)
 def update_stop_sale(
     stop_sale_id: int,
     data: StopSaleUpdate,
@@ -793,7 +802,7 @@ def update_stop_sale(
 
 
 @router.post(
-    "/cancellation-policies",
+    "/cancellation-policies", dependencies=[Depends(_admin_only)],
     response_model=CancellationPolicyResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -827,7 +836,7 @@ def list_cancellation_policies(
 
 
 @router.post(
-    "/release-rules", response_model=ReleaseRuleResponse, status_code=status.HTTP_201_CREATED
+    "/release-rules", dependencies=[Depends(_admin_only)], response_model=ReleaseRuleResponse, status_code=status.HTTP_201_CREATED
 )
 def create_release_rule(
     data: ReleaseRuleCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
@@ -835,7 +844,7 @@ def create_release_rule(
     return _run(lambda: service.create_release_rule(db, data))
 
 
-@router.get("/contracts/{contract_id}/release-rules", response_model=list[ReleaseRuleResponse])
+@router.get("/contracts/{contract_id}/release-rules", dependencies=[Depends(_admin_only)], response_model=list[ReleaseRuleResponse])
 def list_release_rules(
     contract_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
@@ -848,7 +857,7 @@ def list_release_rules(
 
 
 @router.post(
-    "/minimum-stay-rules",
+    "/minimum-stay-rules", dependencies=[Depends(_admin_only)],
     response_model=MinimumStayRuleResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -861,7 +870,7 @@ def create_minimum_stay_rule(
 
 
 @router.get(
-    "/contracts/{contract_id}/minimum-stay-rules", response_model=list[MinimumStayRuleResponse]
+    "/contracts/{contract_id}/minimum-stay-rules", dependencies=[Depends(_admin_only)], response_model=list[MinimumStayRuleResponse]
 )
 def list_minimum_stay_rules(
     contract_id: int,
@@ -891,7 +900,7 @@ def get_meal_plans(
     return _run(lambda: service.get_meal_plans(db, contract_id, room_type_id))
 
 
-@router.get("/contracts/{contract_id}/room-types/{room_type_id}/child-policy")
+@router.get("/contracts/{contract_id}/room-types/{room_type_id}/child-policy", dependencies=[Depends(_admin_only)])
 def get_child_policy(
     contract_id: int,
     room_type_id: int,
@@ -902,7 +911,7 @@ def get_child_policy(
     return _run(lambda: service.get_child_policy(db, contract_id, room_type_id))
 
 
-@router.get("/contracts/{contract_id}/room-types/{room_type_id}/price")
+@router.get("/contracts/{contract_id}/room-types/{room_type_id}/price", dependencies=[Depends(_admin_only)])
 def get_room_price(
     contract_id: int,
     room_type_id: int,

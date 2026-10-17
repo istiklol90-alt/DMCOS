@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.engines.authentication.config import SECRET_KEY
 from app.engines.authentication.constants import ALGORITHM
-from app.engines.authentication.repository import get_user_by_email
+from app.engines.authentication.repository import get_active_user_by_email
 
 from app.engines.booking import service
 # Decision 199: booking/api.py -> finance/service.py is a safe direction --
@@ -66,7 +66,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    user = get_user_by_email(db, email)
+    user = get_active_user_by_email(db, email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token")
     return user
@@ -84,6 +84,17 @@ def _run(operation):
         return operation()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+def _is_admin(current_user) -> bool:
+    return (current_user.role or "").strip().lower() == "admin"
+
+
+def _require_own_agent_id(current_user, agent_id: int) -> None:
+    """Security (2026-10-16): an agent creates bookings and lists bookings
+    only as themselves -- agent_id used to be taken from the request as is."""
+    if not _is_admin(current_user) and agent_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not allowed to act for another agent")
 
 
 def _require_owner_or_admin(current_user, booking) -> None:
@@ -277,6 +288,7 @@ def create_booking(
     data: BookingCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     """Full reserve-at-creation flow — see service.create_booking's docstring. Results in status="Pending", not "Draft". Also fires an automatic booking-confirmation email to the agent (Decision 029 Stage 2, best-effort — see _send_confirmation_email_best_effort)."""
+    _require_own_agent_id(current_user, data.agent_id)
     booking = _run(lambda: service.create_booking(db, data))
     _send_confirmation_email_best_effort(db, booking)
     return booking
@@ -327,7 +339,8 @@ def list_bookings(
     return _run(
         lambda: service.list_bookings(
             db, skip=skip, limit=limit, created_from=created_from, created_to=created_to,
-            search=search, status=status, hotel_id=hotel_id, agent_id=agent_id,
+            search=search, status=status, hotel_id=hotel_id,
+            agent_id=agent_id if _is_admin(current_user) else current_user.id,
             arrival_from=arrival_from, arrival_to=arrival_to,
             date_view=date_view, date_from=date_from, date_to=date_to,
             sort_by=sort_by, sort_dir=sort_dir,
@@ -365,7 +378,8 @@ def count_bookings(
     so the list can say "1-50 of N" instead of silently truncating."""
     return _run(lambda: {"total": service.count_bookings(
         db, created_from=created_from, created_to=created_to, search=search,
-        status=status, hotel_id=hotel_id, agent_id=agent_id,
+        status=status, hotel_id=hotel_id,
+        agent_id=agent_id if _is_admin(current_user) else current_user.id,
         arrival_from=arrival_from, arrival_to=arrival_to,
         date_view=date_view, date_from=date_from, date_to=date_to,
         claimed_by=claimed_by, unassigned=unassigned,
@@ -398,20 +412,25 @@ def count_work_queues(
 def get_booking(
     booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
-    return _run(lambda: service.get_booking(db, booking_id))
+    booking = _run(lambda: service.get_booking(db, booking_id))
+    _require_owner_or_admin(current_user, booking)
+    return booking
 
 
 @router.get("/bookings/by-number/{booking_number}", response_model=BookingResponse)
 def get_booking_by_number(
     booking_number: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
-    return _run(lambda: service.get_booking_by_number(db, booking_number))
+    booking = _run(lambda: service.get_booking_by_number(db, booking_number))
+    _require_owner_or_admin(current_user, booking)
+    return booking
 
 
 @router.get("/agents/{agent_id}/bookings", response_model=list[BookingResponse])
 def list_bookings_by_agent(
     agent_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
+    _require_own_agent_id(current_user, agent_id)
     return _run(lambda: service.list_bookings_by_agent(db, agent_id))
 
 
@@ -419,6 +438,7 @@ def list_bookings_by_agent(
 def list_bookings_by_hotel(
     hotel_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
+    _require_admin(current_user)
     return _run(lambda: service.list_bookings_by_hotel(db, hotel_id))
 
 
@@ -598,6 +618,7 @@ def create_booking_application(
     service.create_booking_application's docstring for the full
     partial-fulfillment/destination-constraint/guest-assignment behavior.
     """
+    _require_own_agent_id(current_user, data.agent_id)
     booking = _run(lambda: service.create_booking_application(db, data))
     return _assemble_application_response(db, booking)
 
@@ -607,6 +628,7 @@ def get_booking_application(
     booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     booking = _run(lambda: service.get_booking(db, booking_id))
+    _require_owner_or_admin(current_user, booking)
     return _assemble_application_response(db, booking)
 
 
@@ -614,6 +636,7 @@ def get_booking_application(
 def list_booking_rooms(
     booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
+    _require_owner_or_admin(current_user, _run(lambda: service.get_booking(db, booking_id)))
     return _run(lambda: service.list_booking_rooms(db, booking_id))
 
 
@@ -637,7 +660,9 @@ def list_pending_approval_rooms(
 def get_booking_room(
     booking_room_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
-    return _run(lambda: service.get_booking_room(db, booking_room_id))
+    room = _run(lambda: service.get_booking_room(db, booking_room_id))
+    _require_owner_or_admin(current_user, _run(lambda: service.get_booking(db, room.booking_id)))
+    return room
 
 
 @router.post("/rooms/{booking_room_id}/approve", response_model=BookingRoomResponse)
@@ -690,6 +715,8 @@ def list_transfer_options_for_room(
     booking_room_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     """Decision 199 — the transfer options this room could switch to, already filtered by its own party size through Contract Engine's capacity rules, so the change screen can never offer a car the change itself would refuse. Read-only, ungated beyond authentication, same as list_guests_for_room."""
+    room = _run(lambda: service.get_booking_room(db, booking_room_id))
+    _require_owner_or_admin(current_user, _run(lambda: service.get_booking(db, room.booking_id)))
     return _run(lambda: service.list_transfer_options_for_room(db, booking_room_id))
 
 
@@ -741,6 +768,8 @@ def change_room_transfer(
 def list_guests_for_room(
     booking_room_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
+    room = _run(lambda: service.get_booking_room(db, booking_room_id))
+    _require_owner_or_admin(current_user, _run(lambda: service.get_booking(db, room.booking_id)))
     return _run(lambda: service.list_guests_for_room(db, booking_room_id))
 
 
@@ -762,13 +791,16 @@ def create_guest(
 
 @router.get("/guests/{guest_id}", response_model=GuestResponse)
 def get_guest(guest_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    return _run(lambda: service.get_guest(db, guest_id))
+    guest = _run(lambda: service.get_guest(db, guest_id))
+    _require_owner_or_admin(current_user, _run(lambda: service.get_booking(db, guest.booking_id)))
+    return guest
 
 
 @router.get("/bookings/{booking_id}/guests", response_model=list[GuestResponse])
 def list_guests(
     booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
+    _require_owner_or_admin(current_user, _run(lambda: service.get_booking(db, booking_id)))
     return _run(lambda: service.list_guests(db, booking_id))
 
 
@@ -796,6 +828,7 @@ def update_guest(
 def list_correspondence(
     booking_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
+    _require_owner_or_admin(current_user, _run(lambda: service.get_booking(db, booking_id)))
     return _run(lambda: service.list_correspondence(db, booking_id))
 
 

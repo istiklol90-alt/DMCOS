@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import router
 from api.agent_account import router as agent_account_router
+from api.redaction import RedactCostForNonAdmin
 # TASK-003: authentication engine fully migrated; backend/auth/ retired.
 from app.engines.authentication.api import router as auth_router
 # TASK-002: Hotel Engine domain model, schemas, repository, service, and API.
@@ -19,6 +20,10 @@ from app.engines.pricing.api import router as pricing_router
 from app.engines.finance.api import router as finance_router
 
 app = FastAPI(title="DMC OS API")
+
+# Security step 3 (2026-10-16): our cost / margin fields are blanked in every
+# response to a non-admin (api/redaction.py). Added before CORS so CORS stays outermost.
+app.add_middleware(RedactCostForNonAdmin)
 
 # ✅ ПРАВИЛЬНАЯ НАСТРОЙКА CORS
 app.add_middleware(

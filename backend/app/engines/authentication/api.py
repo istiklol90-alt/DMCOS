@@ -12,6 +12,8 @@ from app.engines.authentication.schemas import LoginRequest, ChangePasswordReque
 from app.engines.authentication.repository import (
     get_db,
     get_user_by_email,
+    get_active_user_by_email,
+    is_user_blocked,
     update_last_login,
     update_password,
 )
@@ -43,7 +45,7 @@ def change_password(
         if not email:
             raise HTTPException(status_code=401, detail="Invalid token")
 
-        user = get_user_by_email(db, email)
+        user = get_active_user_by_email(db, email)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -85,6 +87,9 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     if not verify_password(data.password, user.password):
         logger.debug(f"Wrong password for: {data.email}")
         return {"success": False, "message": "Invalid email or password"}
+
+    if is_user_blocked(user):
+        return {"success": False, "message": "Account is blocked. Please contact us."}
 
     # ✅ UAE TIME (UTC+4)
     uae_tz = timezone(timedelta(hours=4))

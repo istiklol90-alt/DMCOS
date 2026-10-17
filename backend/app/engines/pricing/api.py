@@ -7,11 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.engines.authentication.config import SECRET_KEY
 from app.engines.authentication.constants import ALGORITHM
-from app.engines.authentication.repository import get_user_by_email
+from app.engines.authentication.repository import get_active_user_by_email
 
 from app.engines.pricing import service
 from app.engines.pricing.repository import get_db
 from app.engines.pricing.schemas import (
+    AgentRoomQuoteResponse,
+    AgentNightlyQuoteResponse,
     PricingSettingsResponse,
     PricingSettingsUpdate,
     ExclusiveAgentResponse,
@@ -42,10 +44,21 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    user = get_user_by_email(db, email)
+    user = get_active_user_by_email(db, email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token")
     return user
+
+
+def _own_agent_id(current_user, agent_id: int) -> int:
+    """Security (2026-10-16): an agent prices only as themselves. agent_id
+    used to be taken from the query as is, so an agent could ask for another
+    agent's exclusive-tier prices. Admins (price calculator) keep any id."""
+    if (current_user.role or "").strip().lower() == "admin":
+        return agent_id
+    if agent_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not allowed to price for another agent")
+    return agent_id
 
 
 def _require_admin(current_user) -> None:
@@ -207,6 +220,9 @@ def get_agent_price(
     exact same function create_booking calls server-side, not a
     reimplementation.
     """
+    # Security step 3: takes our net total in and returns our markup --
+    # staff only (price calculator). Agents use /agent-room-price.
+    _require_admin(current_user)
     return _run(lambda: service.apply_agent_pricing(
         db, agent_id, contract_id, room_net_total, nights, room_type_id, meal_plan_id, check_in, check_out
     ))
@@ -234,6 +250,9 @@ def get_agent_price_nightly(
     apply_agent_pricing itself sums, so this can never disagree with the
     aggregate total already shown.
     """
+    # Security step 3: takes our net total in and returns our markup --
+    # staff only (price calculator). Agents use /agent-room-price.
+    _require_admin(current_user)
     return _run(lambda: service.build_nightly_breakdown(
         db, agent_id, contract_id, room_net_total, nights, room_type_id, meal_plan_id, check_in, check_out
     ))
@@ -267,6 +286,54 @@ def get_date_scan(
     Requests above service.MAX_SCAN_UNITS hotel-date pairs are rejected
     with a 400 rather than silently truncated.
     """
+    _own_agent_id(current_user, agent_id)
     return _run(lambda: service.scan_dates(
         db, agent_id, hotel_ids, check_ins, nights, adults, children, infants
+    ))
+
+
+
+@router.get("/agent-room-price", response_model=AgentRoomQuoteResponse)
+def get_agent_room_quote(
+    contract_id: int,
+    room_type_id: int,
+    check_in: date,
+    check_out: date,
+    meal_plan: str,
+    adults: int,
+    children: int = 0,
+    infants: int = 0,
+    agent_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Security (2026-10-16): the search price for one room type / meal plan,
+    computed entirely server-side (Contract Engine net -> agent pricing) for
+    the caller. Returns only the agent's amount. agent_id is for staff only;
+    an agent always gets their own price."""
+    who = _own_agent_id(current_user, agent_id) if agent_id is not None else current_user.id
+    return _run(lambda: service.agent_room_quote(
+        db, who, contract_id, room_type_id, check_in, check_out, meal_plan, adults, children, infants
+    ))
+
+
+@router.get("/agent-room-price/nightly", response_model=list[AgentNightlyQuoteResponse])
+def get_agent_nightly_quote(
+    contract_id: int,
+    room_type_id: int,
+    check_in: date,
+    check_out: date,
+    meal_plan: str,
+    adults: int,
+    children: int = 0,
+    infants: int = 0,
+    agent_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Per-night agent prices for the "prices by night" view -- final price
+    and the agent's own exclusive-discount flag only."""
+    who = _own_agent_id(current_user, agent_id) if agent_id is not None else current_user.id
+    return _run(lambda: service.agent_nightly_quote(
+        db, who, contract_id, room_type_id, check_in, check_out, meal_plan, adults, children, infants
     ))

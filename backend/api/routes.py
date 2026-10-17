@@ -23,6 +23,18 @@ from services.email_service import send_registration_email, send_approval_email,
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# Security (2026-10-16): every endpoint in this file except the public
+# agent-registration form used to answer without any login -- anyone who knew
+# the URL could create an Admin user, list all users, read every agency
+# application, or approve one. All of them now require a signed-in admin.
+from api.agent_account import get_current_user  # noqa: E402
+
+
+def require_admin(current_user=Depends(get_current_user)):
+    if (current_user.role or "").strip().lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
 
 def get_db():
     db = SessionLocal()
@@ -42,6 +54,7 @@ def get_users(
     role: Optional[str] = None,
     limit: Optional[int] = None,
     db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
 ):
     """
     Decision 087: search/role/limit are all optional and additive --
@@ -66,7 +79,7 @@ def get_users(
 
 
 @router.get("/users/{user_id}", response_model=UserResponse)
-def get_user(user_id: int, db: Session = Depends(get_db)):
+def get_user(user_id: int, db: Session = Depends(get_db), _admin=Depends(require_admin)):
     """Decision 087: single-user lookup, added so InvoiceDetailModal can
     resolve created_by/approved_by/voided_by (at most 3 ids per open)
     without depending on a full-list fetch."""
@@ -80,6 +93,7 @@ def get_user(user_id: int, db: Session = Depends(get_db)):
 def create_user(
     user: UserCreate,
     db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
 ):
     existing_user = (
         db.query(User)
@@ -208,6 +222,7 @@ def get_agent_registrations(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
 ):
     try:
         query = db.query(AgentRegistration)
@@ -232,6 +247,7 @@ def get_agent_registrations(
 def get_agent_registration(
     registration_id: int,
     db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
 ):
     try:
         registration = db.query(AgentRegistration).filter(
@@ -252,6 +268,7 @@ async def approve_registration(
     registration_id: int,
     approve_data: dict,
     db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
 ):
     try:
         registration = db.query(AgentRegistration).filter(
@@ -327,6 +344,7 @@ async def reject_registration(
     registration_id: int,
     comments: str,
     db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
 ):
     try:
         registration = db.query(AgentRegistration).filter(
@@ -370,6 +388,7 @@ async def reject_registration(
 @router.get("/agent-registrations/stats")
 def get_registration_stats(
     db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
 ):
     try:
         total = db.query(AgentRegistration).count()

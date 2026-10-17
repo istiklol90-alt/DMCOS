@@ -5,8 +5,9 @@ import { handleSessionExpired } from "../session";
 // Decision 215: the agent's OWN markup, per destination, shown on top of the
 // price they pay us when they present prices to a client. Display only --
 // bookings, invoices and every amount sent to the server stay the agent's
-// net price. Our own cost is never in the browser at all: the agent's
-// "net" is the price they pay us.
+// net price. The agent's "net" is the price they pay us; our own cost never
+// reaches the browser (search prices through /pricing-engine/agent-room-price
+// and the server blanks cost fields for non-admins -- security step 3).
 
 export type Markups = {
   default_percent: number | null;

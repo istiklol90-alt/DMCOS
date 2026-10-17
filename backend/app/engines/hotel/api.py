@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.engines.authentication.config import SECRET_KEY
 from app.engines.authentication.constants import ALGORITHM
-from app.engines.authentication.repository import get_user_by_email
+from app.engines.authentication.repository import get_active_user_by_email
 
 from app.engines.hotel import service
 from app.engines.hotel.repository import get_db
@@ -53,10 +53,19 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    user = get_user_by_email(db, email)
+    user = get_active_user_by_email(db, email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token")
     return user
+
+
+def _admin_only(current_user=Depends(get_current_user)):
+    """Security (2026-10-16): staff-only endpoint. Before this, any signed-in
+    user -- including a travel agent -- could call it (an agent could change
+    contract rates, take allotment, switch the AI provider)."""
+    if (current_user.role or "").strip().lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
 
 
 def _run(operation):
@@ -79,7 +88,7 @@ def _run(operation):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/categories", response_model=list[HotelCategoryResponse])
+@router.get("/categories", dependencies=[Depends(_admin_only)], response_model=list[HotelCategoryResponse])
 def list_hotel_categories(
     db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
@@ -87,7 +96,7 @@ def list_hotel_categories(
 
 
 @router.post(
-    "/categories", response_model=HotelCategoryResponse, status_code=status.HTTP_201_CREATED
+    "/categories", dependencies=[Depends(_admin_only)], response_model=HotelCategoryResponse, status_code=status.HTTP_201_CREATED
 )
 def create_hotel_category(
     data: HotelCategoryCreate,
@@ -102,7 +111,7 @@ def create_hotel_category(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/hotels", response_model=HotelResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/hotels", dependencies=[Depends(_admin_only)], response_model=HotelResponse, status_code=status.HTTP_201_CREATED)
 def create_hotel(
     data: HotelCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
@@ -126,7 +135,7 @@ def get_hotel(
     return _run(lambda: service.get_hotel(db, hotel_id))
 
 
-@router.put("/hotels/{hotel_id}", response_model=HotelResponse)
+@router.put("/hotels/{hotel_id}", dependencies=[Depends(_admin_only)], response_model=HotelResponse)
 def update_hotel(
     hotel_id: int,
     data: HotelUpdate,
@@ -142,7 +151,7 @@ def update_hotel(
 
 
 @router.post(
-    "/hotel-images", response_model=HotelImageResponse, status_code=status.HTTP_201_CREATED
+    "/hotel-images", dependencies=[Depends(_admin_only)], response_model=HotelImageResponse, status_code=status.HTTP_201_CREATED
 )
 def create_hotel_image(
     data: HotelImageCreate,
@@ -165,7 +174,7 @@ def list_hotel_images(
 
 
 @router.post(
-    "/hotel-facilities",
+    "/hotel-facilities", dependencies=[Depends(_admin_only)],
     response_model=HotelFacilityResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -177,7 +186,7 @@ def create_hotel_facility(
     return _run(lambda: service.create_hotel_facility(db, data))
 
 
-@router.get("/hotels/{hotel_id}/facilities", response_model=list[HotelFacilityResponse])
+@router.get("/hotels/{hotel_id}/facilities", dependencies=[Depends(_admin_only)], response_model=list[HotelFacilityResponse])
 def list_hotel_facilities(
     hotel_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
@@ -189,7 +198,7 @@ def list_hotel_facilities(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/room-types", response_model=RoomTypeResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/room-types", dependencies=[Depends(_admin_only)], response_model=RoomTypeResponse, status_code=status.HTTP_201_CREATED)
 def create_room_type(
     data: RoomTypeCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
@@ -203,14 +212,14 @@ def list_room_types(
     return _run(lambda: service.list_room_types(db, hotel_id))
 
 
-@router.get("/room-types/{room_type_id}", response_model=RoomTypeResponse)
+@router.get("/room-types/{room_type_id}", dependencies=[Depends(_admin_only)], response_model=RoomTypeResponse)
 def get_room_type(
     room_type_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
     return _run(lambda: service.get_room_type(db, room_type_id))
 
 
-@router.put("/room-types/{room_type_id}", response_model=RoomTypeResponse)
+@router.put("/room-types/{room_type_id}", dependencies=[Depends(_admin_only)], response_model=RoomTypeResponse)
 def update_room_type(
     room_type_id: int,
     data: RoomTypeUpdate,
@@ -226,7 +235,7 @@ def update_room_type(
 
 
 @router.post(
-    "/room-images", response_model=RoomImageResponse, status_code=status.HTTP_201_CREATED
+    "/room-images", dependencies=[Depends(_admin_only)], response_model=RoomImageResponse, status_code=status.HTTP_201_CREATED
 )
 def create_room_image(
     data: RoomImageCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)
@@ -234,7 +243,7 @@ def create_room_image(
     return _run(lambda: service.create_room_image(db, data))
 
 
-@router.get("/room-types/{room_type_id}/images", response_model=list[RoomImageResponse])
+@router.get("/room-types/{room_type_id}/images", dependencies=[Depends(_admin_only)], response_model=list[RoomImageResponse])
 def list_room_images(
     room_type_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):
@@ -247,7 +256,7 @@ def list_room_images(
 
 
 @router.post(
-    "/room-occupancy-options",
+    "/room-occupancy-options", dependencies=[Depends(_admin_only)],
     response_model=RoomOccupancyOptionResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -276,7 +285,7 @@ def list_hotel_occupancy_options(
 
 
 @router.put(
-    "/room-occupancy-options/{option_id}",
+    "/room-occupancy-options/{option_id}", dependencies=[Depends(_admin_only)],
     response_model=RoomOccupancyOptionResponse,
 )
 def update_room_occupancy_option(
@@ -293,7 +302,7 @@ def update_room_occupancy_option(
 
 
 @router.get(
-    "/room-types/{room_type_id}/occupancy-options",
+    "/room-types/{room_type_id}/occupancy-options", dependencies=[Depends(_admin_only)],
     response_model=list[RoomOccupancyOptionResponse],
 )
 def list_room_occupancy_options(
@@ -313,7 +322,7 @@ def list_room_occupancy_options(
 
 
 @router.post(
-    "/room-availability",
+    "/room-availability", dependencies=[Depends(_admin_only)],
     response_model=RoomAvailabilityResponse,
     status_code=status.HTTP_201_CREATED,
 )
@@ -327,7 +336,7 @@ def create_room_availability(
 
 
 @router.get(
-    "/room-types/{room_type_id}/availability", response_model=list[RoomAvailabilityResponse]
+    "/room-types/{room_type_id}/availability", dependencies=[Depends(_admin_only)], response_model=list[RoomAvailabilityResponse]
 )
 def list_room_availability(
     room_type_id: int,
@@ -342,7 +351,7 @@ def list_room_availability(
 
 
 @router.put(
-    "/room-types/{room_type_id}/availability/{target_date}",
+    "/room-types/{room_type_id}/availability/{target_date}", dependencies=[Depends(_admin_only)],
     response_model=RoomAvailabilityResponse,
 )
 def set_room_availability_status(

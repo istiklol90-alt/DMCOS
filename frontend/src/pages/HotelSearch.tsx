@@ -428,28 +428,23 @@ type ContractMealPlan = {
   meal_name: string | null;
 };
 
+// Security (2026-10-16): the agent's room quote from /pricing-engine/
+// agent-room-price -- computed entirely on the server, so our net price and
+// markup never reach the browser. Only what the agent pays is here.
 type RoomPrice = {
   // Decision 212: which special offers this price already includes.
   applied_special_offer_ids?: number[];
   contract_id: number;
   room_type_id: number;
-  rate_id: number;
   meal_plan_id: number;
   currency: string;
   nights: number;
-  final_total: number;
 };
 
 // Decision 070: the exact dict apply_agent_pricing returns (same function
 // create_booking calls server-side) -- never reconstructed client-side, so
 // this preview can't drift from what a real booking would actually charge.
 type AgentPrice = {
-  room_net_total: number;
-  is_exclusive: boolean;
-  contract_discount_percent: number;
-  exclusive_discount_amount: number;
-  markup_amount_per_night: number;
-  markup_amount: number;
   agent_room_total: number;
 };
 
@@ -459,11 +454,8 @@ type AgentPrice = {
 // the aggregate AgentPrice already shown.
 type NightlyPrice = {
   date: string;
-  base_rate: number;
-  markup: number;
   discount_applied: boolean;
   discount_percent: number;
-  discount_amount: number;
   final_price: number;
 };
 
@@ -1961,7 +1953,6 @@ function RoomTypeCard({
   childrenCount,
   infants,
   childAges,
-  agentId,
   checkIn,
   checkOut,
   hotelId,
@@ -1986,7 +1977,6 @@ function RoomTypeCard({
   infants: number;
   // Stage 5 -- real ages behind childrenCount, carried onto CartRoom.
   childAges: number[];
-  agentId: number;
   checkIn: string;
   checkOut: string;
   // Stage 5 (multi-room booking applications) -- hotel context needed to
@@ -2058,17 +2048,17 @@ function RoomTypeCard({
     });
     try {
       const query = new URLSearchParams({
-        agent_id: String(agentId),
         contract_id: String(opt.price.contract_id),
-        room_net_total: String(opt.price.final_total),
-        nights: String(opt.price.nights),
         room_type_id: String(rt.id),
-        meal_plan_id: String(opt.price.meal_plan_id),
+        meal_plan: opt.mealCode,
         check_in: checkIn,
         check_out: checkOut,
+        adults: String(adults),
+        children: String(childrenCount),
+        infants: String(infants),
       });
       const nightly = await fetchJson<NightlyPrice[]>(
-        `/pricing-engine/agent-price/nightly?${query.toString()}`,
+        `/pricing-engine/agent-room-price/nightly?${query.toString()}`,
         token
       );
       setNightlyData((prev) => ({ ...prev, [opt.mealCode]: nightly }));
@@ -2665,7 +2655,6 @@ function HotelCard({
   childrenCount,
   infants,
   childAges,
-  agentId,
   checkIn,
   checkOut,
   onAddToTrip,
@@ -2682,7 +2671,6 @@ function HotelCard({
   infants: number;
   // Stage 5 -- the real ages behind childrenCount (see CartRoom.childAges).
   childAges: number[];
-  agentId: number;
   checkIn: string;
   checkOut: string;
   onAddToTrip: (room: CartRoom) => { ok: boolean; error?: string };
@@ -2820,7 +2808,6 @@ function HotelCard({
                 childrenCount={childrenCount}
                 infants={infants}
                 childAges={childAges}
-                agentId={agentId}
                 checkIn={checkIn}
                 checkOut={checkOut}
                 hotelId={hotel.id}
@@ -4922,7 +4909,6 @@ function HotelSearchPage() {
     const token = localStorage.getItem("token");
     if (!token) return; // guarded above; satisfies TypeScript below
     if (!user) return; // guarded by the render-time check below; narrows for TypeScript here
-    const agentId = user.id;
 
     setSearching(true);
     setSearchError(null);
@@ -5089,7 +5075,14 @@ function HotelSearchPage() {
                 const options = await Promise.all(
                   mealPlans.map(async (mp): Promise<MealPlanOption> => {
                     try {
-                      const priceQuery = new URLSearchParams({
+                      // Security (2026-10-16): one server-side quote -- the
+                      // same Contract Engine price + agent pricing that
+                      // create_booking runs, so search and the real charge
+                      // still cannot diverge (Decision 070), but the net
+                      // total and markup never leave the server.
+                      const quoteQuery = new URLSearchParams({
+                        contract_id: String(contractId),
+                        room_type_id: String(rt.id),
                         check_in: checkIn,
                         check_out: checkOut,
                         meal_plan: mp.meal_code,
@@ -5097,32 +5090,12 @@ function HotelSearchPage() {
                         children: String(occupancy.children),
                         infants: String(occupancy.infants),
                       });
-                      const price = await fetchJson<RoomPrice>(
-                        `/contract-engine/contracts/${contractId}/room-types/${rt.id}/price?${priceQuery.toString()}`,
+                      const quote = await fetchJson<RoomPrice & AgentPrice>(
+                        `/pricing-engine/agent-room-price?${quoteQuery.toString()}`,
                         token
                       );
-                      // Decision 070: the raw Contract Engine net total (price
-                      // above) is never shown to the agent directly -- this
-                      // call must also succeed (same function create_booking
-                      // uses server-side) so the search preview can never
-                      // diverge from what a real booking would actually
-                      // charge. If it fails, the whole option falls through
-                      // to the catch block below, same as a price fetch
-                      // failure -- never display net alone.
-                      const agentPriceQuery = new URLSearchParams({
-                        agent_id: String(agentId),
-                        contract_id: String(contractId),
-                        room_net_total: String(price.final_total),
-                        nights: String(price.nights),
-                        room_type_id: String(rt.id),
-                        meal_plan_id: String(price.meal_plan_id),
-                        check_in: checkIn,
-                        check_out: checkOut,
-                      });
-                      const agentPrice = await fetchJson<AgentPrice>(
-                        `/pricing-engine/agent-price?${agentPriceQuery.toString()}`,
-                        token
-                      );
+                      const price: RoomPrice = quote;
+                      const agentPrice: AgentPrice = { agent_room_total: quote.agent_room_total };
                       return { mealCode: mp.meal_code, mealName: mp.meal_name, price, agentPrice };
                     } catch (err) {
                       return {
@@ -5513,7 +5486,6 @@ function HotelSearchPage() {
                   childrenCount={resultsParty.children}
                   infants={resultsParty.infants}
                   childAges={resultsChildAges}
-                  agentId={user.id}
                   checkIn={searched?.checkIn ?? checkIn}
                   checkOut={searched?.checkOut ?? checkOut}
                   onAddToTrip={addToCart}

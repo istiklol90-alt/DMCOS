@@ -626,3 +626,72 @@ def scan_dates(
                 meal_plan_cache, exclusive_gate_cache,
             ))
     return results
+
+
+# ---------------------------------------------------------------------------
+# Security (2026-10-16): the agent-facing quote. Search used to fetch Contract
+# Engine's net room price into the agent's browser and send it back here to
+# be marked up -- so our cost was readable in the network tab. These two
+# functions do the whole computation server-side and return only what the
+# agent pays: no net total, no markup, no base rate.
+# ---------------------------------------------------------------------------
+
+
+def agent_room_quote(
+    db: Session,
+    agent_id: int,
+    contract_id: int,
+    room_type_id: int,
+    check_in: date,
+    check_out: date,
+    meal_plan: str,
+    adults: int,
+    children: int,
+    infants: int = 0,
+) -> dict:
+    price = contract_service.get_room_price(
+        db, contract_id, room_type_id, check_in, check_out, meal_plan, adults, children, infants
+    )
+    agent = apply_agent_pricing(
+        db, agent_id, contract_id, price["final_total"], price["nights"], room_type_id,
+        price["meal_plan_id"], check_in, check_out,
+    )
+    return {
+        "contract_id": contract_id,
+        "room_type_id": room_type_id,
+        "meal_plan_id": price["meal_plan_id"],
+        "currency": price["currency"],
+        "nights": price["nights"],
+        "agent_room_total": agent["agent_room_total"],
+        "applied_special_offer_ids": price.get("applied_special_offer_ids") or [],
+    }
+
+
+def agent_nightly_quote(
+    db: Session,
+    agent_id: int,
+    contract_id: int,
+    room_type_id: int,
+    check_in: date,
+    check_out: date,
+    meal_plan: str,
+    adults: int,
+    children: int,
+    infants: int = 0,
+) -> list[dict]:
+    price = contract_service.get_room_price(
+        db, contract_id, room_type_id, check_in, check_out, meal_plan, adults, children, infants
+    )
+    nights = build_nightly_breakdown(
+        db, agent_id, contract_id, price["final_total"], price["nights"], room_type_id,
+        price["meal_plan_id"], check_in, check_out,
+    )
+    return [
+        {
+            "date": n["date"],
+            "final_price": n["final_price"],
+            "discount_applied": n["discount_applied"],
+            "discount_percent": n["discount_percent"],
+        }
+        for n in nights
+    ]

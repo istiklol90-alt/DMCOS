@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.engines.authentication.config import SECRET_KEY
 from app.engines.authentication.constants import ALGORITHM
-from app.engines.authentication.repository import get_user_by_email
+from app.engines.authentication.repository import get_active_user_by_email
 
 from app.engines.ai_core import service
 from app.engines.ai_core import pdf_extraction
@@ -46,10 +46,19 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    user = get_user_by_email(db, email)
+    user = get_active_user_by_email(db, email)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token")
     return user
+
+
+def _admin_only(current_user=Depends(get_current_user)):
+    """Security (2026-10-16): staff-only endpoint. Before this, any signed-in
+    user -- including a travel agent -- could call it (an agent could change
+    contract rates, take allotment, switch the AI provider)."""
+    if (current_user.role or "").strip().lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
 
 
 def _run(operation):
@@ -71,7 +80,7 @@ def _run(operation):
 # ---------------------------------------------------------------------------
 
 
-@router.post("/jobs", response_model=ContractIngestionJobResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/jobs", dependencies=[Depends(_admin_only)], response_model=ContractIngestionJobResponse, status_code=status.HTTP_201_CREATED)
 def create_job(
     data: ContractIngestionJobCreate,
     db: Session = Depends(get_db),
@@ -85,7 +94,7 @@ def create_job(
     )
 
 
-@router.post("/jobs/upload-pdf", response_model=ContractIngestionJobResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/jobs/upload-pdf", dependencies=[Depends(_admin_only)], response_model=ContractIngestionJobResponse, status_code=status.HTTP_201_CREATED)
 async def upload_pdf_job(
     file: UploadFile = File(...),
     hotel_id: Optional[int] = Form(None),
@@ -113,7 +122,7 @@ async def upload_pdf_job(
     )
 
 
-@router.get("/jobs", response_model=list[ContractIngestionJobResponse])
+@router.get("/jobs", dependencies=[Depends(_admin_only)], response_model=list[ContractIngestionJobResponse])
 def list_jobs(
     hotel_id: Optional[int] = None,
     skip: int = 0,
@@ -124,18 +133,18 @@ def list_jobs(
     return _run(lambda: service.list_jobs(db, hotel_id=hotel_id, skip=skip, limit=limit))
 
 
-@router.get("/jobs/{job_id}", response_model=ContractIngestionJobResponse)
+@router.get("/jobs/{job_id}", dependencies=[Depends(_admin_only)], response_model=ContractIngestionJobResponse)
 def get_job(job_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     return _run(lambda: service.get_job(db, job_id))
 
 
-@router.post("/jobs/{job_id}/start-processing", response_model=ContractIngestionJobResponse)
+@router.post("/jobs/{job_id}/start-processing", dependencies=[Depends(_admin_only)], response_model=ContractIngestionJobResponse)
 def start_processing(job_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     """Workflow step 2's status transition only (uploaded -> processing). No provider dispatch happens here — see service.start_processing's docstring."""
     return _run(lambda: service.start_processing(db, job_id))
 
 
-@router.post("/jobs/{job_id}/mark-extracted", response_model=ContractIngestionJobResponse)
+@router.post("/jobs/{job_id}/mark-extracted", dependencies=[Depends(_admin_only)], response_model=ContractIngestionJobResponse)
 def mark_extracted(
     job_id: int,
     data: MarkExtractedRequest,
@@ -146,19 +155,19 @@ def mark_extracted(
     return _run(lambda: service.mark_extracted(db, job_id, provider=data.provider))
 
 
-@router.post("/jobs/{job_id}/run-extraction", response_model=ContractIngestionJobResponse)
+@router.post("/jobs/{job_id}/run-extraction", dependencies=[Depends(_admin_only)], response_model=ContractIngestionJobResponse)
 def run_extraction(job_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     """Runs the active provider (Decision 041's Model Router) end-to-end: uploaded/processing -> extracted, persisting one ExtractedField row per result. See service.run_extraction's docstring for the current entity_types/document_text limitations."""
     return _run(lambda: service.run_extraction(db, job_id))
 
 
-@router.post("/jobs/{job_id}/submit-for-review", response_model=ContractIngestionJobResponse)
+@router.post("/jobs/{job_id}/submit-for-review", dependencies=[Depends(_admin_only)], response_model=ContractIngestionJobResponse)
 def submit_for_review(job_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     """Workflow steps 7-8: extracted -> under_review. Nothing is written to Contract Engine yet."""
     return _run(lambda: service.submit_for_review(db, job_id))
 
 
-@router.post("/jobs/{job_id}/mark-failed", response_model=ContractIngestionJobResponse)
+@router.post("/jobs/{job_id}/mark-failed", dependencies=[Depends(_admin_only)], response_model=ContractIngestionJobResponse)
 def mark_failed(
     job_id: int,
     data: MarkFailedRequest,
@@ -173,7 +182,7 @@ def mark_failed(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/jobs/{job_id}/approve", response_model=ContractIngestionJobResponse)
+@router.post("/jobs/{job_id}/approve", dependencies=[Depends(_admin_only)], response_model=ContractIngestionJobResponse)
 def approve_job(
     job_id: int,
     data: HumanGateApproveRequest,
@@ -186,7 +195,7 @@ def approve_job(
     )
 
 
-@router.post("/jobs/{job_id}/reject", response_model=ContractIngestionJobResponse)
+@router.post("/jobs/{job_id}/reject", dependencies=[Depends(_admin_only)], response_model=ContractIngestionJobResponse)
 def reject_job(
     job_id: int,
     data: HumanGateRejectRequest,
@@ -199,7 +208,7 @@ def reject_job(
     )
 
 
-@router.get("/jobs/{job_id}/decisions", response_model=list[HumanGateDecisionResponse])
+@router.get("/jobs/{job_id}/decisions", dependencies=[Depends(_admin_only)], response_model=list[HumanGateDecisionResponse])
 def list_human_gate_decisions(job_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     return _run(lambda: service.list_human_gate_decisions(db, job_id))
 
@@ -210,7 +219,7 @@ def list_human_gate_decisions(job_id: int, db: Session = Depends(get_db), curren
 
 
 @router.post(
-    "/jobs/{job_id}/fields", response_model=ExtractedFieldResponse, status_code=status.HTTP_201_CREATED
+    "/jobs/{job_id}/fields", dependencies=[Depends(_admin_only)], response_model=ExtractedFieldResponse, status_code=status.HTTP_201_CREATED
 )
 def record_extracted_field(
     job_id: int,
@@ -233,7 +242,7 @@ def record_extracted_field(
     )
 
 
-@router.get("/jobs/{job_id}/fields", response_model=list[ExtractedFieldResponse])
+@router.get("/jobs/{job_id}/fields", dependencies=[Depends(_admin_only)], response_model=list[ExtractedFieldResponse])
 def list_extracted_fields(
     job_id: int,
     entity_type: Optional[str] = None,
@@ -243,7 +252,7 @@ def list_extracted_fields(
     return _run(lambda: service.list_extracted_fields(db, job_id, entity_type=entity_type))
 
 
-@router.put("/fields/{field_id}", response_model=ExtractedFieldResponse)
+@router.put("/fields/{field_id}", dependencies=[Depends(_admin_only)], response_model=ExtractedFieldResponse)
 def edit_extracted_field(
     field_id: int,
     data: ExtractedFieldEditRequest,
@@ -264,7 +273,7 @@ def edit_extracted_field(
 
 
 @router.post(
-    "/providers", response_model=ModelProviderConfigResponse, status_code=status.HTTP_201_CREATED
+    "/providers", dependencies=[Depends(_admin_only)], response_model=ModelProviderConfigResponse, status_code=status.HTTP_201_CREATED
 )
 def create_provider_config(
     data: ModelProviderConfigCreate,
@@ -279,7 +288,7 @@ def create_provider_config(
     )
 
 
-@router.get("/providers/active", response_model=ModelProviderConfigResponse)
+@router.get("/providers/active", dependencies=[Depends(_admin_only)], response_model=ModelProviderConfigResponse)
 def get_active_provider(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     result = _run(lambda: service.get_active_provider(db))
     if result is None:
@@ -287,7 +296,7 @@ def get_active_provider(db: Session = Depends(get_db), current_user=Depends(get_
     return result
 
 
-@router.post("/providers/{provider_name}/activate", response_model=ModelProviderConfigResponse)
+@router.post("/providers/{provider_name}/activate", dependencies=[Depends(_admin_only)], response_model=ModelProviderConfigResponse)
 def set_active_provider(
     provider_name: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)
 ):

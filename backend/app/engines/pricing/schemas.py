@@ -140,3 +140,23 @@ class NightlyPriceResponse(BaseModel):
     discount_percent: float
     discount_amount: float
     final_price: float
+
+
+class AgentRoomQuoteResponse(BaseModel):
+    """Security (2026-10-16): what an agent may see of a room price -- only
+    the amount they pay. Deliberately no field for our net or markup."""
+
+    contract_id: int
+    room_type_id: int
+    meal_plan_id: int
+    currency: str
+    nights: int
+    agent_room_total: float
+    applied_special_offer_ids: list[int] = []
+
+
+class AgentNightlyQuoteResponse(BaseModel):
+    date: date
+    final_price: float
+    discount_applied: bool
+    discount_percent: float
