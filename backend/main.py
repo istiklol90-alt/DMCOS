@@ -18,6 +18,10 @@ from app.engines.ai_core.api import router as ai_core_router
 from app.engines.pricing.api import router as pricing_router
 # TASK-002/003: Finance Engine domain model, schemas, repository, service, and API.
 from app.engines.finance.api import router as finance_router
+# Package Engine (TASK-002..004, 2026-10-17): packages, commission tiers, insurance / visa add-ons.
+from app.engines.package.api import router as package_router
+# Flight Engine (2026-10-17): seat blocks entered by staff, prices per date.
+from app.engines.flight.api import router as flight_router
 
 app = FastAPI(title="DMC OS API")
 
@@ -65,6 +69,12 @@ app.include_router(pricing_router)
 
 # Finance Engine API
 app.include_router(finance_router)
+
+# Package Engine API
+app.include_router(package_router)
+
+# Flight Engine API
+app.include_router(flight_router)
 
 
 @app.get("/")

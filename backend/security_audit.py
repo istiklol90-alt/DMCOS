@@ -26,7 +26,7 @@ from fastapi.routing import APIRoute  # noqa: E402
 ROUTERS = [
     "api.routes", "api.agent_account", "app.engines.authentication.api", "app.engines.hotel.api",
     "app.engines.contract.api", "app.engines.booking.api", "app.engines.ai_core.api",
-    "app.engines.pricing.api", "app.engines.finance.api",
+    "app.engines.pricing.api", "app.engines.finance.api", "app.engines.package.api", "app.engines.flight.api",
 ]
 
 # Public on purpose.
@@ -52,6 +52,9 @@ LOGIN_ONLY_OK = {
     ("GET", "/contract-engine/contracts/{contract_id}/special-offers/applicable"),
     ("GET", "/contract-engine/contracts/{contract_id}/cancellation-policies"),
     ("GET", "/contract-engine/contracts/{contract_id}/room-types/{room_type_id}/meal-plans"),
+    # Package Engine: the caller's own commission rate / switch, and the
+    # price-only list of insurance / visa options for a destination.
+    ("GET", "/package-engine/me"), ("GET", "/package-engine/add-ons/available"),
     # Scoped in code: a non-admin always gets agent_id = themselves.
     ("GET", "/booking-engine/bookings"), ("GET", "/booking-engine/bookings/count"),
 }

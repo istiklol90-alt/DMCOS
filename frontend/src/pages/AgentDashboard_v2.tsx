@@ -238,13 +238,25 @@ function Home({ user, lang, onOpenBookings }: { user: SessionUser; lang: string;
         </h1>
         <p className="mx-auto mt-3 max-w-xl text-sm text-white/85 drop-shadow sm:text-base">{t("hero.subtitle")}</p>
         <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          {/* Package Engine (2026-10-17): two ways to search. Ground services
+              is today's search (hotel + transfer, extras later); with-flight
+              opens when Flight Engine's seat blocks exist. */}
           <button
             type="button"
             onClick={() => navigate("/hotel-search")}
             className="inline-flex w-full appearance-none items-center justify-center gap-2 rounded-full border-0 bg-gold px-8 py-3.5 text-base font-semibold text-white shadow-lg shadow-ink/30 transition-transform hover:-translate-y-0.5 hover:bg-gold-deep sm:w-auto"
           >
             <IconSearch className="h-4 w-4" />
-            {t("hero.searchButton")}
+            {t("hero.groundButton")}
+          </button>
+          <button
+            type="button"
+            disabled
+            title={t("hero.flightSoon")}
+            className="inline-flex w-full cursor-not-allowed appearance-none items-center justify-center gap-2 rounded-full border border-white/30 bg-white/10 px-7 py-3.5 text-base font-medium text-white/80 sm:w-auto"
+          >
+            {t("hero.flightButton")}
+            <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide">{t("hero.soon")}</span>
           </button>
           <button
             type="button"

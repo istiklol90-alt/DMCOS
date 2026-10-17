@@ -3,6 +3,8 @@ from models.base import Base
 from models.user import User
 from models.agent import AgentRegistration
 from models.agent_markup import AgentMarkup  # noqa: F401 (Decision 215)
+from app.engines.package import models as package_models  # noqa: F401 (Package Engine)
+from app.engines.flight import models as flight_models  # noqa: F401 (Flight Engine)
 from app.engines.hotel.models import (
     HotelCategory,
     Hotel,

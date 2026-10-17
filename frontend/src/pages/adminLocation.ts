@@ -38,7 +38,11 @@ export type AdminSection =
   | "cashback"
   | "users"
   | "special-agents"
-  | "transfer-list";
+  | "transfer-list"
+  | "packages-agents"
+  | "packages-addons"
+  | "packages-rules"
+  | "packages-flights";
 
 export const DEFAULT_SECTION: AdminSection = "reservations";
 
@@ -59,6 +63,10 @@ const SECTION_URL_NAME: Record<AdminSection, string> = {
   users: "users",
   "special-agents": "special-agents",
   "transfer-list": "transfer-list",
+  "packages-agents": "packages-agents",
+  "packages-addons": "packages-insurance-visa",
+  "packages-rules": "packages-cancellation",
+  "packages-flights": "packages-flights",
 };
 
 const SECTION_BY_URL_NAME = new Map<string, AdminSection>(

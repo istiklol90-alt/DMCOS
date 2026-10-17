@@ -37,6 +37,12 @@ SENSITIVE_FIELDS = frozenset({
     "supplements_total",
     "price_before_promotions",
     "final_total",
+    # Package Engine: our cost and our profit on a package.
+    "cost",
+    "cost_total",
+    "our_profit",
+    # Flight Engine: our cost per seat.
+    "cost_per_seat",
 })
 
 

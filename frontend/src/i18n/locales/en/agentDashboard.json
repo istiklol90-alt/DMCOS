@@ -23,7 +23,11 @@
     "title": "Where to next?",
     "subtitle": "Real-time hotel rates, seasons and special offers already factored in — search, quote, and book in one place.",
     "searchButton": "Search hotels",
-    "bookingsButton": "My bookings"
+    "bookingsButton": "My bookings",
+    "groundButton": "Ground services",
+    "flightButton": "With flight",
+    "soon": "soon",
+    "flightSoon": "Search with flight opens once our seat blocks are added"
   },
   "quickActions": {
     "title": "Quick actions",

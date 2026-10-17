@@ -65,6 +65,16 @@ export const NAV_STRUCTURE: NavItem[] = [
       { key: "special-agents", label: "Special-rate agents" },
     ],
   },
+  {
+    key: "packages-group",
+    label: "Packages",
+    children: [
+      { key: "packages-flights", label: "Flights" },
+      { key: "packages-agents", label: "Agents & commission" },
+      { key: "packages-addons", label: "Insurance & visa" },
+      { key: "packages-rules", label: "Cancellation rules" },
+    ],
+  },
   { key: "transfer-list", label: "Transfer list" },
 ];
 

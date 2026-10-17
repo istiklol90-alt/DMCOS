@@ -11,6 +11,8 @@ import ContractsAI from "./ContractsAI";
 import AdminRooms from "./AdminRooms";
 import PriceCalculator from "./PriceCalculator";
 import Counteragents from "./Counteragents";
+import AdminPackages from "./AdminPackages";
+import AdminFlights from "./AdminFlights";
 import Invoices from "./Invoices";
 import Balance from "./Balance";
 import Cashback from "./Cashback";
@@ -331,6 +333,11 @@ const AdminPanelContent = () => {
         {/* Arrivals, departures and transfers for chosen dates -- its own
             section, not a view of Bookings. */}
         {activeTab === "transfer-list" && <TransferListScreen view={transferView} onViewChange={setTransferView} />}
+
+        {activeTab === "packages-agents" && <AdminPackages section="agents" />}
+        {activeTab === "packages-addons" && <AdminPackages section="addons" />}
+        {activeTab === "packages-rules" && <AdminPackages section="rules" />}
+        {activeTab === "packages-flights" && <AdminFlights />}
 
         {activeTab === "contracts" && <Contracts />}
 
