@@ -28,28 +28,8 @@
     "about": {
       "tag": "Who we are",
       "title": "A destination management company for travel agencies",
-      "p1": "We work with hotels directly under contract and give agencies access to those rates. An agent finds a hotel, sees the final price with the season, special offers and transfer, and sends a request — no back-and-forth, no manual recalculation.",
-      "p2": "Every request is handled by our manager: confirmed with the hotel, invoiced, and a voucher issued for the guests."
-    },
-    "services": {
-      "tag": "What we do",
-      "title": "Everything an agency needs in one account",
-      "hotels": {
-        "title": "Hotels",
-        "text": "Contracts, prices, availability and special offers"
-      },
-      "bookings": {
-        "title": "Bookings",
-        "text": "Fast creation, confirmation and management"
-      },
-      "prices": {
-        "title": "Prices",
-        "text": "Current prices and partner discounts"
-      },
-      "ai": {
-        "title": "AI Assistant",
-        "text": "Smart recommendations and automation"
-      }
+      "p1": "We work with hotels in the Maldives, Seychelles and Mauritius directly, under contract, and give agencies access to those terms.",
+      "p2": "An agent finds a hotel, sees the final price with the season, special offers and transfer, and sends a request. The rest is our job: confirmation with the hotel, invoice, voucher and support until the guests arrive."
     },
     "destinations": {
       "tag": "Our destinations",
@@ -105,30 +85,39 @@
     },
     "why": {
       "tag": "Why us",
-      "title": "What an agency gets by working with us",
+      "title": "Why agencies work with us",
+      "lead": "Everything an agency needs to sell the islands, in one account.",
       "contract": {
-        "title": "Prices straight from the contract",
-        "text": "Season, special offers, mandatory fees and transfer already included."
+        "title": "Prices from the contract",
+        "text": "Season, special offers, mandatory fees and transfer already in the price."
       },
-      "copy": {
-        "title": "A client offer in one click",
-        "text": "Ready text with the room, dates and price — straight to WhatsApp."
+      "offer": {
+        "title": "An offer in one click",
+        "text": "Ready text with the room, dates and price — straight to your client on WhatsApp."
       },
       "manager": {
         "title": "A manager on every request",
-        "text": "Confirms the booking with the hotel and keeps you informed."
+        "text": "Confirmation with the hotel and contact with you at every step."
       },
       "docs": {
         "title": "Documents in your account",
         "text": "Invoice and guest voucher — in the booking card."
       },
       "rooms": {
-        "title": "Several rooms in one request",
-        "text": "Families and groups — one booking, one invoice."
+        "title": "Families and groups",
+        "text": "Several rooms in one request: one booking, one invoice."
       },
       "changes": {
-        "title": "Changes after booking",
+        "title": "Changes without emails",
         "text": "Dates, guests, flights and transfer are changed in your account."
+      },
+      "transfer": {
+        "title": "Transfers for your guests",
+        "text": "Seaplane, speedboat or car — matched to the party."
+      },
+      "markup": {
+        "title": "Your own markup",
+        "text": "Set your percentage and show clients prices that already include it."
       }
     },
     "dest": {
@@ -158,6 +147,33 @@
         "f2": "Southern-hemisphere summer is November to April; winter (May–October) is mild and drier.",
         "f3": "Popular: lagoons and reefs, golf, kitesurfing at Le Morne."
       }
+    },
+    "promise": {
+      "tag": "Our approach",
+      "title": "Your clients, our care",
+      "lead": "We work as an extension of your agency: hotels, prices, documents and handling of every request are on us.",
+      "expertise": {
+        "title": "Destination knowledge",
+        "text": "Hotels, seasons, transfers and the terms of every contract in the Maldives, Seychelles and Mauritius."
+      },
+      "care": {
+        "title": "Attention to every request",
+        "text": "A manager confirms the booking with the hotel and keeps you informed until the guests arrive."
+      },
+      "quality": {
+        "title": "Direct contracts",
+        "text": "Prices and terms come from our contract with the hotel, not from someone else’s booking system."
+      }
+    },
+    "principle": {
+      "tag": "Our principle",
+      "quote": "An agent sells the journey instead of recalculating prices. Everything else is our job."
+    },
+    "platform": {
+      "tag": "DMC OS",
+      "title": "The agent account",
+      "sub": "Search, prices, requests and documents in one place",
+      "text": "Search hotels by dates and party, compare rooms and meal plans, send a request and follow its status. Invoices and vouchers appear in the booking card."
     }
   }
 }

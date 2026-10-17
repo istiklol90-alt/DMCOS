@@ -4,15 +4,18 @@ import { useLocation, useNavigate } from "react-router-dom";
 import HeroSlider from "../components/ui/HeroSlider";
 import WelcomeBonusModal from "../components/ui/WelcomeBonusModal";
 import SiteFooter from "../components/layout/SiteFooter";
-import { SITE_SECTIONS, useGoToSection } from "../components/layout/siteSections";
-import { IconCalendar, IconCheck, IconChevronRight, IconPin, IconSearch, IconSparkle } from "../components/ui/icons";
+import { useGoToSection } from "../components/layout/siteSections";
+import { IconCheck, IconChevronRight } from "../components/ui/icons";
 
 // Public site home page. Texts: common.json -> site.* (RU/EN). Company
 // texts describe only what the platform actually does; there are no
 // invented figures, contacts or hotel names here -- the owner can extend
 // them in the catalogs.
 
-const WHY = ["contract", "copy", "manager", "docs", "rooms", "changes"] as const;
+const WHY = ["contract", "offer", "manager", "docs", "rooms", "changes", "transfer", "markup"] as const;
+const PROMISES = ["expertise", "care", "quality"] as const;
+// Sections sit under the floating header.
+const SCROLL = "scroll-mt-[98px] sm:scroll-mt-[131px]";
 
 const DESTINATIONS = [
   { key: "maldives", src: "/hero/maldives.jpg" },
@@ -97,12 +100,6 @@ function Home() {
     return () => window.clearTimeout(timer);
   }, [location.hash]);
 
-  const services = [
-    { key: "hotels", icon: <IconPin className="h-5 w-5" /> },
-    { key: "bookings", icon: <IconCalendar className="h-5 w-5" /> },
-    { key: "prices", icon: <IconSearch className="h-5 w-5" /> },
-    { key: "ai", icon: <IconSparkle className="h-5 w-5" /> },
-  ];
   const steps = ["s1", "s2", "s3", "s4"];
 
   return (
@@ -120,7 +117,7 @@ function Home() {
         bottom={
           <button
             type="button"
-            onClick={() => goToSection(SITE_SECTIONS[0])}
+            onClick={() => goToSection("about")}
             aria-label={t("site.hero.scroll")}
             className="flex appearance-none flex-col items-center gap-1 border-0 bg-transparent p-0 text-xs font-medium text-sand/85 [text-shadow:0_1px_6px_rgba(27,35,64,0.7)] hover:text-sand"
           >
@@ -156,68 +153,23 @@ function Home() {
       </HeroSlider>
       </div>
 
-      {/* About */}
-      <section id={SITE_SECTIONS[0]} className="scroll-mt-[98px] sm:scroll-mt-[131px] px-5 py-20 sm:px-10">
-        <div className="mx-auto grid max-w-6xl items-center gap-10 lg:grid-cols-2">
-          <Reveal>
-            <p className="text-xs font-semibold uppercase tracking-widest text-gold">{t("site.about.tag")}</p>
-            <h2 className="mt-2 font-display text-3xl font-semibold text-ink sm:text-4xl">{t("site.about.title")}</h2>
-            <p className="mt-5 text-base leading-relaxed text-slate/80">{t("site.about.p1")}</p>
-            <p className="mt-4 text-base leading-relaxed text-slate/80">{t("site.about.p2")}</p>
-          </Reveal>
-          <Reveal delay={150} className="relative overflow-hidden rounded-3xl shadow-xl">
-            <img src="/hero/seychelles.jpg" alt="" className="aspect-[4/3] w-full object-cover" />
-            <div className="absolute inset-x-0 bottom-0 h-1.5 bg-gold" />
-          </Reveal>
-        </div>
-      </section>
-
-      {/* What we do -- white band, navy + gold cards */}
-      <section id={SITE_SECTIONS[1]} className="scroll-mt-[98px] sm:scroll-mt-[131px] bg-white px-5 py-20 sm:px-10">
-        <Reveal>
-          <SectionHeading tag={t("site.services.tag")} title={t("site.services.title")} />
+      {/* Who we are -- one centred statement, the way a luxury DMC opens */}
+      <section id="about" className={`${SCROLL} bg-[#efe9df] px-5 py-24 sm:px-10`}>
+        <Reveal className="mx-auto max-w-3xl text-center">
+          <p className="text-xs font-semibold uppercase tracking-[0.3em] text-gold-deep">{t("site.about.tag")}</p>
+          <h2 className="mt-4 font-display text-3xl font-semibold leading-tight text-ink sm:text-5xl">{t("site.about.title")}</h2>
+          <span className="mx-auto mt-6 block h-px w-16 bg-gold" />
+          <p className="mt-6 text-lg font-light leading-relaxed text-slate/80">{t("site.about.p1")}</p>
+          <p className="mt-4 text-lg font-light leading-relaxed text-slate/80">{t("site.about.p2")}</p>
         </Reveal>
-        <div className="mx-auto mt-12 grid max-w-6xl gap-5 sm:grid-cols-2 lg:grid-cols-4">
-          {services.map((s, i) => (
-            <Reveal key={s.key} delay={i * 100}>
-            <div
-              className="group h-full rounded-2xl border border-ink/10 bg-sand/60 p-6 transition-all hover:-translate-y-1 hover:border-gold/40 hover:shadow-lg"
-            >
-              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-ink text-gold">{s.icon}</span>
-              <h3 className="mt-4 font-display text-xl font-semibold text-ink">{t(`site.services.${s.key}.title`)}</h3>
-              <p className="mt-1.5 text-sm leading-relaxed text-slate/70">{t(`site.services.${s.key}.text`)}</p>
-            </div>
-            </Reveal>
-          ))}
-        </div>
-      </section>
-
-      {/* Why us -- only what the platform really does */}
-      <section id={SITE_SECTIONS[2]} className="scroll-mt-[98px] sm:scroll-mt-[131px] px-5 py-20 sm:px-10">
-        <Reveal>
-          <SectionHeading tag={t("site.why.tag")} title={t("site.why.title")} />
-        </Reveal>
-        <div className="mx-auto mt-12 grid max-w-6xl gap-x-10 gap-y-8 sm:grid-cols-2 lg:grid-cols-3">
-          {WHY.map((k, i) => (
-            <Reveal key={k} delay={(i % 3) * 100} className="flex gap-4">
-              <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-gold/40 bg-gold/10 font-display text-base font-semibold text-gold-deep">
-                {String(i + 1).padStart(2, "0")}
-              </span>
-              <div>
-                <h3 className="font-display text-lg font-semibold text-ink">{t(`site.why.${k}.title`)}</h3>
-                <p className="mt-1 text-sm leading-relaxed text-slate/70">{t(`site.why.${k}.text`)}</p>
-              </div>
-            </Reveal>
-          ))}
-        </div>
       </section>
 
       {/* Destinations -- navy band */}
-      <section id={SITE_SECTIONS[3]} className="scroll-mt-[98px] sm:scroll-mt-[131px] bg-ink px-5 py-20 sm:px-10">
+      <section id="destinations" className={`${SCROLL} bg-ink px-5 py-24 sm:px-10`}>
         <Reveal>
           <SectionHeading tag={t("site.destinations.tag")} title={t("site.destinations.title")} light />
         </Reveal>
-        <div className="mx-auto mt-12 grid max-w-6xl gap-5 md:grid-cols-3">
+        <div className="mx-auto mt-14 grid max-w-6xl gap-5 md:grid-cols-3">
           {DESTINATIONS.map((d, i) => (
             <Reveal key={d.key} delay={i * 120} className="group relative overflow-hidden rounded-2xl">
               <img
@@ -227,12 +179,12 @@ function Home() {
               />
               <div className="absolute inset-0 bg-gradient-to-t from-ink via-ink/30 to-transparent" />
               <div className="absolute inset-x-0 bottom-0 p-6">
-                <h3 className="font-display text-2xl font-semibold text-white">{t(`site.destinations.${d.key}.title`)}</h3>
-                <p className="mt-1 text-sm text-white/80">{t(`site.destinations.${d.key}.text`)}</p>
+                <h3 className="font-display text-2xl font-semibold text-sand">{t(`site.destinations.${d.key}.title`)}</h3>
+                <p className="mt-1 text-sm text-sand/80">{t(`site.destinations.${d.key}.text`)}</p>
                 <button
                   type="button"
                   onClick={() => navigate(`/destinations/${d.key}`)}
-                  className="mt-4 inline-flex appearance-none items-center gap-1.5 rounded-full border border-white/40 bg-white/10 px-4 py-2 text-xs font-semibold text-white backdrop-blur-sm transition-colors after:absolute after:inset-0 after:content-[''] hover:bg-gold hover:border-gold"
+                  className="mt-4 inline-flex appearance-none items-center gap-1.5 border border-sand/50 bg-transparent px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-sand transition-colors after:absolute after:inset-0 after:content-[''] hover:border-gold hover:bg-gold"
                 >
                   {t("site.dest.more")} <IconChevronRight className="h-3.5 w-3.5" />
                 </button>
@@ -242,8 +194,100 @@ function Home() {
         </div>
       </section>
 
+      {/* Our promise to your clients -- three photo-led promises */}
+      <section id="services" className={`${SCROLL} bg-[#efe9df] px-5 py-24 sm:px-10`}>
+        <Reveal>
+          <SectionHeading tag={t("site.promise.tag")} title={t("site.promise.title")} />
+          <p className="mx-auto mt-5 max-w-2xl text-center text-lg font-light leading-relaxed text-slate/75">{t("site.promise.lead")}</p>
+        </Reveal>
+        <div className="mx-auto mt-14 grid max-w-6xl gap-8 md:grid-cols-3">
+          {PROMISES.map((k, i) => (
+            <Reveal key={k} delay={i * 120} className="text-center">
+              <div className="overflow-hidden">
+                <img src={`/site/promise-${k}.jpg`} alt="" className="aspect-[4/3] w-full object-cover transition-transform duration-700 hover:scale-105" />
+              </div>
+              <h3 className="mt-6 font-display text-2xl text-ink">{t(`site.promise.${k}.title`)}</h3>
+              <p className="mx-auto mt-3 max-w-xs font-light leading-relaxed text-slate/75">{t(`site.promise.${k}.text`)}</p>
+            </Reveal>
+          ))}
+        </div>
+      </section>
+
+      {/* Why agencies work with us -- eight photo cards */}
+      <section id="why-us" className={`${SCROLL} bg-[#e6dfd3] px-5 py-24 sm:px-10`}>
+        <Reveal>
+          <SectionHeading tag={t("site.why.tag")} title={t("site.why.title")} />
+          <p className="mx-auto mt-5 max-w-2xl text-center text-lg font-light leading-relaxed text-slate/75">{t("site.why.lead")}</p>
+        </Reveal>
+        <div className="mx-auto mt-14 grid max-w-[88rem] gap-6 sm:grid-cols-2 lg:grid-cols-4">
+          {WHY.map((k, i) => (
+            <Reveal key={k} delay={(i % 4) * 100} className="flex flex-col bg-white shadow-sm">
+              <div className="overflow-hidden">
+                <img src={`/site/why-${k}.jpg`} alt="" className="aspect-[16/10] w-full object-cover transition-transform duration-700 hover:scale-105" />
+              </div>
+              <div className="flex flex-1 flex-col items-center px-7 pb-10 pt-8 text-center">
+                <h3 className="text-sm font-medium uppercase tracking-[0.18em] text-gold-deep">{t(`site.why.${k}.title`)}</h3>
+                <p className="mt-4 font-light leading-relaxed text-slate/75">{t(`site.why.${k}.text`)}</p>
+              </div>
+            </Reveal>
+          ))}
+        </div>
+        <Reveal className="mt-12 text-center">
+          <button
+            type="button"
+            onClick={() => navigate("/register")}
+            className="appearance-none border border-ink/40 bg-transparent px-8 py-3.5 text-xs font-medium uppercase tracking-[0.25em] text-ink transition-colors hover:bg-ink hover:text-sand"
+          >
+            {t("site.how.cta")}
+          </button>
+        </Reveal>
+      </section>
+
+      {/* Our principle -- a single quiet statement */}
+      <section className="bg-ink px-5 py-24 sm:px-10">
+        <Reveal className="mx-auto max-w-3xl text-center">
+          <p className="text-xs font-semibold uppercase tracking-[0.3em] text-gold">{t("site.principle.tag")}</p>
+          <p className="mt-6 font-display text-2xl font-light italic leading-relaxed text-sand sm:text-4xl">
+            “{t("site.principle.quote")}”
+          </p>
+          <span className="mx-auto mt-8 block h-px w-16 bg-gold" />
+        </Reveal>
+      </section>
+
+      {/* The agent cabinet -- our platform, image + text */}
+      <section className="bg-[#efe9df] px-5 py-24 sm:px-10">
+        <div className="mx-auto grid max-w-6xl items-center gap-12 lg:grid-cols-2">
+          <Reveal className="relative overflow-hidden">
+            <img src="/hero/mauritius.jpg" alt="" className="aspect-[4/3] w-full object-cover" />
+            <div className="absolute bottom-0 left-0 h-1.5 w-1/3 bg-gold" />
+          </Reveal>
+          <Reveal delay={150}>
+            <p className="text-xs font-semibold uppercase tracking-[0.3em] text-gold-deep">{t("site.platform.tag")}</p>
+            <h2 className="mt-3 font-display text-3xl font-semibold text-ink sm:text-4xl">{t("site.platform.title")}</h2>
+            <p className="mt-3 text-lg font-light text-slate/70">{t("site.platform.sub")}</p>
+            <p className="mt-5 font-light leading-relaxed text-slate/80">{t("site.platform.text")}</p>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => navigate("/register")}
+                className="appearance-none border-0 bg-ink px-7 py-3.5 text-xs font-medium uppercase tracking-[0.25em] text-sand transition-colors hover:bg-gold"
+              >
+                {t("site.auth.register")}
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("/login")}
+                className="appearance-none border border-ink/40 bg-transparent px-7 py-3.5 text-xs font-medium uppercase tracking-[0.25em] text-ink transition-colors hover:bg-ink hover:text-sand"
+              >
+                {t("site.auth.agentLogin")}
+              </button>
+            </div>
+          </Reveal>
+        </div>
+      </section>
+
       {/* How to start */}
-      <section id={SITE_SECTIONS[4]} className="scroll-mt-[98px] sm:scroll-mt-[131px] px-5 py-20 sm:px-10">
+      <section id="how-it-works" className={`${SCROLL} px-5 py-24 sm:px-10`}>
         <Reveal>
           <SectionHeading tag={t("site.how.tag")} title={t("site.how.title")} />
         </Reveal>

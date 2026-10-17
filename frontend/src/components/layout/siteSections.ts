@@ -1,7 +1,7 @@
 import { useLocation, useNavigate } from "react-router-dom";
 
 // Sections of the public home page the menu scrolls to (Home.tsx ids).
-export const SITE_SECTIONS = ["about", "services", "why-us", "destinations", "how-it-works"] as const;
+export const SITE_SECTIONS = ["about", "destinations", "services", "why-us", "how-it-works"] as const;
 export const SECTION_LABEL: Record<(typeof SITE_SECTIONS)[number], string> = {
   about: "site.nav.about",
   services: "site.nav.services",
